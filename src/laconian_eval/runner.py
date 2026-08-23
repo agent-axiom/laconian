@@ -184,6 +184,13 @@ def _resume_position(
     if previous_attempt > max_attempts:
         raise ValueError(f"{path}: historical retry chain exceeds retry budget for {key}")
     if terminal_seen:
+        terminal_error = existing[-1].error
+        if (
+            terminal_error is not None
+            and terminal_error.retryable
+            and previous_attempt < max_attempts
+        ):
+            raise ValueError(f"{path}: premature retryable terminal for {key}")
         return None
     if previous_attempt >= max_attempts:
         raise ValueError(f"{path}: exhausted nonterminal retry chain for {key}")

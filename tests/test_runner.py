@@ -115,10 +115,11 @@ def existing_attempt(
     retry_of_attempt: int | None = None,
     backoff_ms: int | None = None,
     error_retryable: bool = True,
+    terminal_error: bool = False,
 ) -> RawAttempt:
     error = None
     output_text: str | None = "Done."
-    if not terminal:
+    if not terminal or terminal_error:
         error = ErrorInfo(kind="rate_limit", message="Retry.", retryable=error_retryable)
         output_text = None
     return RawAttempt(
@@ -425,6 +426,124 @@ def test_resume_skips_valid_sequential_retry_chain_ending_terminal(tmp_path: Pat
     )
 
     assert resumed == existing
+    assert provider.requests == []
+    assert sleeps == []
+
+
+def test_resume_rejects_retryable_terminal_before_retry_budget_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    history = (
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=1,
+            terminal=False,
+            backoff_ms=100,
+        ),
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=2,
+            terminal=True,
+            retry_of_attempt=1,
+            error_retryable=True,
+            terminal_error=True,
+        ),
+    )
+    write_attempts(path, history)
+    original_raw = path.read_bytes()
+    provider = ScriptedProvider([])
+    sleeps: list[float] = []
+
+    with pytest.raises(ValueError, match="premature") as error:
+        run_to_jsonl(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=sleeps.append,
+        )
+
+    assert str(path) in str(error.value)
+    assert path.read_bytes() == original_raw
+    assert provider.requests == []
+    assert sleeps == []
+
+
+def test_resume_skips_retryable_terminal_at_exhausted_retry_budget(tmp_path: Path) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    history = (
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=1,
+            terminal=False,
+            backoff_ms=100,
+        ),
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=2,
+            terminal=False,
+            retry_of_attempt=1,
+            backoff_ms=200,
+        ),
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=3,
+            terminal=True,
+            retry_of_attempt=2,
+            error_retryable=True,
+            terminal_error=True,
+        ),
+    )
+    write_attempts(path, history)
+    provider = ScriptedProvider([])
+    sleeps: list[float] = []
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=(ARMS[0],),
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=sleeps.append,
+    )
+
+    assert resumed == history
+    assert provider.requests == []
+    assert sleeps == []
+
+
+def test_resume_skips_nonretryable_terminal_error_before_retry_budget(tmp_path: Path) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    terminal = existing_attempt(
+        manifest_hash=manifest_sha256(manifest),
+        terminal=True,
+        error_retryable=False,
+        terminal_error=True,
+    )
+    write_attempts(path, (terminal,))
+    provider = ScriptedProvider([])
+    sleeps: list[float] = []
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=(ARMS[0],),
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=sleeps.append,
+    )
+
+    assert resumed == (terminal,)
     assert provider.requests == []
     assert sleeps == []
 
