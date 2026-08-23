@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
+from yaml import YAMLError
 
 from laconian_eval.models import CheckResult, RawAttempt, ResponseCase, ScoredAttempt
+from laconian_eval.yaml_io import safe_load_unique
 
 _SENTENCE_TERMINATORS = frozenset(".?!\u3002\uff01\uff1f")
 _TRAILING_CLOSERS = frozenset("\"'\u2019\u201d\u00bb)]}`*_~")
@@ -223,6 +225,18 @@ def _literal_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     return checks
 
 
+def _nonblank_checks(output: str) -> list[CheckResult]:
+    if output.strip():
+        return []
+    return [
+        CheckResult(
+            name="format.nonblank_output",
+            passed=False,
+            detail="output is blank or whitespace-only",
+        )
+    ]
+
+
 def _json_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     required_keys = case.hard_constraints.required_json_keys
     if not required_keys:
@@ -247,6 +261,20 @@ def _json_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     if parsed_successfully and not is_object:
         parse_detail = "parsed JSON is not a top-level object"
     checks = [CheckResult(name="format.json_object", passed=is_object, detail=parse_detail)]
+    expected_keys = set(required_keys)
+    actual_keys = set(parsed_mapping) if parsed_mapping is not None else set()
+    exact_keys = parsed_mapping is not None and actual_keys == expected_keys
+    checks.append(
+        CheckResult(
+            name="format.json_key_set",
+            passed=exact_keys,
+            detail=(
+                "top-level JSON keys exactly match the declared set"
+                if exact_keys
+                else f"expected keys {sorted(expected_keys)!r}; found {sorted(actual_keys)!r}"
+            ),
+        )
+    )
     for key in required_keys:
         passed = parsed_mapping is not None and key in parsed_mapping
         checks.append(
@@ -254,6 +282,59 @@ def _json_checks(case: ResponseCase, output: str) -> list[CheckResult]:
                 name=f"format.required_json_key[{key}]",
                 passed=passed,
                 detail=f"top-level JSON key {key!r} {'found' if passed else 'missing'}",
+            )
+        )
+    return checks
+
+
+def _yaml_checks(case: ResponseCase, output: str) -> list[CheckResult]:
+    required_keys = case.hard_constraints.required_yaml_keys
+    if not required_keys:
+        return []
+
+    parsed: object | None = None
+    parse_detail = "output is a top-level YAML mapping"
+    try:
+        parsed = safe_load_unique(output.strip())
+    except YAMLError as exc:
+        parse_detail = f"output is not one complete strict YAML document: {exc}"
+
+    parsed_mapping = parsed if isinstance(parsed, Mapping) else None
+    is_mapping = parsed_mapping is not None
+    if parsed is not None and not is_mapping:
+        parse_detail = "parsed YAML is not a top-level mapping"
+
+    expected_keys = set(required_keys)
+    string_keys = (
+        set(parsed_mapping)
+        if parsed_mapping is not None and all(isinstance(key, str) for key in parsed_mapping)
+        else set()
+    )
+    exact_keys = parsed_mapping is not None and string_keys == expected_keys
+    checks = [
+        CheckResult(name="format.yaml_mapping", passed=is_mapping, detail=parse_detail),
+        CheckResult(
+            name="format.yaml_key_set",
+            passed=exact_keys,
+            detail=(
+                "top-level YAML keys exactly match the declared set"
+                if exact_keys
+                else (
+                    f"expected keys {sorted(expected_keys)!r}; "
+                    f"found {sorted((repr(key) for key in parsed_mapping), key=str)!r}"
+                    if parsed_mapping is not None
+                    else f"expected keys {sorted(expected_keys)!r}; found no mapping"
+                )
+            ),
+        ),
+    ]
+    for key in required_keys:
+        passed = parsed_mapping is not None and key in parsed_mapping
+        checks.append(
+            CheckResult(
+                name=f"format.required_yaml_key[{key}]",
+                passed=passed,
+                detail=f"top-level YAML key {key!r} {'found' if passed else 'missing'}",
             )
         )
     return checks
@@ -299,8 +380,10 @@ def score_attempt(case: ResponseCase, raw: RawAttempt) -> ScoredAttempt:
 
     assert raw.output_text is not None
     check_list = [
+        *_nonblank_checks(raw.output_text),
         *_literal_checks(case, raw.output_text),
         *_json_checks(case, raw.output_text),
+        *_yaml_checks(case, raw.output_text),
         *_sentence_checks(case, raw.output_text),
     ]
     checks = tuple(check_list)

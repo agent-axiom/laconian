@@ -289,7 +289,7 @@ def test_arm_metrics_count_attempts_errors_and_violation_categories() -> None:
     assert metrics.provider_errors == 1
     assert metrics.retry_attempts == 2
     assert metrics.exact_violations == 1
-    assert metrics.format_violations == 2
+    assert metrics.format_violations == 3
     assert metrics.median_output_tokens == 2.5
     assert metrics.median_output_characters == (len("wrong") + len("not json")) / 2
 

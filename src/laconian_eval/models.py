@@ -14,6 +14,7 @@ class HardConstraints(StrictModel):
     required_literals: tuple[str, ...] = ()
     forbidden_literals: tuple[str, ...] = ()
     required_json_keys: tuple[str, ...] = ()
+    required_yaml_keys: tuple[str, ...] = ()
     min_sentences: int | None = Field(default=None, ge=1)
     max_sentences: int | None = Field(default=None, ge=1)
 
@@ -25,6 +26,14 @@ class HardConstraints(StrictModel):
             and self.min_sentences > self.max_sentences
         ):
             raise ValueError("min_sentences must not exceed max_sentences")
+        if self.required_json_keys and self.required_yaml_keys:
+            raise ValueError("JSON and YAML key constraints cannot be combined")
+        for field, keys in (
+            ("required_json_keys", self.required_json_keys),
+            ("required_yaml_keys", self.required_yaml_keys),
+        ):
+            if len(keys) != len(set(keys)):
+                raise ValueError(f"{field} must be unique")
         return self
 
 

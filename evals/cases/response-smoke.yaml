@@ -200,7 +200,7 @@ cases:
       valid YAML mapping with only the top-level keys status, reason, and next_step and no prose
       outside it.
     hard_constraints:
-      required_literals:
+      required_yaml_keys:
         - status
         - reason
         - next_step
@@ -221,7 +221,7 @@ cases:
       корректный YAML-словарь только с ключами верхнего уровня status, reason и next_step,
       без текста за его пределами.
     hard_constraints:
-      required_literals:
+      required_yaml_keys:
         - status
         - reason
         - next_step

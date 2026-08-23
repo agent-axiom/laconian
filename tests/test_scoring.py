@@ -157,6 +157,20 @@ def test_semantic_rubric_text_is_never_used_as_a_literal_check() -> None:
     assert scored.checks == ()
 
 
+@pytest.mark.parametrize("output", ["", " \t\n"])
+def test_successful_blank_output_fails_an_explicit_check_and_keeps_raw_text(output: str) -> None:
+    case = response_case()
+
+    scored = score_attempt(case, raw_attempt(case, output=output))
+
+    assert scored.raw.output_text == output
+    assert [(check.name, check.passed) for check in scored.checks] == [
+        ("format.nonblank_output", False)
+    ]
+    assert not scored.hard_pass
+    assert not eligible_for_pairing(scored, require_semantic=False)
+
+
 @pytest.mark.parametrize(
     ("output", "object_passed", "key_passed"),
     [
@@ -201,6 +215,68 @@ def test_required_json_keys_reject_non_rfc_constants_fences_and_prose(output: st
     assert checks["format.json_object"] is False
     assert checks["format.required_json_key[answer]"] is False
     assert not scored.hard_pass
+
+
+def test_declared_json_keys_are_an_exact_top_level_set() -> None:
+    case = response_case(constraints=HardConstraints(required_json_keys=("answer", "confidence")))
+
+    exact = score_attempt(case, raw_attempt(case, output='{"answer": 42, "confidence": "high"}'))
+    extra = score_attempt(
+        case,
+        raw_attempt(
+            case,
+            output='{"answer": 42, "confidence": "high", "unexpected": true}',
+        ),
+    )
+
+    assert exact.hard_pass
+    assert {check.name: check.passed for check in exact.checks}["format.json_key_set"]
+    assert not extra.hard_pass
+    assert not {check.name: check.passed for check in extra.checks}["format.json_key_set"]
+
+
+@pytest.mark.parametrize(
+    ("output", "mapping_passed", "key_set_passed"),
+    [
+        ("status: unsafe\nreason: duplicate\nnext_step: deduplicate\n", True, True),
+        ("status: unsafe\nreason: duplicate\n", True, False),
+        (
+            "status: unsafe\nreason: duplicate\nnext_step: deduplicate\nunexpected: true\n",
+            True,
+            False,
+        ),
+        ("- status\n- reason\n- next_step\n", False, False),
+        ("status reason next_step", False, False),
+        ("```yaml\nstatus: unsafe\nreason: duplicate\nnext_step: deduplicate\n```", False, False),
+        (
+            "status: unsafe\nreason: duplicate\nnext_step: deduplicate\ntrailing prose",
+            False,
+            False,
+        ),
+        ("status: unsafe\nstatus: duplicate\nreason: why\nnext_step: act\n", False, False),
+        (
+            "defaults: &defaults\n  reason: duplicate\nstatus: unsafe\n<<: *defaults\n"
+            "next_step: act\n",
+            False,
+            False,
+        ),
+    ],
+)
+def test_required_yaml_keys_need_one_complete_exact_top_level_mapping(
+    output: str,
+    mapping_passed: bool,
+    key_set_passed: bool,
+) -> None:
+    case = response_case(
+        constraints=HardConstraints(required_yaml_keys=("status", "reason", "next_step"))
+    )
+
+    scored = score_attempt(case, raw_attempt(case, output=output))
+
+    checks = {check.name: check.passed for check in scored.checks}
+    assert checks["format.yaml_mapping"] is mapping_passed
+    assert checks["format.yaml_key_set"] is key_set_passed
+    assert scored.hard_pass is (mapping_passed and key_set_passed)
 
 
 @pytest.mark.parametrize(

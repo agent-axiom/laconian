@@ -27,9 +27,12 @@ contains:
 | `semantic_rubric` | Facts and warning whose meaning must survive |
 
 `hard_constraints` supports `required_literals`, `forbidden_literals`, `required_json_keys`,
-`min_sentences`, and `max_sentences`. Collections default to empty; sentence bounds default to
-`null`, must be positive when present, and `min_sentences` cannot exceed `max_sentences`.
-Required JSON keys apply to the top level of an output that must parse entirely as a JSON object.
+`required_yaml_keys`, `min_sentences`, and `max_sentences`. Collections default to empty; sentence
+bounds default to `null`, must be positive when present, and `min_sentences` cannot exceed
+`max_sentences`. JSON and YAML key constraints cannot be combined, and their declared keys must be
+unique. A nonempty JSON or YAML key declaration requires the entire output to parse as one
+top-level mapping whose key set exactly equals the declaration; extra or missing keys, prose,
+fences, lists, and scalars fail the hard gate. YAML parsing also rejects duplicate and merge keys.
 
 `semantic_rubric` supports `required_facts` and nullable `material_warning`. These fields describe
 meaning for a blind semantic judge; rubric sentences are not treated as exact literal matches.
@@ -50,6 +53,7 @@ cases:
         - POST
       forbidden_literals: []
       required_json_keys: []
+      required_yaml_keys: []
       min_sentences: 1
       max_sentences: 2
     semantic_rubric:
@@ -66,6 +70,7 @@ cases:
         - POST
       forbidden_literals: []
       required_json_keys: []
+      required_yaml_keys: []
       min_sentences: 1
       max_sentences: 2
     semantic_rubric:
@@ -111,8 +116,9 @@ can expose a failure in any arm, including `if`.
 
 Hard constraints must follow the user's actual request. Use `required_literals` only for exact
 values that must survive, not for semantic paraphrases. Use `forbidden_literals` for explicit
-prohibitions, `required_json_keys` only when a full JSON object is requested, and sentence limits
-only when the prompt makes that limit legitimate.
+prohibitions, `required_json_keys` or `required_yaml_keys` only when one complete mapping with
+exactly that top-level key set is requested, and sentence limits only when the prompt makes that
+limit legitimate.
 
 English and Russian records should represent the same task and difficulty, not word-for-word
 translation artifacts. A material warning present in one locale belongs in the other.

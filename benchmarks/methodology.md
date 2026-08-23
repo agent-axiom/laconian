@@ -72,8 +72,9 @@ record is scored for a planned case/arm/repetition key.
 Scoring is ordered:
 
 1. Check raw identity against the copied manifest and source case.
-2. Apply the **hard gate**: provider success, required and forbidden literals, full-object JSON
-   validity and required top-level keys, and sentence bounds.
+2. Apply the **hard gate**: provider success with a nonblank output, required and forbidden
+   literals, one complete top-level JSON or YAML mapping with exactly the declared keys, and
+   sentence bounds.
 3. Optionally apply the **semantic gate** to hard-pass responses: required facts and any material
    warning are judged from a request that omits arm, provider, model, token count, and length.
 4. Establish task success before calculating paired brevity.

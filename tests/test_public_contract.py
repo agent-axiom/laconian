@@ -260,6 +260,7 @@ def test_case_contribution_guide_documents_valid_exact_schemas() -> None:
         "required_literals",
         "forbidden_literals",
         "required_json_keys",
+        "required_yaml_keys",
         "min_sentences",
         "max_sentences",
         "required_facts",

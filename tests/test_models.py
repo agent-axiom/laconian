@@ -125,6 +125,30 @@ def test_hard_constraints_rejects_inverted_sentence_bounds() -> None:
         HardConstraints.model_validate({"min_sentences": 3, "max_sentences": 2})
 
 
+def test_hard_constraints_accepts_declared_yaml_keys() -> None:
+    constraints = HardConstraints.model_validate(
+        {"required_yaml_keys": ["status", "reason", "next_step"]}
+    )
+
+    assert constraints.required_yaml_keys == ("status", "reason", "next_step")
+
+
+def test_hard_constraints_rejects_mixed_structured_formats() -> None:
+    with pytest.raises(ValidationError, match="JSON and YAML"):
+        HardConstraints.model_validate(
+            {
+                "required_json_keys": ["answer"],
+                "required_yaml_keys": ["answer"],
+            }
+        )
+
+
+@pytest.mark.parametrize("field", ["required_json_keys", "required_yaml_keys"])
+def test_hard_constraints_rejects_duplicate_structured_keys(field: str) -> None:
+    with pytest.raises(ValidationError, match="must be unique"):
+        HardConstraints.model_validate({field: ["answer", "answer"]})
+
+
 @pytest.mark.parametrize("api_key_env", [None, "", "   "])
 def test_openai_provider_requires_nonblank_api_key_env(api_key_env: str | None) -> None:
     with pytest.raises(ValidationError, match="api_key_env"):

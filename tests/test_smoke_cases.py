@@ -96,7 +96,7 @@ def test_response_smoke_has_exact_hard_constraint_profiles() -> None:
             "required_json_keys": ("risk", "mitigation", "confidence"),
         },
         "structured-yaml": {
-            "required_literals": ("status", "reason", "next_step"),
+            "required_yaml_keys": ("status", "reason", "next_step"),
         },
         "uncertain-attribution": {"max_sentences": 3},
         "safety-medical": {"max_sentences": 4},

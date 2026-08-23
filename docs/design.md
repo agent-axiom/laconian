@@ -27,8 +27,8 @@ contract.
   calculates instruction hashes.
 - `runner.py` builds a seeded arm order, calls a provider, records bounded retry lineage, redacts
   configured secrets, and appends raw JSONL with flush-and-fsync boundaries.
-- `scoring.py` applies exact-value, structured-output, and sentence constraints to terminal
-  attempts.
+- `scoring.py` rejects blank successes and applies exact-value, complete structured-mapping, and
+  sentence constraints to terminal attempts.
 - `judging.py` creates an optional blind semantic boundary with opaque response IDs and explicit
   judge provenance.
 - `reporting.py` aggregates per-arm metrics and quality-gated `if` versus `concise` pairs without
