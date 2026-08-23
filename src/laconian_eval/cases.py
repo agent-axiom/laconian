@@ -1,9 +1,11 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
 import yaml
 from pydantic import BaseModel, ValidationError
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 
 from laconian_eval.models import (
     ActivationCase,
@@ -18,9 +20,35 @@ _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _CaseT = TypeVar("_CaseT", ResponseCase, ActivationCase)
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[object, object]:
+        self.flatten_mapping(node)
+        mapping: dict[object, object] = {}
+
+        for key_node, value_node in node.value:
+            key: object = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, Hashable):
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found unhashable key",
+                    key_node.start_mark,
+                )
+            if key in mapping:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate mapping key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+
+        return mapping
+
+
 def _read_yaml_mapping(path: Path) -> Mapping[object, object]:
     try:
-        raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw: object = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"{path}: unable to read YAML: {exc}") from exc
 

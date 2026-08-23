@@ -46,6 +46,118 @@ def test_duplicate_case_ids_across_files_are_rejected_with_source_paths(
     assert str(second) in message
 
 
+def test_duplicate_top_level_yaml_key_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-kind.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: activation
+        kind: response
+        cases: []
+        """,
+    )
+
+    with pytest.raises(ValueError, match="duplicate mapping key") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_duplicate_nested_yaml_key_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-prompt.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: This value must not be silently overwritten.
+            prompt: Answer briefly.
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="duplicate mapping key") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_duplicate_case_id_within_one_file_is_rejected_with_source_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "duplicate-id.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Give a short answer.
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="duplicate case id") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_duplicate_scenario_locale_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-locale.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+          - id: direct-alternate-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Give a short answer.
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="exactly one en and one ru") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
 def test_response_scenario_missing_locale_mate_is_rejected_with_source_path(
     tmp_path: Path,
 ) -> None:
@@ -129,6 +241,33 @@ def test_non_mapping_yaml_root_is_rejected_with_source_path(tmp_path: Path) -> N
     assert str(path) in str(exc_info.value)
 
 
+def test_malformed_yaml_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "malformed.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases: [
+        """,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_empty_yaml_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "empty.yaml"
+    path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
 def test_missing_required_top_level_key_is_rejected_with_source_path(tmp_path: Path) -> None:
     path = tmp_path / "missing-cases.yaml"
     write_yaml(
@@ -198,6 +337,43 @@ def test_valid_bilingual_response_file_loads_in_source_order(tmp_path: Path) -> 
     assert isinstance(cases, tuple)
     assert all(isinstance(case, ResponseCase) for case in cases)
     assert tuple(case.id for case in cases) == ("direct-001-ru", "direct-001-en")
+
+
+def test_valid_bilingual_response_pair_split_across_files_preserves_input_order(
+    tmp_path: Path,
+) -> None:
+    english = tmp_path / "english.yaml"
+    russian = tmp_path / "russian.yaml"
+    write_yaml(
+        english,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """,
+    )
+    write_yaml(
+        russian,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+
+    cases = load_response_cases([english, russian])
+
+    assert tuple(case.id for case in cases) == ("direct-001-en", "direct-001-ru")
 
 
 def test_valid_bilingual_activation_file_loads_in_source_order(tmp_path: Path) -> None:
