@@ -15,6 +15,7 @@ from laconian_eval.models import (
     SemanticRubric,
     StrictModel,
 )
+from laconian_eval.scoring import _revalidate_scored_attempts
 from laconian_eval.yaml_io import safe_load_unique
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -114,9 +115,7 @@ def attach_judgments(
     scored: Sequence[ScoredAttempt],
     judgments: Sequence[SemanticJudgment],
 ) -> tuple[ScoredAttempt, ...]:
-    validated_scored = tuple(
-        ScoredAttempt.model_validate(attempt.model_dump(mode="python")) for attempt in scored
-    )
+    validated_scored = _revalidate_scored_attempts(scored)
     scored_by_id: dict[str, ScoredAttempt] = {}
     for attempt in validated_scored:
         if attempt.raw.output_text is None:

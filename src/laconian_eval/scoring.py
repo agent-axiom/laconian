@@ -11,12 +11,42 @@ from pydantic import ValidationError
 from laconian_eval.models import CheckResult, RawAttempt, ResponseCase, ScoredAttempt
 
 _SENTENCE_TERMINATORS = frozenset(".?!\u3002\uff01\uff1f")
-_TRAILING_CLOSERS = frozenset("\"'\u2019\u201d\u00bb)]}")
+_TRAILING_CLOSERS = frozenset("\"'\u2019\u201d\u00bb)]}`*_~")
 _ALWAYS_NONTERMINAL_ABBREVIATIONS = frozenset(
-    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "e.g", "i.e"}
+    {
+        "mr",
+        "mrs",
+        "ms",
+        "dr",
+        "prof",
+        "sr",
+        "jr",
+        "st",
+        "e.g",
+        "i.e",
+        "\u0433",
+        "\u0438\u043c",
+        "\u0442.\u0435",
+        "\u0442.\u043a",
+        "\u0442.\u0434",
+        "\u0442.\u043f",
+        "\u0443\u043b",
+    }
 )
-_CONDITIONAL_ABBREVIATIONS = frozenset({"etc", "vs", "no", "fig", "inc", "ltd"})
-_INITIALISM = re.compile(r"(?:[A-Za-z]\.)+[A-Za-z]")
+_CONDITIONAL_ABBREVIATIONS = frozenset(
+    {
+        "etc",
+        "vs",
+        "no",
+        "fig",
+        "inc",
+        "ltd",
+        "\u0434\u0440",
+        "\u0440\u0438\u0441",
+        "\u0441\u0442\u0440",
+    }
+)
+_URL = re.compile(r"https?://[^\s<>`]+", flags=re.IGNORECASE)
 
 
 def _next_significant_index(text: str, start: int) -> int | None:
@@ -28,9 +58,14 @@ def _next_significant_index(text: str, start: int) -> int | None:
 
 def _preceding_dot_token(text: str, dot_index: int) -> tuple[int, str]:
     start = dot_index - 1
-    while start >= 0 and ((text[start].isascii() and text[start].isalpha()) or text[start] == "."):
+    while start >= 0 and (text[start].isalpha() or text[start] == "."):
         start -= 1
     return start + 1, text[start + 1 : dot_index].strip(".").casefold()
+
+
+def _is_initialism(token: str) -> bool:
+    parts = token.split(".")
+    return len(parts) >= 2 and all(len(part) == 1 and part.isalpha() for part in parts)
 
 
 def _is_list_marker(text: str, dot_index: int) -> bool:
@@ -64,11 +99,46 @@ def _is_nonterminal_dot(text: str, dot_index: int) -> bool:
     next_index = _next_significant_index(text, dot_index + 1)
     if next_index is None:
         return False
-    if token in _ALWAYS_NONTERMINAL_ABBREVIATIONS or _INITIALISM.fullmatch(token):
+    if token in _ALWAYS_NONTERMINAL_ABBREVIATIONS or _is_initialism(token):
         return True
-    if len(token) == 1 and token.isascii() and token.isalpha():
+    if len(token) == 1 and token.isalpha():
         return True
     return token in _CONDITIONAL_ABBREVIATIONS and not text[next_index].isupper()
+
+
+def _protect_code_punctuation(text: str, protected: set[int]) -> None:
+    index = 0
+    while index < len(text):
+        if text[index] != "`":
+            index += 1
+            continue
+        marker_end = index + 1
+        while marker_end < len(text) and text[marker_end] == "`":
+            marker_end += 1
+        marker = text[index:marker_end]
+        closing = text.find(marker, marker_end)
+        span_end = len(text) if closing < 0 else closing + len(marker)
+        protected.update(
+            position
+            for position in range(index, span_end)
+            if text[position] in _SENTENCE_TERMINATORS
+        )
+        index = span_end
+
+
+def _protected_punctuation(text: str) -> frozenset[int]:
+    protected: set[int] = set()
+    _protect_code_punctuation(text, protected)
+    for match in _URL.finditer(text):
+        end = match.end()
+        while end > match.start() and text[end - 1] in _SENTENCE_TERMINATORS:
+            end -= 1
+        protected.update(
+            position
+            for position in range(match.start(), end)
+            if text[position] in _SENTENCE_TERMINATORS
+        )
+    return frozenset(protected)
 
 
 def _consume_boundary_cluster(text: str, start: int) -> int:
@@ -88,12 +158,18 @@ def count_sentences(text: str) -> int:
 
     count = 0
     segment_has_content = False
+    protected = _protected_punctuation(text)
     index = 0
     while index < len(text):
         character = text[index]
         if character not in _SENTENCE_TERMINATORS:
             if not character.isspace() and character not in _TRAILING_CLOSERS:
                 segment_has_content = True
+            index += 1
+            continue
+
+        if index in protected:
+            segment_has_content = True
             index += 1
             continue
 
@@ -249,10 +325,21 @@ def score_terminal_attempts(
     return tuple(scored)
 
 
+def _revalidate_scored_attempt(scored: ScoredAttempt) -> ScoredAttempt:
+    return ScoredAttempt.model_validate(scored.model_dump(mode="python"))
+
+
+def _revalidate_scored_attempts(
+    scored: Sequence[ScoredAttempt],
+) -> tuple[ScoredAttempt, ...]:
+    return tuple(_revalidate_scored_attempt(attempt) for attempt in scored)
+
+
 def eligible_for_pairing(scored: ScoredAttempt, require_semantic: bool) -> bool:
-    if not scored.hard_pass:
+    validated = _revalidate_scored_attempt(scored)
+    if not validated.hard_pass:
         return False
-    return not require_semantic or scored.semantic_pass is True
+    return not require_semantic or validated.semantic_pass is True
 
 
 def _append_scored(file: TextIO, scored: ScoredAttempt) -> None:
@@ -262,12 +349,13 @@ def _append_scored(file: TextIO, scored: ScoredAttempt) -> None:
 
 
 def write_scored_jsonl(scored: Sequence[ScoredAttempt], path: Path) -> None:
+    validated = _revalidate_scored_attempts(scored)
     if path.exists():
         raise FileExistsError(f"{path}: refuse to overwrite existing path")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8") as output_file:
-            for attempt in scored:
+            for attempt in validated:
                 _append_scored(output_file, attempt)
     except FileExistsError as exc:
         raise FileExistsError(f"{path}: refuse to overwrite existing path") from exc

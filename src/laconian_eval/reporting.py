@@ -13,7 +13,7 @@ from laconian_eval.models import (
     ScoredAttempt,
     TokenUsageModel,
 )
-from laconian_eval.scoring import eligible_for_pairing
+from laconian_eval.scoring import _revalidate_scored_attempts, eligible_for_pairing
 
 ArmName = Literal["baseline", "concise", "caveman", "if"]
 _ARM_ORDER: tuple[ArmName, ...] = ("baseline", "concise", "caveman", "if")
@@ -159,15 +159,16 @@ def summarize(
     require_semantic: bool = False,
     price_snapshot: PriceSnapshot | None = None,
 ) -> RunSummary:
-    for attempt in scored:
+    validated_scored = _revalidate_scored_attempts(scored)
+    for attempt in validated_scored:
         if not attempt.raw.terminal:
             raise ValueError("summaries accept terminal raw records only")
         if require_semantic and attempt.hard_pass and attempt.semantic_pass is None:
             raise ValueError("semantic judgment coverage is incomplete for hard-pass attempts")
 
-    instances = _group_instances(scored)
+    instances = _group_instances(validated_scored)
     by_arm: dict[ArmName, list[ScoredAttempt]] = {}
-    for attempt in scored:
+    for attempt in validated_scored:
         by_arm.setdefault(attempt.raw.arm, []).append(attempt)
 
     arms = tuple(
@@ -175,14 +176,14 @@ def summarize(
     )
     provenance_by_key = {
         (provenance.provider, provenance.model, provenance.prompt_sha256): provenance
-        for attempt in scored
+        for attempt in validated_scored
         if (provenance := attempt.judge_provenance) is not None
     }
     judge_provenance = tuple(provenance_by_key[key] for key in sorted(provenance_by_key))
     return RunSummary(
         quality_gate="semantic" if require_semantic else "hard",
-        raw_attempts=sum(attempt.raw.attempt for attempt in scored),
-        terminal_records=len(scored),
+        raw_attempts=sum(attempt.raw.attempt for attempt in validated_scored),
+        terminal_records=len(validated_scored),
         arms=arms,
         paired=_paired_metrics(instances, require_semantic=require_semantic),
         price_snapshot=price_snapshot,

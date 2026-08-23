@@ -4,6 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from laconian_eval.models import (
     ErrorInfo,
@@ -243,6 +244,15 @@ def test_pairing_rejects_duplicate_arm_in_one_instance() -> None:
 
     with pytest.raises(ValueError, match=r"duplicate arm.*instance"):
         summarize((duplicate, duplicate))
+
+
+def test_summarize_revalidates_a_bypassed_failed_check() -> None:
+    response_case = case(required=("REQUIRED",))
+    failed = scored(response_case, arm="if", output="missing", output_tokens=1)
+    tampered = failed.model_copy(update={"hard_pass": True})
+
+    with pytest.raises(ValidationError, match="hard_pass"):
+        summarize((tampered,))
 
 
 def test_arm_metrics_count_attempts_errors_and_violation_categories() -> None:

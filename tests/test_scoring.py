@@ -218,6 +218,13 @@ def test_required_json_keys_reject_non_rfc_constants_fences_and_prose(output: st
         ("1. Install. 2. Verify.", 2),
         ('He said, "Ready?")', 1),
         ('Really?"!', 1),
+        ("https://example.test/search?q=x.", 1),
+        ("Use `foo.`", 1),
+        ("Use `foo?bar` in the command.", 1),
+        ("Run ```foo.\nbar?``` now.", 1),
+        ("\u0433. \u041c\u043e\u0441\u043a\u0432\u0430", 1),
+        ("\u0410. \u0421. \u041f\u0443\u0448\u043a\u0438\u043d", 1),
+        ("\u0442.\u0435. \u043f\u0440\u0438\u043c\u0435\u0440", 1),
     ],
 )
 def test_count_sentences_handles_english_cjk_and_punctuation_runs(text: str, expected: int) -> None:
@@ -391,6 +398,30 @@ def test_scored_jsonl_round_trip_is_deterministic_and_refuses_overwrite(
     assert "Привет" in path.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError, match="refuse"):
         write_scored_jsonl((), path)
+
+
+def test_pairing_and_scored_writer_revalidate_bypassed_models_before_output(
+    tmp_path: Path,
+) -> None:
+    case = response_case()
+    valid = score_attempt(case, raw_attempt(case))
+    provider_error = score_attempt(
+        case,
+        raw_attempt(
+            case,
+            output=None,
+            error=ErrorInfo(kind="timeout", message="Timed out.", retryable=True),
+        ),
+    )
+    tampered = provider_error.model_copy(update={"hard_pass": True})
+
+    with pytest.raises(ValidationError, match="hard_pass"):
+        eligible_for_pairing(tampered, require_semantic=False)
+
+    path = tmp_path / "must-not-exist.jsonl"
+    with pytest.raises(ValidationError, match="hard_pass"):
+        write_scored_jsonl((valid, tampered), path)
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(
