@@ -3,7 +3,7 @@
 ## Private reporting
 
 Report a suspected vulnerability through
-[GitHub private vulnerability reporting](https://github.com/dKosarevsky/laconian/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/agent-axiom/laconian/security/advisories/new).
 Do not open a public issue, discussion, or pull request for an undisclosed vulnerability. Do not
 include real credentials in a report or reproduction; use a clearly fake marker instead.
 

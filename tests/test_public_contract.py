@@ -329,7 +329,7 @@ def test_contributing_documents_quality_and_evidence_rules() -> None:
 def test_security_uses_private_reporting_and_names_scope() -> None:
     text = _read("SECURITY.md")
     for phrase in (
-        "https://github.com/dKosarevsky/laconian/security/advisories/new",
+        "https://github.com/agent-axiom/laconian/security/advisories/new",
         "secret exposure",
         "unsafe execution of model output",
         "benchmark artifact path traversal",
