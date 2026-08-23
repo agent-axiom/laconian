@@ -82,6 +82,50 @@ def judgment(response_id: str, *, passed: bool = True) -> SemanticJudgment:
     )
 
 
+@pytest.mark.parametrize("field", ["provider", "model"])
+def test_judge_provenance_rejects_whitespace_only_identifiers(field: str) -> None:
+    payload = {
+        "provider": "fixture",
+        "model": "fixture-judge-v1",
+        "prompt_sha256": digest("judge prompt"),
+    }
+    payload[field] = " \t\n"
+
+    with pytest.raises(ValidationError, match=field):
+        JudgeProvenance.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["judge_provider", "judge_model"])
+def test_semantic_judgment_rejects_whitespace_only_identifiers(field: str) -> None:
+    response_id = digest("response")
+    payload = judgment(response_id).model_dump(mode="python")
+    payload[field] = " \t\n"
+
+    with pytest.raises(ValidationError, match=field):
+        SemanticJudgment.model_validate(payload)
+
+
+def test_judge_identifiers_preserve_exact_nonblank_values() -> None:
+    prompt_hash = digest("judge prompt")
+    provenance = JudgeProvenance(
+        provider=" fixture ",
+        model=" fixture-judge-v1 ",
+        prompt_sha256=prompt_hash,
+    )
+    semantic = SemanticJudgment(
+        response_id=digest("response"),
+        passed=True,
+        defect_codes=(),
+        evidence="Synthetic evidence.",
+        judge_provider=" fixture ",
+        judge_model=" fixture-judge-v1 ",
+        judge_prompt_sha256=prompt_hash,
+    )
+
+    assert provenance.provider == semantic.judge_provider == " fixture "
+    assert provenance.model == semantic.judge_model == " fixture-judge-v1 "
+
+
 def test_judge_request_is_blind_and_contains_only_the_allowed_fields() -> None:
     response_case = case()
 

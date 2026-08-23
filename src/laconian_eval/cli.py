@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -263,6 +264,32 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _path_identity(path: Path) -> tuple[int, int]:
+    metadata = path.lstat()
+    return metadata.st_dev, metadata.st_ino
+
+
+def _has_identity(path: Path, identity: tuple[int, int]) -> bool:
+    try:
+        return _path_identity(path) == identity
+    except OSError:
+        return False
+
+
+def _cleanup_score_reservation(
+    output: Path,
+    reservation_identity: tuple[int, int],
+    published_files: Sequence[tuple[Path, tuple[int, int]]],
+) -> None:
+    for path, identity in reversed(published_files):
+        if _has_identity(path, identity):
+            with suppress(OSError):
+                path.unlink()
+    if _has_identity(output, reservation_identity):
+        with suppress(OSError):
+            output.rmdir()
+
+
 def _publish_score_output(
     scored: Sequence[ScoredAttempt],
     summary: RunSummary,
@@ -276,6 +303,9 @@ def _publish_score_output(
             dir=output.parent,
         )
     )
+    reservation_identity: tuple[int, int] | None = None
+    published_files: list[tuple[Path, tuple[int, int]]] = []
+    published = False
     try:
         scored_path = staging / "scored.jsonl"
         summary_path = staging / "summary.json"
@@ -285,13 +315,22 @@ def _publish_score_output(
         _fsync_file(summary_path)
         _fsync_directory(staging)
         _preflight_score_output(output)
-        staging.rename(output)
         try:
-            _fsync_directory(output.parent)
-        except OSError:
-            output.rename(staging)
-            raise
+            output.mkdir()
+        except FileExistsError as exc:
+            raise FileExistsError(f"{output}: refuse to overwrite existing output") from exc
+        reservation_identity = _path_identity(output)
+        for staged_path in (scored_path, summary_path):
+            destination = output / staged_path.name
+            staged_identity = _path_identity(staged_path)
+            staged_path.rename(destination)
+            published_files.append((destination, staged_identity))
+        _fsync_directory(output)
+        _fsync_directory(output.parent)
+        published = True
     finally:
+        if not published and reservation_identity is not None:
+            _cleanup_score_reservation(output, reservation_identity, published_files)
         if staging.exists():
             shutil.rmtree(staging)
 

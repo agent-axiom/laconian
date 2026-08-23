@@ -720,6 +720,106 @@ def test_resume_terminal_authentication_stops_before_unfinished_items(tmp_path: 
     assert sleeps == []
 
 
+def test_resume_rejects_any_record_after_terminal_authentication_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(retries=2, arm_names=("baseline", "concise"))
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    authentication = existing_attempt(
+        manifest_hash=expected_hash,
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    )
+    later_success = existing_attempt(
+        manifest_hash=expected_hash,
+        arm_name="concise",
+    ).model_copy(update={"instruction_sha256": ARMS[1].sha256})
+    write_attempts(path, (authentication, later_success))
+    original_raw = path.read_bytes()
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    with pytest.raises(ValueError, match="after terminal authentication"):
+        run_to_jsonl(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=ARMS[:2],
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert path.read_bytes() == original_raw
+    assert provider.requests == []
+
+
+def test_complete_run_rejects_authentication_stopped_history_even_when_plan_is_full(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(retries=2, arm_names=("baseline", "concise"))
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    success = existing_attempt(manifest_hash=expected_hash)
+    authentication = existing_attempt(
+        manifest_hash=expected_hash,
+        arm_name="concise",
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    ).model_copy(update={"instruction_sha256": ARMS[1].sha256})
+    attempts = (success, authentication)
+    write_attempts(path, attempts)
+
+    with pytest.raises(ValueError, match="authentication-stopped"):
+        runner_module.validate_complete_run(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=ARMS[:2],
+            attempts=attempts,
+            path=path,
+            run_id="run-1",
+        )
+
+
+def test_resume_with_valid_history_ending_at_authentication_still_makes_no_call(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(
+        retries=2,
+        arm_names=("baseline", "concise", "caveman"),
+    )
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    success = existing_attempt(manifest_hash=expected_hash)
+    authentication = existing_attempt(
+        manifest_hash=expected_hash,
+        arm_name="concise",
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    ).model_copy(update={"instruction_sha256": ARMS[1].sha256})
+    write_attempts(path, (success, authentication))
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=ARMS[:3],
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=lambda _: None,
+    )
+
+    assert resumed == (success, authentication)
+    assert provider.requests == []
+
+
 @pytest.mark.parametrize(
     ("defect", "updates"),
     [
@@ -1417,6 +1517,39 @@ def test_raw_attempt_requires_exactly_one_output_or_error() -> None:
 
     empty_output = RawAttempt.model_validate({**payload, "output_text": "", "error": None})
     assert empty_output.output_text == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider", " \t"),
+        ("model", "\n "),
+        ("response_model", " \t\n"),
+    ],
+)
+def test_raw_attempt_rejects_whitespace_only_provenance(field: str, value: str) -> None:
+    payload = existing_attempt(manifest_hash="manifest").model_dump(mode="python")
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match=field):
+        RawAttempt.model_validate(payload)
+
+
+def test_raw_attempt_preserves_exact_nonblank_provenance() -> None:
+    payload = existing_attempt(manifest_hash="manifest").model_dump(mode="python")
+    payload.update(
+        {
+            "provider": " fixture ",
+            "model": " fixture-v1 ",
+            "response_model": " resolved-v1 ",
+        }
+    )
+
+    attempt = RawAttempt.model_validate(payload)
+
+    assert attempt.provider == " fixture "
+    assert attempt.model == " fixture-v1 "
+    assert attempt.response_model == " resolved-v1 "
 
 
 def test_token_usage_rejects_cached_tokens_above_input_tokens() -> None:

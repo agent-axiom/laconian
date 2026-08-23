@@ -52,6 +52,18 @@ def test_manifest_rejects_duplicate_arms() -> None:
         )
 
 
+@pytest.mark.parametrize("model", [" ", "\t\n"])
+def test_provider_config_rejects_whitespace_only_model(model: str) -> None:
+    with pytest.raises(ValidationError, match="model"):
+        ProviderConfig.model_validate({"kind": "fake", "model": model})
+
+
+def test_provider_config_preserves_exact_nonblank_model() -> None:
+    config = ProviderConfig.model_validate({"kind": "fake", "model": " fixture-v1 "})
+
+    assert config.model == " fixture-v1 "
+
+
 @pytest.mark.parametrize("empty_field", ["case_files", "arms"])
 def test_manifest_rejects_empty_plan_collections(empty_field: str) -> None:
     payload: dict[str, object] = {

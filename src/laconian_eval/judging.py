@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from yaml import YAMLError
 
 from laconian_eval.models import (
@@ -37,6 +37,13 @@ class SemanticJudgment(StrictModel):
     judge_provider: str = Field(min_length=1)
     judge_model: str = Field(min_length=1)
     judge_prompt_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("judge_provider", "judge_model")
+    @classmethod
+    def reject_blank_judge_identifiers(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
 
 
 class _JudgmentFile(StrictModel):

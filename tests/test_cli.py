@@ -162,6 +162,38 @@ def test_run_rejects_empty_plan_configuration_before_result_artifacts(
     assert empty_field in capsys.readouterr().err
 
 
+def test_openai_run_rejects_whitespace_model_before_result_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(REPOSITORY_ROOT)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    manifest_path = tmp_path / "blank-model.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "run_name": "blank-model",
+                "provider": {
+                    "kind": "openai",
+                    "model": " \t",
+                    "api_key_env": "OPENAI_API_KEY",
+                },
+                "case_files": ["evals/cases/response-smoke.yaml"],
+                "arms": ["baseline"],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    results_root = tmp_path / "results"
+
+    assert main(["run", str(manifest_path), "--results-root", str(results_root)]) == 2
+    assert not results_root.exists()
+    assert "model" in capsys.readouterr().err.lower()
+
+
 def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -274,6 +306,46 @@ def test_score_refuses_an_existing_empty_output_directory(
     assert "overwrite" in capsys.readouterr().err.lower()
 
 
+def test_score_concurrent_empty_directory_is_preserved_and_rerun_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    output = tmp_path / "concurrent-score"
+    args = [
+        "score",
+        str(run_directory / "raw.jsonl"),
+        "--cases",
+        "evals/cases/response-smoke.yaml",
+        "--output",
+        str(output),
+    ]
+    original_preflight = cli._preflight_score_output
+    preflights = 0
+
+    def create_after_final_preflight(path: Path) -> None:
+        nonlocal preflights
+        original_preflight(path)
+        preflights += 1
+        if preflights == 3:
+            path.mkdir()
+
+    monkeypatch.setattr(cli, "_preflight_score_output", create_after_final_preflight)
+
+    assert main(args) == 2
+    assert preflights == 3
+    assert output.is_dir()
+    assert tuple(output.iterdir()) == ()
+    assert "overwrite" in capsys.readouterr().err.lower()
+    assert not tuple(tmp_path.glob(f".{output.name}.tmp-*"))
+
+    output.rmdir()
+    monkeypatch.setattr(cli, "_preflight_score_output", original_preflight)
+    assert main(args) == 0
+    assert {path.name for path in output.iterdir()} == {"scored.jsonl", "summary.json"}
+
+
 def test_score_publish_is_failure_atomic_and_rerunnable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -339,10 +411,11 @@ def test_score_publish_fsyncs_parent_and_rolls_back_if_that_fails(
     monkeypatch.setattr(cli, "_fsync_directory", fail_parent_fsync)
 
     assert main(args) == 2
-    assert len(fsynced) == 2
+    assert len(fsynced) == 3
     assert fsynced[0].parent == output.parent
     assert fsynced[0] != output
-    assert fsynced[1] == output.parent
+    assert fsynced[1] == output
+    assert fsynced[2] == output.parent
     assert not output.exists()
     assert "parent fsync failure" in capsys.readouterr().err
 

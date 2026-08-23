@@ -328,6 +328,12 @@ def _validate_partial_history(
             if attempt.instruction_sha256 != item.arm.sha256:
                 raise ValueError(f"{path}: raw instruction_sha256 conflicts with arm for {key}")
 
+    authentication_seen = False
+    for attempt in attempts:
+        if authentication_seen:
+            raise ValueError(f"{path}: raw record appears after terminal authentication")
+        authentication_seen = _is_terminal_authentication(attempt)
+
     return _ValidatedHistory(plan=plan, by_key=by_key, positions=positions)
 
 
@@ -348,6 +354,8 @@ def validate_complete_run(
         path=path,
         run_id=run_id,
     )
+    if any(_is_terminal_authentication(attempt) for attempt in attempts):
+        raise ValueError(f"{path}: authentication-stopped run is incomplete and cannot be scored")
     plan_by_key = {item.key: item for item in validated.plan}
     missing = sorted(set(plan_by_key) - set(validated.by_key))
     if missing:

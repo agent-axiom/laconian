@@ -6,6 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 ProviderKind = Literal["fake", "replay", "openai"]
 
 
+def _require_nonblank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -109,6 +115,11 @@ class ProviderConfig(StrictModel):
     api_key_env: str | None = None
     replay_file: str | None = None
 
+    @field_validator("model")
+    @classmethod
+    def reject_blank_model(cls, value: str) -> str:
+        return _require_nonblank(value)
+
     @model_validator(mode="after")
     def validate_kind_configuration(self) -> Self:
         if self.kind == "openai" and (self.api_key_env is None or not self.api_key_env.strip()):
@@ -205,6 +216,16 @@ class RawAttempt(StrictModel):
     finish_reason: str | None = None
     error: ErrorInfo | None = None
 
+    @field_validator("provider", "model")
+    @classmethod
+    def reject_blank_required_provenance(cls, value: str) -> str:
+        return _require_nonblank(value)
+
+    @field_validator("response_model")
+    @classmethod
+    def reject_blank_response_model(cls, value: str | None) -> str | None:
+        return None if value is None else _require_nonblank(value)
+
     @model_validator(mode="after")
     def validate_output_or_error(self) -> Self:
         if (self.output_text is None) == (self.error is None):
@@ -222,6 +243,11 @@ class JudgeProvenance(StrictModel):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("provider", "model")
+    @classmethod
+    def reject_blank_identifiers(cls, value: str) -> str:
+        return _require_nonblank(value)
 
 
 class ScoredAttempt(StrictModel):
