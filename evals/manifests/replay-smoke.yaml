@@ -1,0 +1,22 @@
+schema_version: "1"
+run_name: replay-smoke
+provider:
+  kind: replay
+  model: replay-v1
+  replay_file: tests/fixtures/replay-responses.yaml
+case_files:
+  - evals/cases/response-smoke.yaml
+arms:
+  - baseline
+  - concise
+  - caveman
+  - if
+repetitions: 1
+arm_order_seed: 1729
+instruction_placement: system_suffix
+generation:
+  max_output_tokens: 1024
+  temperature: null
+retry:
+  max_transient_retries: 0
+  timeout_seconds: 5
