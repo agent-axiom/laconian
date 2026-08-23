@@ -301,6 +301,16 @@ def test_completed_response_rejects_blank_output_with_request_id(output_text: st
             True,
             "Public server failure.",
         ),
+        (
+            "failed",
+            SimpleNamespace(
+                code="rate_limit_exceeded",
+                message="Public rate-limit failure.",
+            ),
+            "rate_limit_exceeded",
+            True,
+            "Public rate-limit failure.",
+        ),
         ("cancelled", None, "cancelled", False, "cancelled"),
     ],
 )

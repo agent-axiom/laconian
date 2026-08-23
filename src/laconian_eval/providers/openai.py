@@ -209,7 +209,13 @@ def _parse_response(response: object) -> GenerationResult:
         raise ProviderError(
             kind=code,
             message=message,
-            retryable=code in {"rate_limit", "server_error", "vector_store_timeout"},
+            retryable=code
+            in {
+                "rate_limit",
+                "rate_limit_exceeded",
+                "server_error",
+                "vector_store_timeout",
+            },
             request_id=request_id,
         )
     if status == "cancelled":
