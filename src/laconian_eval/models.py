@@ -72,6 +72,13 @@ class ActivationCase(StrictModel):
             raise ValueError("prompt must not be blank")
         return value
 
+    @field_validator("rationale")
+    @classmethod
+    def reject_blank_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("rationale must not be blank")
+        return value
+
 
 class ResponseCaseFile(StrictModel):
     schema_version: Literal["1"]

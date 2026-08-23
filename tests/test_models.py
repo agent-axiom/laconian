@@ -77,6 +77,20 @@ def test_activation_case_rejects_whitespace_only_prompt() -> None:
         )
 
 
+def test_activation_case_rejects_whitespace_only_rationale() -> None:
+    with pytest.raises(ValidationError, match="rationale"):
+        ActivationCase.model_validate(
+            {
+                "id": "activation-explicit-en",
+                "scenario_id": "activation-explicit",
+                "locale": "en",
+                "prompt": "/if Explain retries.",
+                "expected_activation": True,
+                "rationale": " \t\n",
+            }
+        )
+
+
 def test_hard_constraints_rejects_inverted_sentence_bounds() -> None:
     with pytest.raises(ValidationError, match="min_sentences"):
         HardConstraints.model_validate({"min_sentences": 3, "max_sentences": 2})
