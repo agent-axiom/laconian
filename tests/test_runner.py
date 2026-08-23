@@ -114,11 +114,12 @@ def existing_attempt(
     terminal: bool = True,
     retry_of_attempt: int | None = None,
     backoff_ms: int | None = None,
+    error_retryable: bool = True,
 ) -> RawAttempt:
     error = None
     output_text: str | None = "Done."
     if not terminal:
-        error = ErrorInfo(kind="rate_limit", message="Retry.", retryable=True)
+        error = ErrorInfo(kind="rate_limit", message="Retry.", retryable=error_retryable)
         output_text = None
     return RawAttempt(
         run_id=run_id,
@@ -391,6 +392,126 @@ def test_resume_skips_terminal_key_without_provider_call(tmp_path: Path) -> None
     assert provider.requests == []
 
 
+def test_resume_skips_valid_sequential_retry_chain_ending_terminal(tmp_path: Path) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    existing = (
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=1,
+            terminal=False,
+            backoff_ms=100,
+        ),
+        existing_attempt(
+            manifest_hash=expected_hash,
+            attempt=2,
+            terminal=True,
+            retry_of_attempt=1,
+        ),
+    )
+    write_attempts(path, existing)
+    provider = ScriptedProvider([])
+    sleeps: list[float] = []
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=(ARMS[0],),
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=sleeps.append,
+    )
+
+    assert resumed == existing
+    assert provider.requests == []
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "history_spec",
+    [
+        (
+            {"attempt": 1, "terminal": True},
+            {"attempt": 2, "terminal": True, "retry_of_attempt": 1},
+        ),
+        (
+            {"attempt": 1, "terminal": True},
+            {
+                "attempt": 2,
+                "terminal": False,
+                "retry_of_attempt": 1,
+                "backoff_ms": 200,
+            },
+        ),
+        (
+            {"attempt": 1, "terminal": False, "backoff_ms": 100},
+            {"attempt": 3, "terminal": True, "retry_of_attempt": 1},
+        ),
+        (
+            {
+                "attempt": 2,
+                "terminal": False,
+                "retry_of_attempt": 1,
+                "backoff_ms": 200,
+            },
+            {"attempt": 1, "terminal": True},
+        ),
+        (
+            {"attempt": 1, "terminal": False, "backoff_ms": 100},
+            {"attempt": 2, "terminal": True},
+        ),
+        (
+            {
+                "attempt": 1,
+                "terminal": False,
+                "backoff_ms": 100,
+                "error_retryable": False,
+            },
+            {"attempt": 2, "terminal": True, "retry_of_attempt": 1},
+        ),
+    ],
+    ids=(
+        "duplicate-terminal",
+        "record-after-terminal",
+        "attempt-gap",
+        "out-of-order",
+        "bad-retry-link",
+        "nonretryable-nonterminal",
+    ),
+)
+def test_resume_rejects_malformed_history_even_when_terminal_exists(
+    tmp_path: Path,
+    history_spec: tuple[dict[str, object], ...],
+) -> None:
+    manifest = run_manifest(retries=5)
+    path = tmp_path / "raw.jsonl"
+    history = tuple(
+        existing_attempt(manifest_hash=manifest_sha256(manifest), **spec) for spec in history_spec
+    )
+    write_attempts(path, history)
+    original_raw = path.read_bytes()
+    provider = ScriptedProvider([])
+    sleeps: list[float] = []
+
+    with pytest.raises(ValueError) as error:
+        run_to_jsonl(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=sleeps.append,
+        )
+
+    assert str(path) in str(error.value)
+    assert path.read_bytes() == original_raw
+    assert provider.requests == []
+    assert sleeps == []
+
+
 def test_resume_continues_nonterminal_retry_chain(tmp_path: Path) -> None:
     manifest = run_manifest(retries=2)
     path = tmp_path / "raw.jsonl"
@@ -402,6 +523,7 @@ def test_resume_continues_nonterminal_retry_chain(tmp_path: Path) -> None:
     )
     write_attempts(path, (prior,))
     provider = ScriptedProvider([GenerationResult(output_text="Recovered.")])
+    sleeps: list[float] = []
 
     attempts = run_to_jsonl(
         manifest=manifest,
@@ -410,7 +532,7 @@ def test_resume_continues_nonterminal_retry_chain(tmp_path: Path) -> None:
         provider=provider,
         output_path=path,
         run_id="run-1",
-        sleep=lambda _: None,
+        sleep=sleeps.append,
     )
 
     assert attempts[0] == prior
@@ -420,11 +542,18 @@ def test_resume_continues_nonterminal_retry_chain(tmp_path: Path) -> None:
     assert attempts[1].terminal is True
     assert attempts[1].output_text == "Recovered."
     assert len(provider.requests) == 1
+    assert sleeps == []
 
 
 def test_resume_rejects_exhausted_nonterminal_retry_chain(tmp_path: Path) -> None:
     manifest = run_manifest(retries=1)
     path = tmp_path / "raw.jsonl"
+    first = existing_attempt(
+        manifest_hash=manifest_sha256(manifest),
+        attempt=1,
+        terminal=False,
+        backoff_ms=100,
+    )
     exhausted = existing_attempt(
         manifest_hash=manifest_sha256(manifest),
         attempt=2,
@@ -432,7 +561,7 @@ def test_resume_rejects_exhausted_nonterminal_retry_chain(tmp_path: Path) -> Non
         retry_of_attempt=1,
         backoff_ms=200,
     )
-    write_attempts(path, (exhausted,))
+    write_attempts(path, (first, exhausted))
     provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
 
     with pytest.raises(ValueError, match="nonterminal") as error:
@@ -533,6 +662,39 @@ def test_error_secrets_are_redacted_from_records_and_raw_file(tmp_path: Path) ->
     raw = path.read_text(encoding="utf-8")
     assert "token-123" not in raw
     assert "token" not in raw
+    assert raw.count("[REDACTED]") == 5
+
+
+def test_success_secrets_are_redacted_from_records_and_raw_file(tmp_path: Path) -> None:
+    path = tmp_path / "raw.jsonl"
+    provider = ScriptedProvider(
+        [
+            GenerationResult(
+                output_text="secret-long then secret",
+                request_id="request-secret-long-secret",
+                finish_reason="finish-secret",
+            )
+        ]
+    )
+
+    attempts = run_to_jsonl(
+        manifest=run_manifest(),
+        cases=(response_case(),),
+        arms=(ARMS[0],),
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        secret_values=("secret", "", "secret-long"),
+        sleep=lambda _: None,
+    )
+
+    attempt = attempts[0]
+    assert attempt.output_text == "[REDACTED] then [REDACTED]"
+    assert attempt.request_id == "request-[REDACTED]-[REDACTED]"
+    assert attempt.finish_reason == "finish-[REDACTED]"
+    raw = path.read_text(encoding="utf-8")
+    assert "secret-long" not in raw
+    assert "secret" not in raw
     assert raw.count("[REDACTED]") == 5
 
 

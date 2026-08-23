@@ -163,24 +163,28 @@ def _resume_position(
     path: Path,
     key: str,
 ) -> tuple[int, int | None] | None:
-    if any(attempt.terminal for attempt in existing):
-        return None
     if not existing:
         return 1, None
 
     expected_attempt = 1
+    terminal_seen = False
     for attempt in existing:
         expected_retry = None if expected_attempt == 1 else expected_attempt - 1
         if (
-            attempt.attempt != expected_attempt
+            terminal_seen
+            or attempt.attempt != expected_attempt
             or attempt.retry_of_attempt != expected_retry
-            or attempt.error is None
-            or not attempt.error.retryable
+            or (not attempt.terminal and (attempt.error is None or not attempt.error.retryable))
         ):
-            raise ValueError(f"{path}: impossible nonterminal retry chain for {key}")
+            raise ValueError(f"{path}: impossible historical retry chain for {key}")
+        terminal_seen = attempt.terminal
         expected_attempt += 1
 
     previous_attempt = existing[-1].attempt
+    if previous_attempt > max_attempts:
+        raise ValueError(f"{path}: historical retry chain exceeds retry budget for {key}")
+    if terminal_seen:
+        return None
     if previous_attempt >= max_attempts:
         raise ValueError(f"{path}: exhausted nonterminal retry chain for {key}")
     return previous_attempt + 1, previous_attempt
@@ -295,10 +299,10 @@ def run_to_jsonl(
                     model=manifest.provider.model,
                     started_at=started_at,
                     elapsed_ms=elapsed_ms,
-                    output_text=result.output_text,
+                    output_text=cast(str, redact(result.output_text)),
                     usage=_usage(result),
-                    request_id=result.request_id,
-                    finish_reason=result.finish_reason,
+                    request_id=redact(result.request_id),
+                    finish_reason=redact(result.finish_reason),
                 )
                 _append_attempt(output_file, attempt)
                 attempts.append(attempt)
