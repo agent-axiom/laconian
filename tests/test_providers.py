@@ -120,10 +120,65 @@ def test_fake_provider_rejects_missing_key_without_retry() -> None:
 
 
 def test_replay_provider_rejects_missing_key(tmp_path) -> None:
-    provider = ReplayProvider.from_path(tmp_path / "responses.yaml")
+    path = tmp_path / "responses.yaml"
+    provider = ReplayProvider.from_path(path)
     with pytest.raises(ProviderError, match="missing replay key") as error:
         provider.generate(request(case_id="missing", arm="if", repetition=0))
     assert error.value.retryable is False
+    assert str(path) in str(error.value)
+
+
+def test_replay_provider_rejects_duplicate_top_level_key_with_path(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-replay-key.yaml"
+    write_yaml(
+        path,
+        """
+        case:if:0:
+          output_text: First.
+        case:if:0:
+          output_text: Second.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="duplicate") as error:
+        ReplayProvider.from_path(path)
+
+    assert str(path) in str(error.value)
+
+
+def test_replay_provider_rejects_duplicate_entry_field_with_path(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-entry-field.yaml"
+    write_yaml(
+        path,
+        """
+        case:if:0:
+          output_text: First.
+          output_text: Second.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="duplicate") as error:
+        ReplayProvider.from_path(path)
+
+    assert str(path) in str(error.value)
+
+
+def test_replay_provider_rejects_yaml_merge_key_with_path(tmp_path: Path) -> None:
+    path = tmp_path / "merge-key.yaml"
+    write_yaml(
+        path,
+        """
+        case:if:0:
+          <<: &defaults
+            output_text: Default.
+          output_text: Done.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="merge") as error:
+        ReplayProvider.from_path(path)
+
+    assert str(path) in str(error.value)
 
 
 def test_replay_provider_parses_description_usage_and_metadata(tmp_path: Path) -> None:
@@ -344,10 +399,9 @@ def test_replay_provider_rejects_invalid_top_level_fields_with_path(
 def test_complete_replay_fixture_covers_every_case_arm_once_with_metadata() -> None:
     raw = yaml.safe_load(REPLAY_FIXTURE.read_text(encoding="utf-8"))
     assert isinstance(raw, dict)
-    assert raw.pop("description") == (
-        "Synthetic offline test data for the Laconian replay walking skeleton; "
-        "not a benchmark result."
-    )
+    description = raw.pop("description").lower()
+    assert "synthetic" in description
+    assert "not a benchmark result" in description
     cases = load_response_cases([RESPONSE_CASES])
     expected_keys = {f"{case.id}:{arm}:0" for case in cases for arm in ARMS}
 

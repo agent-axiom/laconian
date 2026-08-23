@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from pathlib import Path
 
-import yaml
+from yaml import YAMLError
 
 from laconian_eval.providers.base import (
     GenerationRequest,
@@ -9,6 +9,7 @@ from laconian_eval.providers.base import (
     ProviderError,
     TokenUsage,
 )
+from laconian_eval.yaml_io import safe_load_unique
 
 _ENTRY_FIELDS = frozenset(
     {
@@ -97,23 +98,28 @@ def _parse_entry(path: Path, key: str, raw_entry: object) -> GenerationResult:
 
 
 class ReplayProvider:
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_source")
 
-    def __init__(self, entries: Mapping[str, GenerationResult]) -> None:
+    def __init__(
+        self,
+        entries: Mapping[str, GenerationResult],
+        source: Path | None = None,
+    ) -> None:
         self._entries = dict(entries)
+        self._source = source
 
     @classmethod
     def from_path(cls, path: Path) -> "ReplayProvider":
         try:
             content = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return cls({})
+            return cls({}, source=path)
         except (OSError, UnicodeError) as exc:
             raise ValueError(f"{path}: unable to read replay YAML: {exc}") from exc
 
         try:
-            raw: object = yaml.safe_load(content)
-        except yaml.YAMLError as exc:
+            raw = safe_load_unique(content)
+        except YAMLError as exc:
             raise ValueError(f"{path}: unable to read replay YAML: {exc}") from exc
         if not isinstance(raw, Mapping):
             raise ValueError(f"{path}: replay YAML root must be a mapping")
@@ -127,15 +133,16 @@ class ReplayProvider:
             if not isinstance(raw_key, str):
                 raise ValueError(f"{path}: replay keys must be strings")
             entries[raw_key] = _parse_entry(path, raw_key, raw_entry)
-        return cls(entries)
+        return cls(entries, source=path)
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         key = f"{request.case_id}:{request.arm}:{request.repetition}"
         try:
             return self._entries[key]
         except KeyError:
+            source = f" in {self._source}" if self._source is not None else ""
             raise ProviderError(
                 kind="missing_replay_key",
-                message=f"missing replay key: {key}",
+                message=f"missing replay key: {key}{source}",
                 retryable=False,
             ) from None
