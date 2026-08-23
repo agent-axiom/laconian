@@ -1,0 +1,282 @@
+from pathlib import Path
+from textwrap import dedent
+
+import pytest
+
+from laconian_eval.cases import (
+    load_activation_cases,
+    load_manifest,
+    load_response_cases,
+)
+from laconian_eval.models import ActivationCase, ResponseCase, RunManifest
+
+
+def write_yaml(path: Path, content: str) -> None:
+    path.write_text(dedent(content).strip() + "\n", encoding="utf-8")
+
+
+def test_duplicate_case_ids_across_files_are_rejected_with_source_paths(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    content = """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+    """
+    write_yaml(first, content)
+    write_yaml(second, content)
+
+    with pytest.raises(ValueError, match="duplicate case id") as exc_info:
+        load_response_cases([first, second])
+
+    message = str(exc_info.value)
+    assert str(first) in message
+    assert str(second) in message
+
+
+def test_response_scenario_missing_locale_mate_is_rejected_with_source_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "responses.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="exactly one en and one ru") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_activation_scenario_missing_locale_mate_is_rejected_with_source_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "activation.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: activation
+        cases:
+          - id: activation-explicit-en
+            scenario_id: activation-explicit
+            locale: en
+            prompt: /if Explain retries.
+            expected_activation: true
+            rationale: The explicit trigger should activate the skill.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="exactly one en and one ru") as exc_info:
+        load_activation_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_invalid_top_level_kind_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "wrong-kind.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: activation
+        cases: []
+        """,
+    )
+
+    with pytest.raises(ValueError, match="kind") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_non_mapping_yaml_root_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "list-root.yaml"
+    write_yaml(
+        path,
+        """
+        - schema_version
+        - kind
+        - cases
+        """,
+    )
+
+    with pytest.raises(ValueError, match="mapping") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_missing_required_top_level_key_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "missing-cases.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        """,
+    )
+
+    with pytest.raises(ValueError, match="cases") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_whitespace_prompt_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "blank-prompt.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: "   "
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+
+    with pytest.raises(ValueError, match="prompt") as exc_info:
+        load_response_cases([path])
+
+    assert str(path) in str(exc_info.value)
+
+
+def test_valid_bilingual_response_file_loads_in_source_order(tmp_path: Path) -> None:
+    path = tmp_path / "responses.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """,
+    )
+
+    cases = load_response_cases([path])
+
+    assert isinstance(cases, tuple)
+    assert all(isinstance(case, ResponseCase) for case in cases)
+    assert tuple(case.id for case in cases) == ("direct-001-ru", "direct-001-en")
+
+
+def test_valid_bilingual_activation_file_loads_in_source_order(tmp_path: Path) -> None:
+    path = tmp_path / "activation.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: activation
+        cases:
+          - id: activation-explicit-en
+            scenario_id: activation-explicit
+            locale: en
+            prompt: /if Explain retries.
+            expected_activation: true
+            rationale: The explicit trigger should activate the skill.
+          - id: activation-explicit-ru
+            scenario_id: activation-explicit
+            locale: ru
+            prompt: /if Объясни повторы.
+            expected_activation: true
+            rationale: Явный триггер должен активировать навык.
+        """,
+    )
+
+    cases = load_activation_cases([path])
+
+    assert isinstance(cases, tuple)
+    assert all(isinstance(case, ActivationCase) for case in cases)
+    assert tuple(case.id for case in cases) == (
+        "activation-explicit-en",
+        "activation-explicit-ru",
+    )
+
+
+def test_valid_manifest_loads(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        run_name: smoke
+        provider:
+          kind: fake
+          model: fake-v1
+        case_files:
+          - evals/cases/response-smoke.yaml
+        arms:
+          - baseline
+          - if
+        """,
+    )
+
+    manifest = load_manifest(path)
+
+    assert isinstance(manifest, RunManifest)
+    assert manifest.run_name == "smoke"
+    assert manifest.arms == ("baseline", "if")
+
+
+def test_invalid_manifest_is_rejected_with_source_path(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-manifest.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        run_name: smoke
+        provider:
+          kind: fake
+          model: fake-v1
+        case_files:
+          - evals/cases/response-smoke.yaml
+        arms:
+          - baseline
+          - baseline
+        """,
+    )
+
+    with pytest.raises(ValueError, match="arms must be unique") as exc_info:
+        load_manifest(path)
+
+    assert str(path) in str(exc_info.value)
