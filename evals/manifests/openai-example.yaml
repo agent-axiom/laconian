@@ -1,0 +1,23 @@
+schema_version: "1"
+runner_version: 0.1.0.dev0
+run_name: openai-example
+provider:
+  kind: openai
+  model: gpt-5.5
+  api_key_env: OPENAI_API_KEY
+case_files:
+  - evals/cases/response-smoke.yaml
+arms:
+  - baseline
+  - concise
+  - caveman
+  - if
+repetitions: 1
+arm_order_seed: 1729
+instruction_placement: system_suffix
+generation:
+  max_output_tokens: 1024
+  temperature: null
+retry:
+  max_transient_retries: 2
+  timeout_seconds: 120

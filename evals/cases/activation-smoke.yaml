@@ -1,0 +1,70 @@
+schema_version: "1"
+kind: activation
+cases:
+  - id: activation-explicit-en
+    scenario_id: activation-explicit
+    locale: en
+    prompt: /if Explain why idempotency matters for request retries.
+    expected_activation: true
+    rationale: The explicit /if invocation is an unambiguous activation signal.
+
+  - id: activation-explicit-ru
+    scenario_id: activation-explicit
+    locale: ru
+    prompt: /if Объясни, почему идемпотентность важна при повторе запросов.
+    expected_activation: true
+    rationale: Явное обращение /if является однозначным сигналом активации.
+
+  - id: activation-concise-en
+    scenario_id: activation-concise
+    locale: en
+    prompt: "Answer concisely and without filler: why does idempotency matter for retries?"
+    expected_activation: true
+    rationale: The natural-language request explicitly asks for a concise, filler-free answer.
+
+  - id: activation-concise-ru
+    scenario_id: activation-concise
+    locale: ru
+    prompt: "Ответь кратко и без воды: почему идемпотентность важна при повторах?"
+    expected_activation: true
+    rationale: В запросе на естественном языке явно требуется краткий ответ без лишнего текста.
+
+  - id: activation-code-if-en
+    scenario_id: activation-code-if
+    locale: en
+    prompt: |-
+      Review this Python code for correctness and explain any problems:
+
+      if user is None:
+          raise ValueError("user is required")
+    expected_activation: false
+    rationale: The word if is ordinary Python syntax, and the request contains no brevity signal.
+
+  - id: activation-code-if-ru
+    scenario_id: activation-code-if
+    locale: ru
+    prompt: |-
+      Проверь корректность этого кода Python и объясни возможные проблемы:
+
+      if user is None:
+          raise ValueError("user is required")
+    expected_activation: false
+    rationale: Слово if является обычным синтаксисом Python, а сигнала краткости в запросе нет.
+
+  - id: activation-detailed-en
+    scenario_id: activation-detailed
+    locale: en
+    prompt: >-
+      Write a detailed five-step tutorial of at least 500 words about designing retry logic for
+      HTTP clients. Include examples, trade-offs, and failure handling.
+    expected_activation: false
+    rationale: The request explicitly calls for a long, detailed tutorial and has no brevity signal.
+
+  - id: activation-detailed-ru
+    scenario_id: activation-detailed
+    locale: ru
+    prompt: >-
+      Напиши подробное руководство не менее чем на 500 слов из пяти шагов о проектировании
+      повторов в HTTP-клиентах. Добавь примеры, компромиссы и обработку сбоев.
+    expected_activation: false
+    rationale: Запрос явно требует длинного подробного руководства и не содержит сигнала краткости.

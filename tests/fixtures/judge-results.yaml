@@ -1,0 +1,19 @@
+schema_version: "1"
+description: >-
+  Synthetic semantic judge results for deterministic offline tests; not benchmark evidence.
+judgments:
+  - response_id: "1111111111111111111111111111111111111111111111111111111111111111"
+    passed: true
+    defect_codes: []
+    evidence: "Synthetic response covers the required facts."
+    judge_provider: "fixture"
+    judge_model: "fixture-judge-v1"
+    judge_prompt_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  - response_id: "2222222222222222222222222222222222222222222222222222222222222222"
+    passed: false
+    defect_codes:
+      - "missing_material_warning"
+    evidence: "Synthetic response omits the required warning."
+    judge_provider: "fixture"
+    judge_model: "fixture-judge-v1"
+    judge_prompt_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

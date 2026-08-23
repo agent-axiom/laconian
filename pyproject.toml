@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "laconian-eval"
+version = "0.1.0.dev0"
+description = "Open benchmark for the shortest complete agent answer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Laconian contributors" }]
+dependencies = [
+  "pydantic>=2.12,<3",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=3.3.1,<4"]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+  "types-PyYAML>=6.0.12",
+]
+
+[project.scripts]
+laconian = "laconian_eval.cli:entrypoint"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/laconian_eval"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["laconian_eval"]
