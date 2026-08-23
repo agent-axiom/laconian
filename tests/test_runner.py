@@ -114,13 +114,14 @@ def existing_attempt(
     terminal: bool = True,
     retry_of_attempt: int | None = None,
     backoff_ms: int | None = None,
+    error_kind: str = "rate_limit",
     error_retryable: bool = True,
     terminal_error: bool = False,
 ) -> RawAttempt:
     error = None
     output_text: str | None = "Done."
     if not terminal or terminal_error:
-        error = ErrorInfo(kind="rate_limit", message="Retry.", retryable=error_retryable)
+        error = ErrorInfo(kind=error_kind, message="Retry.", retryable=error_retryable)
         output_text = None
     return RawAttempt(
         run_id=run_id,
@@ -293,18 +294,23 @@ def test_retryable_error_then_success_records_retry_chain_and_backoff(tmp_path: 
     assert sleeps == [0.1]
 
 
-def test_nonretryable_authentication_error_is_terminal_without_sleep(tmp_path: Path) -> None:
+def test_authentication_error_stops_run_without_retry_or_later_items(tmp_path: Path) -> None:
     provider = ScriptedProvider(
-        [ProviderError(kind="authentication", message="Denied.", retryable=False)]
+        [
+            ProviderError(kind="authentication", message="Denied.", retryable=True),
+            GenerationResult(output_text="Must not retry."),
+            GenerationResult(output_text="Must not run later item."),
+        ]
     )
     sleeps: list[float] = []
+    path = tmp_path / "raw.jsonl"
 
     attempts = run_to_jsonl(
         manifest=run_manifest(retries=5),
         cases=(response_case(),),
-        arms=(ARMS[0],),
+        arms=ARMS[:2],
         provider=provider,
-        output_path=tmp_path / "raw.jsonl",
+        output_path=path,
         run_id="run-1",
         sleep=sleeps.append,
     )
@@ -316,6 +322,36 @@ def test_nonretryable_authentication_error_is_terminal_without_sleep(tmp_path: P
     assert attempts[0].backoff_ms is None
     assert attempts[0].error is not None
     assert attempts[0].error.kind == "authentication"
+    assert attempts[0].error.retryable is False
+    assert load_raw_attempts(path) == attempts
+
+
+def test_other_nonretryable_error_continues_with_later_plan_items(tmp_path: Path) -> None:
+    provider = ScriptedProvider(
+        [
+            ProviderError(kind="permission_denied", message="Denied.", retryable=False),
+            GenerationResult(output_text="Later item ran."),
+        ]
+    )
+    sleeps: list[float] = []
+
+    attempts = run_to_jsonl(
+        manifest=run_manifest(retries=5),
+        cases=(response_case(),),
+        arms=ARMS[:2],
+        provider=provider,
+        output_path=tmp_path / "raw.jsonl",
+        run_id="run-1",
+        sleep=sleeps.append,
+    )
+
+    assert len(provider.requests) == 2
+    assert sleeps == []
+    assert len(attempts) == 2
+    assert attempts[0].terminal is True
+    assert attempts[0].error is not None
+    assert attempts[0].error.kind == "permission_denied"
+    assert attempts[1].output_text == "Later item ran."
 
 
 def test_retryable_errors_stop_after_retry_budget_with_exponential_backoff(
@@ -390,6 +426,76 @@ def test_resume_skips_terminal_key_without_provider_call(tmp_path: Path) -> None
     )
 
     assert resumed == existing
+    assert provider.requests == []
+
+
+def test_resume_terminal_authentication_stops_before_unfinished_items(tmp_path: Path) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    authentication = existing_attempt(
+        manifest_hash=manifest_sha256(manifest),
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    )
+    write_attempts(path, (authentication,))
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+    sleeps: list[float] = []
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=ARMS[:2],
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=sleeps.append,
+    )
+
+    assert resumed == (authentication,)
+    assert provider.requests == []
+    assert sleeps == []
+
+
+def test_resume_validates_all_history_before_terminal_authentication_stop(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    expected_hash = manifest_sha256(manifest)
+    authentication = existing_attempt(
+        manifest_hash=expected_hash,
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    )
+    malformed = existing_attempt(
+        manifest_hash=expected_hash,
+        arm_name="concise",
+        attempt=2,
+        terminal=True,
+        retry_of_attempt=1,
+        error_kind="permission_denied",
+        error_retryable=False,
+        terminal_error=True,
+    )
+    write_attempts(path, (authentication, malformed))
+    provider = ScriptedProvider([])
+
+    with pytest.raises(ValueError, match="historical retry chain") as error:
+        run_to_jsonl(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=ARMS[:2],
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert str(path) in str(error.value)
     assert provider.requests == []
 
 

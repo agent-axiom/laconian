@@ -95,6 +95,10 @@ def _raw_key(attempt: RawAttempt) -> str:
     return f"{attempt.case_id}:{attempt.arm}:{attempt.repetition}"
 
 
+def _is_terminal_authentication(attempt: RawAttempt) -> bool:
+    return attempt.terminal and attempt.error is not None and attempt.error.kind == "authentication"
+
+
 def _redactor(secret_values: Sequence[str]) -> Callable[[str | None], str | None]:
     secrets = tuple(
         sorted(
@@ -231,6 +235,16 @@ def run_to_jsonl(
     )
     redact = _redactor(secret_values)
     max_attempts = 1 + manifest.retry.max_transient_retries
+    for key, key_attempts in by_key.items():
+        _resume_position(
+            key_attempts,
+            max_attempts=max_attempts,
+            path=output_path,
+            key=key,
+        )
+    if any(_is_terminal_authentication(attempt) for attempt in existing):
+        return existing
+
     attempts = list(existing)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +268,9 @@ def run_to_jsonl(
                     result = provider.generate(request)
                 except ProviderError as error:
                     elapsed_ms = max(0, int((time.monotonic() - monotonic_start) * 1000))
-                    will_retry = error.retryable and attempt_number < max_attempts
+                    is_authentication = error.kind == "authentication"
+                    effective_retryable = error.retryable and not is_authentication
+                    will_retry = effective_retryable and attempt_number < max_attempts
                     backoff_ms = 100 * (2 ** (attempt_number - 1)) if will_retry else None
                     attempt = RawAttempt(
                         run_id=run_id,
@@ -275,13 +291,15 @@ def run_to_jsonl(
                         error=ErrorInfo(
                             kind=error.kind,
                             message=cast(str, redact(error.message)),
-                            retryable=error.retryable,
+                            retryable=effective_retryable,
                             request_id=redact(error.request_id),
                         ),
                     )
                     _append_attempt(output_file, attempt)
                     attempts.append(attempt)
                     by_key.setdefault(item.key, []).append(attempt)
+                    if is_authentication:
+                        return tuple(attempts)
                     if not will_retry:
                         break
                     assert backoff_ms is not None
