@@ -83,13 +83,13 @@ class ActivationCase(StrictModel):
 class ResponseCaseFile(StrictModel):
     schema_version: Literal["1"]
     kind: Literal["response"]
-    cases: tuple[ResponseCase, ...]
+    cases: tuple[ResponseCase, ...] = Field(min_length=1)
 
 
 class ActivationCaseFile(StrictModel):
     schema_version: Literal["1"]
     kind: Literal["activation"]
-    cases: tuple[ActivationCase, ...]
+    cases: tuple[ActivationCase, ...] = Field(min_length=1)
 
 
 class ProviderConfig(StrictModel):
@@ -130,8 +130,8 @@ class RunManifest(StrictModel):
     schema_version: Literal["1"]
     run_name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]+$")
     provider: ProviderConfig
-    case_files: tuple[str, ...]
-    arms: tuple[Literal["baseline", "concise", "caveman", "if"], ...]
+    case_files: tuple[str, ...] = Field(min_length=1)
+    arms: tuple[Literal["baseline", "concise", "caveman", "if"], ...] = Field(min_length=1)
     repetitions: int = Field(default=1, ge=1, le=100)
     arm_order_seed: int = 0
     instruction_placement: Literal["system_suffix"] = "system_suffix"

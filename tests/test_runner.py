@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -71,13 +72,14 @@ def run_manifest(
     seed: int = 17,
     run_name: str = "runner-test",
     model: str = "fixture-v1",
+    arm_names: tuple[Literal["baseline", "concise", "caveman", "if"], ...] = ("baseline",),
 ) -> RunManifest:
     return RunManifest(
         schema_version="1",
         run_name=run_name,
         provider=ProviderConfig(kind="fake", model=model),
         case_files=("cases.yaml",),
-        arms=("baseline", "concise", "caveman", "if"),
+        arms=arm_names,
         repetitions=repetitions,
         arm_order_seed=seed,
         generation=GenerationSettings(max_output_tokens=77, temperature=0.25),
@@ -145,7 +147,10 @@ def existing_attempt(
 
 
 def test_four_arms_write_four_terminal_successes_and_exact_requests(tmp_path: Path) -> None:
-    manifest = run_manifest(retries=0)
+    manifest = run_manifest(
+        retries=0,
+        arm_names=("baseline", "concise", "caveman", "if"),
+    )
     case = response_case()
     provider = ScriptedProvider(
         [
@@ -461,6 +466,22 @@ def test_build_run_plan_rejects_nonpositive_repetitions() -> None:
         build_run_plan((response_case(),), ARMS, repetitions=0, seed=1)
 
 
+@pytest.mark.parametrize(
+    ("cases", "arms", "message"),
+    [
+        ((), ARMS, "cases"),
+        ((response_case(),), (), "arms"),
+    ],
+)
+def test_build_run_plan_rejects_empty_dimensions(
+    cases: tuple[ResponseCase, ...],
+    arms: tuple[Arm, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_run_plan(cases, arms, repetitions=1, seed=1)
+
+
 def test_retryable_error_then_success_records_retry_chain_and_backoff(tmp_path: Path) -> None:
     provider = ScriptedProvider(
         [
@@ -526,7 +547,7 @@ def test_authentication_error_stops_run_without_retry_or_later_items(tmp_path: P
     path = tmp_path / "raw.jsonl"
 
     attempts = run_to_jsonl(
-        manifest=run_manifest(retries=5),
+        manifest=run_manifest(retries=5, arm_names=("baseline", "concise")),
         cases=(response_case(),),
         arms=ARMS[:2],
         provider=provider,
@@ -556,7 +577,7 @@ def test_other_nonretryable_error_continues_with_later_plan_items(tmp_path: Path
     sleeps: list[float] = []
 
     attempts = run_to_jsonl(
-        manifest=run_manifest(retries=5),
+        manifest=run_manifest(retries=5, arm_names=("baseline", "concise")),
         cases=(response_case(),),
         arms=ARMS[:2],
         provider=provider,
@@ -621,6 +642,27 @@ def test_unexpected_provider_exception_propagates_without_error_record(tmp_path:
     assert load_raw_attempts(path) == ()
 
 
+def test_run_rejects_loaded_arms_that_do_not_match_hashed_manifest_before_output(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "raw.jsonl"
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    with pytest.raises(ValueError, match="loaded arms do not match manifest arms"):
+        run_to_jsonl(
+            manifest=run_manifest(arm_names=("baseline", "concise")),
+            cases=(response_case(),),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert not path.exists()
+    assert provider.requests == []
+
+
 def test_resume_skips_terminal_key_without_provider_call(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
     first_provider = ScriptedProvider([GenerationResult(output_text="Complete.")])
@@ -650,7 +692,7 @@ def test_resume_skips_terminal_key_without_provider_call(tmp_path: Path) -> None
 
 
 def test_resume_terminal_authentication_stops_before_unfinished_items(tmp_path: Path) -> None:
-    manifest = run_manifest(retries=2)
+    manifest = run_manifest(retries=2, arm_names=("baseline", "concise"))
     path = tmp_path / "raw.jsonl"
     authentication = existing_attempt(
         manifest_hash=manifest_sha256(manifest),
@@ -678,10 +720,56 @@ def test_resume_terminal_authentication_stops_before_unfinished_items(tmp_path: 
     assert sleeps == []
 
 
-def test_resume_validates_all_history_before_terminal_authentication_stop(
+@pytest.mark.parametrize(
+    ("defect", "updates"),
+    [
+        ("unexpected-key", {"case_id": "unexpected-001-en"}),
+        ("provider", {"provider": "openai"}),
+        ("model", {"model": "other-model"}),
+        ("prompt-sha256", {"prompt_sha256": digest("wrong prompt")}),
+        ("instruction-sha256", {"instruction_sha256": digest("wrong instruction")}),
+        ("repetition", {"repetition": 1}),
+        ("arm", {"arm": "concise"}),
+    ],
+)
+def test_resume_rejects_conflicting_existing_identity_before_auth_stop_or_append(
+    defect: str,
+    updates: dict[str, object],
     tmp_path: Path,
 ) -> None:
     manifest = run_manifest(retries=2)
+    path = tmp_path / "raw.jsonl"
+    authentication = existing_attempt(
+        manifest_hash=manifest_sha256(manifest),
+        terminal=True,
+        error_kind="authentication",
+        error_retryable=False,
+        terminal_error=True,
+    ).model_copy(update=updates)
+    write_attempts(path, (authentication,))
+    original_raw = path.read_bytes()
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    with pytest.raises(ValueError) as error:
+        run_to_jsonl(
+            manifest=manifest,
+            cases=(response_case(),),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert defect.split("-")[0] in str(error.value).lower()
+    assert path.read_bytes() == original_raw
+    assert provider.requests == []
+
+
+def test_resume_validates_all_history_before_terminal_authentication_stop(
+    tmp_path: Path,
+) -> None:
+    manifest = run_manifest(retries=2, arm_names=("baseline", "concise"))
     path = tmp_path / "raw.jsonl"
     expected_hash = manifest_sha256(manifest)
     authentication = existing_attempt(
@@ -1187,6 +1275,90 @@ def test_each_attempt_is_fsynced_and_parseable_before_next_provider_call(
     assert len(fsync_calls) == len(attempts) == 2
 
 
+def test_resume_recovers_one_unterminated_trailing_raw_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = run_manifest()
+    path = tmp_path / "raw.jsonl"
+    complete = existing_attempt(manifest_hash=manifest_sha256(manifest))
+    committed = f"{complete.model_dump_json()}\n".encode()
+    path.write_bytes(committed + b'{"schema_version":"1","run_id":')
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(runner_module.os, "fsync", fsync_calls.append)
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    resumed = run_to_jsonl(
+        manifest=manifest,
+        cases=(response_case(),),
+        arms=(ARMS[0],),
+        provider=provider,
+        output_path=path,
+        run_id="run-1",
+        sleep=lambda _: None,
+    )
+
+    assert resumed == (complete,)
+    assert path.read_bytes() == committed
+    assert len(fsync_calls) == 1
+    assert provider.requests == []
+
+
+def test_resume_preserves_unterminated_bytes_when_plan_preflight_fails(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "raw.jsonl"
+    original = b"precious-unrelated-data"
+    path.write_bytes(original)
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    with pytest.raises(ValueError, match="cases"):
+        run_to_jsonl(
+            manifest=run_manifest(),
+            cases=(),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert path.read_bytes() == original
+    assert provider.requests == []
+
+
+@pytest.mark.parametrize(
+    "committed",
+    [
+        b"not-json\n",
+        (f"{existing_attempt(manifest_hash='wrong-manifest').model_dump_json()}\n".encode()),
+    ],
+    ids=("corrupt-prefix", "wrong-manifest"),
+)
+def test_resume_preserves_unterminated_tail_when_committed_prefix_is_invalid(
+    committed: bytes,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "raw.jsonl"
+    original = committed + b'{"schema_version":"1","run_id":'
+    path.write_bytes(original)
+    provider = ScriptedProvider([GenerationResult(output_text="Must not run.")])
+
+    with pytest.raises(ValueError):
+        run_to_jsonl(
+            manifest=run_manifest(),
+            cases=(response_case(),),
+            arms=(ARMS[0],),
+            provider=provider,
+            output_path=path,
+            run_id="run-1",
+            sleep=lambda _: None,
+        )
+
+    assert path.read_bytes() == original
+    assert provider.requests == []
+
+
 def test_load_raw_attempts_returns_empty_tuple_for_missing_file(tmp_path: Path) -> None:
     assert load_raw_attempts(tmp_path / "missing.jsonl") == ()
 
@@ -1217,6 +1389,15 @@ def test_load_raw_attempts_preserves_valid_file_order(tmp_path: Path) -> None:
     write_attempts(path, (first, second))
 
     assert load_raw_attempts(path) == (first, second)
+
+
+def test_load_raw_attempts_remains_strict_for_unterminated_final_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "raw.jsonl"
+    valid = existing_attempt(manifest_hash="manifest").model_dump_json()
+    path.write_text(valid, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unterminated"):
+        load_raw_attempts(path)
 
 
 def test_raw_attempt_requires_exactly_one_output_or_error() -> None:

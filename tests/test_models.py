@@ -3,9 +3,11 @@ from pydantic import ValidationError
 
 from laconian_eval.models import (
     ActivationCase,
+    ActivationCaseFile,
     HardConstraints,
     ProviderConfig,
     ResponseCase,
+    ResponseCaseFile,
     RunManifest,
 )
 
@@ -47,6 +49,33 @@ def test_manifest_rejects_duplicate_arms() -> None:
                 "case_files": ["evals/cases/response-smoke.yaml"],
                 "arms": ["baseline", "baseline"],
             }
+        )
+
+
+@pytest.mark.parametrize("empty_field", ["case_files", "arms"])
+def test_manifest_rejects_empty_plan_collections(empty_field: str) -> None:
+    payload: dict[str, object] = {
+        "schema_version": "1",
+        "run_name": "smoke",
+        "provider": {"kind": "fake", "model": "fake-v1"},
+        "case_files": ["evals/cases/response-smoke.yaml"],
+        "arms": ["baseline"],
+    }
+    payload[empty_field] = []
+
+    with pytest.raises(ValidationError, match=empty_field):
+        RunManifest.model_validate(payload)
+
+
+def test_response_case_file_rejects_empty_cases() -> None:
+    with pytest.raises(ValidationError, match="cases"):
+        ResponseCaseFile.model_validate({"schema_version": "1", "kind": "response", "cases": []})
+
+
+def test_activation_case_file_rejects_empty_cases() -> None:
+    with pytest.raises(ValidationError, match="cases"):
+        ActivationCaseFile.model_validate(
+            {"schema_version": "1", "kind": "activation", "cases": []}
         )
 
 

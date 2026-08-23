@@ -133,6 +133,35 @@ def test_run_reserves_raw_jsonl_exclusively_before_calling_the_runner(
     assert len(inspected) == 1
 
 
+@pytest.mark.parametrize("empty_field", ["case_files", "arms"])
+def test_run_rejects_empty_plan_configuration_before_result_artifacts(
+    empty_field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(REPOSITORY_ROOT)
+    document: dict[str, object] = {
+        "schema_version": "1",
+        "run_name": "empty-plan",
+        "provider": {"kind": "fake", "model": "fake-v1"},
+        "case_files": ["evals/cases/response-smoke.yaml"],
+        "arms": ["baseline"],
+        "repetitions": 1,
+    }
+    document[empty_field] = []
+    manifest_path = tmp_path / f"empty-{empty_field}.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(document, sort_keys=False),
+        encoding="utf-8",
+    )
+    results_root = tmp_path / f"results-{empty_field}"
+
+    assert main(["run", str(manifest_path), "--results-root", str(results_root)]) == 2
+    assert not results_root.exists()
+    assert empty_field in capsys.readouterr().err
+
+
 def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,6 +244,107 @@ def test_score_preflights_both_outputs_and_validates_copied_manifest_hash(
     assert main([*args[:-1], str(output2)]) == 2
     assert not output2.exists()
     assert "manifest" in capsys.readouterr().err.lower()
+
+
+def test_score_refuses_an_existing_empty_output_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    output = tmp_path / "existing-score"
+    output.mkdir()
+
+    code = main(
+        [
+            "score",
+            str(run_directory / "raw.jsonl"),
+            "--cases",
+            "evals/cases/response-smoke.yaml",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert code == 2
+    assert tuple(output.iterdir()) == ()
+    assert "overwrite" in capsys.readouterr().err.lower()
+
+
+def test_score_publish_is_failure_atomic_and_rerunnable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    output = tmp_path / "atomic-score"
+    args = [
+        "score",
+        str(run_directory / "raw.jsonl"),
+        "--cases",
+        "evals/cases/response-smoke.yaml",
+        "--output",
+        str(output),
+    ]
+    original_write_summary = cli.write_summary_json
+    staged_directories: list[Path] = []
+
+    def fail_summary_write(summary: RunSummary, path: Path) -> None:
+        assert (path.parent / "scored.jsonl").is_file()
+        staged_directories.append(path.parent)
+        raise OSError("synthetic summary write failure")
+
+    monkeypatch.setattr(cli, "write_summary_json", fail_summary_write)
+    before = set(tmp_path.iterdir())
+
+    assert main(args) == 2
+    assert not output.exists()
+    assert staged_directories and staged_directories[0] != output
+    assert not staged_directories[0].exists()
+    assert set(tmp_path.iterdir()) == before
+    assert "summary write failure" in capsys.readouterr().err
+
+    monkeypatch.setattr(cli, "write_summary_json", original_write_summary)
+    assert main(args) == 0
+    assert {path.name for path in output.iterdir()} == {"scored.jsonl", "summary.json"}
+
+
+def test_score_publish_fsyncs_parent_and_rolls_back_if_that_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    output = tmp_path / "parent-fsync-score"
+    args = [
+        "score",
+        str(run_directory / "raw.jsonl"),
+        "--cases",
+        "evals/cases/response-smoke.yaml",
+        "--output",
+        str(output),
+    ]
+    original_fsync_directory = cli._fsync_directory
+    fsynced: list[Path] = []
+
+    def fail_parent_fsync(path: Path) -> None:
+        fsynced.append(path)
+        if path == output.parent:
+            raise OSError("synthetic parent fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(cli, "_fsync_directory", fail_parent_fsync)
+
+    assert main(args) == 2
+    assert len(fsynced) == 2
+    assert fsynced[0].parent == output.parent
+    assert fsynced[0] != output
+    assert fsynced[1] == output.parent
+    assert not output.exists()
+    assert "parent fsync failure" in capsys.readouterr().err
+
+    monkeypatch.setattr(cli, "_fsync_directory", original_fsync_directory)
+    assert main(args) == 0
 
 
 def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fallback(

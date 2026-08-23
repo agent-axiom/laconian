@@ -51,6 +51,10 @@ def build_run_plan(
     repetitions: int,
     seed: int,
 ) -> tuple[RunPlanItem, ...]:
+    if not cases:
+        raise ValueError("cases must not be empty")
+    if not arms:
+        raise ValueError("arms must not be empty")
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
 
@@ -79,6 +83,10 @@ def load_raw_attempts(path: Path) -> tuple[RawAttempt, ...]:
         line_number = content.count("\n") + 1
         raise ValueError(f"{path}:{line_number}: unterminated JSON line")
 
+    return _parse_raw_attempts(content, path)
+
+
+def _parse_raw_attempts(content: str, path: Path) -> tuple[RawAttempt, ...]:
     attempts: list[RawAttempt] = []
     for line_number, line in enumerate(content.splitlines(), start=1):
         if not line.strip():
@@ -89,6 +97,46 @@ def load_raw_attempts(path: Path) -> tuple[RawAttempt, ...]:
         except (json.JSONDecodeError, ValidationError) as exc:
             raise ValueError(f"{path}:{line_number}: invalid raw attempt: {exc}") from exc
     return tuple(attempts)
+
+
+def _load_resume_attempts(
+    path: Path,
+) -> tuple[tuple[RawAttempt, ...], tuple[bytes, int] | None]:
+    if not path.exists():
+        return (), None
+
+    try:
+        original = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{path}: unable to read raw attempts: {exc}") from exc
+
+    committed_end = len(original)
+    recovery: tuple[bytes, int] | None = None
+    if original and not original.endswith(b"\n"):
+        committed_end = original.rfind(b"\n") + 1
+        recovery = original, committed_end
+    try:
+        committed = original[:committed_end].decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError(f"{path}: unable to read raw attempts: {exc}") from exc
+    return _parse_raw_attempts(committed, path), recovery
+
+
+def _truncate_uncommitted_tail(
+    path: Path,
+    *,
+    expected: bytes,
+    committed_end: int,
+) -> None:
+    try:
+        with path.open("r+b") as raw_file:
+            if raw_file.read() != expected:
+                raise ValueError(f"{path}: raw attempts changed during resume validation")
+            raw_file.truncate(committed_end)
+            raw_file.flush()
+            os.fsync(raw_file.fileno())
+    except OSError as exc:
+        raise ValueError(f"{path}: unable to recover raw attempts: {exc}") from exc
 
 
 def _raw_key(attempt: RawAttempt) -> str:
@@ -204,7 +252,14 @@ def _resume_position(
     return previous_attempt + 1, previous_attempt
 
 
-def validate_complete_run(
+@dataclass(slots=True)
+class _ValidatedHistory:
+    plan: tuple[RunPlanItem, ...]
+    by_key: dict[str, list[RawAttempt]]
+    positions: dict[str, tuple[int, int | None] | None]
+
+
+def _validate_partial_history(
     *,
     manifest: RunManifest,
     cases: Sequence[ResponseCase],
@@ -212,17 +267,11 @@ def validate_complete_run(
     attempts: Sequence[RawAttempt],
     path: Path,
     run_id: str,
-) -> None:
+) -> _ValidatedHistory:
     arm_names = tuple(arm.name for arm in arms)
     if arm_names != manifest.arms:
         raise ValueError(f"{path}: loaded arms do not match manifest arms")
 
-    by_key = _validate_existing(
-        attempts,
-        expected_manifest_sha256=manifest_sha256(manifest),
-        run_id=run_id,
-        path=path,
-    )
     plan = build_run_plan(
         cases,
         arms,
@@ -233,14 +282,21 @@ def validate_complete_run(
     if len(plan_by_key) != len(plan):
         raise ValueError(f"{path}: manifest cases produce duplicate plan keys")
 
+    by_key = _validate_existing(
+        attempts,
+        expected_manifest_sha256=manifest_sha256(manifest),
+        run_id=run_id,
+        path=path,
+    )
+    arm_name_set = set(arm_names)
     response_models: set[str] = set()
     for attempt in attempts:
         if attempt.provider != manifest.provider.kind:
             raise ValueError(f"{path}: raw provider {attempt.provider!r} conflicts with manifest")
         if attempt.model != manifest.provider.model:
             raise ValueError(f"{path}: raw model {attempt.model!r} conflicts with manifest")
-        if attempt.arm not in manifest.arms:
-            raise ValueError(f"{path}: raw arm {attempt.arm!r} conflicts with manifest")
+        if attempt.arm not in arm_name_set:
+            raise ValueError(f"{path}: raw arm {attempt.arm!r} conflicts with loaded arms")
         if attempt.repetition >= manifest.repetitions:
             raise ValueError(f"{path}: raw repetition {attempt.repetition} conflicts with manifest")
         if manifest.provider.kind == "openai" and attempt.terminal and attempt.error is None:
@@ -254,30 +310,53 @@ def validate_complete_run(
     unexpected = sorted(set(by_key) - set(plan_by_key))
     if unexpected:
         raise ValueError(f"{path}: unexpected raw plan key(s): {', '.join(unexpected)}")
-    missing = sorted(set(plan_by_key) - set(by_key))
-    if missing:
-        raise ValueError(
-            f"{path}: run is incomplete; missing terminal combination(s): {', '.join(missing)}"
-        )
 
     max_attempts = 1 + manifest.retry.max_transient_retries
-    for key, item in plan_by_key.items():
-        history = by_key[key]
+    positions: dict[str, tuple[int, int | None] | None] = {}
+    for key, history in by_key.items():
+        item = plan_by_key[key]
+        positions[key] = _resume_position(
+            history,
+            max_attempts=max_attempts,
+            path=path,
+            key=key,
+        )
         expected_prompt_sha256 = sha256(item.case.prompt.encode("utf-8")).hexdigest()
         for attempt in history:
             if attempt.prompt_sha256 != expected_prompt_sha256:
                 raise ValueError(f"{path}: raw prompt_sha256 conflicts with case for {key}")
             if attempt.instruction_sha256 != item.arm.sha256:
                 raise ValueError(f"{path}: raw instruction_sha256 conflicts with arm for {key}")
-        if (
-            _resume_position(
-                history,
-                max_attempts=max_attempts,
-                path=path,
-                key=key,
-            )
-            is not None
-        ):
+
+    return _ValidatedHistory(plan=plan, by_key=by_key, positions=positions)
+
+
+def validate_complete_run(
+    *,
+    manifest: RunManifest,
+    cases: Sequence[ResponseCase],
+    arms: Sequence[Arm],
+    attempts: Sequence[RawAttempt],
+    path: Path,
+    run_id: str,
+) -> None:
+    validated = _validate_partial_history(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        attempts=attempts,
+        path=path,
+        run_id=run_id,
+    )
+    plan_by_key = {item.key: item for item in validated.plan}
+    missing = sorted(set(plan_by_key) - set(validated.by_key))
+    if missing:
+        raise ValueError(
+            f"{path}: run is incomplete; missing terminal combination(s): {', '.join(missing)}"
+        )
+
+    for key in plan_by_key:
+        if validated.positions[key] is not None:
             raise ValueError(f"{path}: run is incomplete; missing terminal record for {key}")
 
 
@@ -299,29 +378,27 @@ def run_to_jsonl(
     secret_values: Sequence[str] = (),
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[RawAttempt, ...]:
-    existing = load_raw_attempts(output_path)
+    existing, recovery = _load_resume_attempts(output_path)
     current_manifest_sha256 = manifest_sha256(manifest)
-    by_key = _validate_existing(
-        existing,
-        expected_manifest_sha256=current_manifest_sha256,
-        run_id=run_id,
+    validated = _validate_partial_history(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        attempts=existing,
         path=output_path,
+        run_id=run_id,
     )
-    plan = build_run_plan(
-        cases,
-        arms,
-        repetitions=manifest.repetitions,
-        seed=manifest.arm_order_seed,
-    )
+    if recovery is not None:
+        expected, committed_end = recovery
+        _truncate_uncommitted_tail(
+            output_path,
+            expected=expected,
+            committed_end=committed_end,
+        )
+    by_key = validated.by_key
+    plan = validated.plan
     redact = _redactor(secret_values)
     max_attempts = 1 + manifest.retry.max_transient_retries
-    for key, key_attempts in by_key.items():
-        _resume_position(
-            key_attempts,
-            max_attempts=max_attempts,
-            path=output_path,
-            key=key,
-        )
     if any(_is_terminal_authentication(attempt) for attempt in existing):
         return existing
 
@@ -330,12 +407,7 @@ def run_to_jsonl(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as output_file:
         for item in plan:
-            position = _resume_position(
-                by_key.get(item.key, ()),
-                max_attempts=max_attempts,
-                path=output_path,
-                key=item.key,
-            )
+            position = validated.positions.get(item.key, (1, None))
             if position is None:
                 continue
             attempt_number, retry_of_attempt = position

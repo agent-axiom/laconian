@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +22,7 @@ from laconian_eval.cases import (
     load_response_cases,
 )
 from laconian_eval.judging import attach_judgments, load_judgments
-from laconian_eval.models import RunManifest, RunSummary
+from laconian_eval.models import RunManifest, RunSummary, ScoredAttempt
 from laconian_eval.providers import FakeProvider, Provider, ProviderError, ReplayProvider
 from laconian_eval.providers.openai import OpenAIProvider
 from laconian_eval.reporting import summarize, write_markdown_report, write_summary_json
@@ -243,16 +245,55 @@ def _load_summary_json(path: Path) -> RunSummary:
         raise ValueError(f"{path}: invalid summary JSON: {exc}") from exc
 
 
-def _preflight_score_outputs(output: Path) -> tuple[Path, Path]:
-    scored_path = output / "scored.jsonl"
-    summary_path = output / "summary.json"
-    existing = [path for path in (scored_path, summary_path) if path.exists()]
-    if existing:
-        joined = ", ".join(str(path) for path in existing)
-        raise FileExistsError(f"refuse to overwrite existing output(s): {joined}")
-    if output.exists() and not output.is_dir():
-        raise ValueError(f"{output}: output must be a directory")
-    return scored_path, summary_path
+def _preflight_score_output(output: Path) -> None:
+    if output.exists():
+        raise FileExistsError(f"{output}: refuse to overwrite existing output")
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as input_file:
+        os.fsync(input_file.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_score_output(
+    scored: Sequence[ScoredAttempt],
+    summary: RunSummary,
+    output: Path,
+) -> None:
+    _preflight_score_output(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{output.name}.tmp-",
+            dir=output.parent,
+        )
+    )
+    try:
+        scored_path = staging / "scored.jsonl"
+        summary_path = staging / "summary.json"
+        write_scored_jsonl(scored, scored_path)
+        write_summary_json(summary, summary_path)
+        _fsync_file(scored_path)
+        _fsync_file(summary_path)
+        _fsync_directory(staging)
+        _preflight_score_output(output)
+        staging.rename(output)
+        try:
+            _fsync_directory(output.parent)
+        except OSError:
+            output.rename(staging)
+            raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def _score(
@@ -261,7 +302,7 @@ def _score(
     judgments_path: Path | None,
     output: Path,
 ) -> None:
-    scored_path, summary_path = _preflight_score_outputs(output)
+    _preflight_score_output(output)
     raw = load_raw_attempts(raw_path)
     manifest_path = raw_path.parent / "manifest.json"
     manifest = _load_manifest_json(manifest_path)
@@ -292,8 +333,7 @@ def _score(
         require_semantic=require_semantic,
         price_snapshot=manifest.price_snapshot,
     )
-    write_scored_jsonl(scored, scored_path)
-    write_summary_json(summary, summary_path)
+    _publish_score_output(scored, summary, output)
     print(output)
 
 
