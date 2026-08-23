@@ -191,3 +191,56 @@ class RawAttempt(StrictModel):
         if (self.output_text is None) == (self.error is None):
             raise ValueError("exactly one of output_text and error must be provided")
         return self
+
+
+class CheckResult(StrictModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class ScoredAttempt(StrictModel):
+    raw: RawAttempt
+    checks: tuple[CheckResult, ...]
+    hard_pass: bool
+    semantic_pass: bool | None = None
+    judgment_id: str | None = None
+
+
+class PriceEstimate(StrictModel):
+    input_usd: float
+    cached_input_usd: float
+    output_usd: float
+    total_usd: float
+
+
+class ArmMetrics(StrictModel):
+    arm: Literal["baseline", "concise", "caveman", "if"]
+    total: int
+    hard_passed: int
+    semantic_passed: int | None
+    provider_errors: int
+    retry_attempts: int
+    exact_violations: int
+    format_violations: int
+    median_output_tokens: float | None
+    median_output_characters: float | None
+    price: PriceEstimate | None = None
+
+
+class PairedMetrics(StrictModel):
+    left_arm: Literal["if"] = "if"
+    right_arm: Literal["concise"] = "concise"
+    eligible_pairs: int
+    median_output_token_delta: float | None
+    median_output_character_delta: float | None
+
+
+class RunSummary(StrictModel):
+    schema_version: Literal["1"] = "1"
+    quality_gate: Literal["hard", "semantic"]
+    raw_attempts: int
+    terminal_records: int
+    arms: tuple[ArmMetrics, ...]
+    paired: PairedMetrics
+    price_snapshot: PriceSnapshot | None = None
