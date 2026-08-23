@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -141,3 +141,53 @@ class RunManifest(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("arms must be unique")
         return value
+
+
+class ErrorInfo(StrictModel):
+    kind: str
+    message: str
+    retryable: bool
+    request_id: str | None = None
+
+
+class TokenUsageModel(StrictModel):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_cached_input_tokens(self) -> Self:
+        if self.cached_input_tokens is not None and self.cached_input_tokens > self.input_tokens:
+            raise ValueError("cached_input_tokens must not exceed input_tokens")
+        return self
+
+
+class RawAttempt(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    manifest_sha256: str
+    case_id: str
+    arm: Literal["baseline", "concise", "caveman", "if"]
+    repetition: int = Field(ge=0)
+    attempt: int = Field(ge=1)
+    terminal: bool
+    retry_of_attempt: int | None = None
+    backoff_ms: int | None = Field(default=None, ge=0)
+    prompt_sha256: str
+    instruction_sha256: str
+    provider: str
+    model: str
+    started_at: datetime
+    elapsed_ms: int = Field(ge=0)
+    output_text: str | None = None
+    usage: TokenUsageModel | None = None
+    request_id: str | None = None
+    finish_reason: str | None = None
+    error: ErrorInfo | None = None
+
+    @model_validator(mode="after")
+    def validate_output_or_error(self) -> Self:
+        if (self.output_text is None) == (self.error is None):
+            raise ValueError("exactly one of output_text and error must be provided")
+        return self
