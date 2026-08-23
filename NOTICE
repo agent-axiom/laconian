@@ -2,6 +2,7 @@ Laconian licensing map
 
 Code under src/, tests/, .github/, pyproject.toml, and skills/if/SKILL.md: Apache-2.0.
 README files, docs/, evals/cases/, benchmarks/methodology.md, and published benchmark results: CC-BY-4.0.
+evals/manifests/: CC-BY-4.0.
 evals/baselines/caveman/SOURCE.md: CC-BY-4.0.
 
 Third-party material

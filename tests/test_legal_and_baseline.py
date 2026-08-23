@@ -34,6 +34,7 @@ def test_notice_maps_all_distributed_material() -> None:
         "README files, docs/, evals/cases/, benchmarks/methodology.md, and published "
         "benchmark results: CC-BY-4.0." in notice
     )
+    assert "evals/manifests/: CC-BY-4.0." in notice.splitlines()
     assert "evals/baselines/caveman/SOURCE.md: CC-BY-4.0." in notice
     assert "Full terms: LICENSES/CAVEMAN-MIT.txt." in notice
 
