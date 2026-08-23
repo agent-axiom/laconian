@@ -2,7 +2,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from laconian_eval.cases import load_activation_cases, load_manifest, load_response_cases
-from laconian_eval.models import ResponseCase
+from laconian_eval.models import ActivationCase, ResponseCase
 
 ROOT = Path(__file__).parents[1]
 RESPONSE_CASES = ROOT / "evals/cases/response-smoke.yaml"
@@ -61,7 +61,6 @@ def test_response_smoke_matches_matrix_and_pair_invariants() -> None:
             f"{scenario_id}-ru",
         }
         assert {case.category for case in cases} == {RESPONSE_MATRIX[scenario_id]}
-        assert cases[0].hard_constraints == cases[1].hard_constraints
         for case in cases:
             assert all(
                 required_literal in case.prompt
@@ -71,42 +70,44 @@ def test_response_smoke_matches_matrix_and_pair_invariants() -> None:
 
 def test_response_smoke_has_exact_hard_constraint_profiles() -> None:
     grouped = _response_cases_by_scenario()
-
-    expected_max_sentences = {
-        "direct-idempotency": 2,
-        "coding-post-retry": 2,
-        "preserve-config": 3,
-        "uncertain-attribution": 3,
-        "safety-medical": 4,
-        "safety-financial": 3,
+    expected_profiles: dict[str, dict[str, object]] = {
+        "direct-idempotency": {"max_sentences": 2},
+        "coding-post-retry": {
+            "required_literals": ("POST",),
+            "max_sentences": 2,
+        },
+        "preserve-config": {
+            "required_literals": (
+                "v2.4.1",
+                "8080",
+                "https://api.example.com/v1",
+            ),
+            "max_sentences": 3,
+        },
+        "preserve-command": {
+            "required_literals": ("git push --force-with-lease",),
+        },
+        "coding-if-keyword": {"required_literals": ("should_retry",)},
+        "structured-json": {
+            "required_json_keys": ("risk", "mitigation", "confidence"),
+        },
+        "structured-yaml": {
+            "required_literals": ("status", "reason", "next_step"),
+        },
+        "uncertain-attribution": {"max_sentences": 3},
+        "safety-medical": {"max_sentences": 4},
+        "safety-financial": {"max_sentences": 3},
+        "user-decline": {"min_sentences": 2, "max_sentences": 2},
+        "summary-ordered": {"max_sentences": 3},
     }
-    for scenario_id, max_sentences in expected_max_sentences.items():
-        assert {
-            case.hard_constraints.max_sentences for case in grouped[scenario_id]
-        } == {max_sentences}
 
-    for case in grouped["user-decline"]:
-        assert case.hard_constraints.min_sentences == 2
-        assert case.hard_constraints.max_sentences == 2
-
-    for case in grouped["structured-json"]:
-        assert case.hard_constraints.required_json_keys == (
-            "risk",
-            "mitigation",
-            "confidence",
-        )
-
-    expected_literals = {
-        "coding-post-retry": ("POST",),
-        "preserve-config": ("v2.4.1", "8080", "https://api.example.com/v1"),
-        "preserve-command": ("git push --force-with-lease",),
-        "coding-if-keyword": ("should_retry",),
-        "structured-yaml": ("status", "reason", "next_step"),
-    }
-    for scenario_id, required_literals in expected_literals.items():
-        assert {
-            case.hard_constraints.required_literals for case in grouped[scenario_id]
-        } == {required_literals}
+    assert set(grouped) == set(expected_profiles)
+    for scenario_id, cases in grouped.items():
+        for case in cases:
+            assert (
+                case.hard_constraints.model_dump(exclude_defaults=True)
+                == expected_profiles[scenario_id]
+            )
 
 
 def test_response_smoke_rubrics_cover_required_semantics() -> None:
@@ -169,11 +170,9 @@ def test_activation_smoke_has_four_bilingual_scenarios() -> None:
 
 def test_activation_smoke_pairs_agree_and_have_rationales() -> None:
     cases = load_activation_cases([ACTIVATION_CASES])
-    grouped: defaultdict[str, list[tuple[str, bool, str]]] = defaultdict(list)
+    grouped: defaultdict[str, list[ActivationCase]] = defaultdict(list)
     for case in cases:
-        grouped[case.scenario_id].append(
-            (case.locale, case.expected_activation, case.rationale)
-        )
+        grouped[case.scenario_id].append(case)
 
     assert set(grouped) == {
         "activation-explicit",
@@ -181,10 +180,14 @@ def test_activation_smoke_pairs_agree_and_have_rationales() -> None:
         "activation-code-if",
         "activation-detailed",
     }
-    for localized_cases in grouped.values():
-        assert {locale for locale, _, _ in localized_cases} == {"en", "ru"}
-        assert len({expected for _, expected, _ in localized_cases}) == 1
-        assert all(rationale.strip() for _, _, rationale in localized_cases)
+    for scenario_id, localized_cases in grouped.items():
+        assert {case.locale for case in localized_cases} == {"en", "ru"}
+        assert {case.id for case in localized_cases} == {
+            f"{scenario_id}-en",
+            f"{scenario_id}-ru",
+        }
+        assert len({case.expected_activation for case in localized_cases}) == 1
+        assert all(case.rationale.strip() for case in localized_cases)
 
 
 def test_replay_smoke_manifest_has_exact_settings() -> None:
