@@ -15,6 +15,8 @@ from laconian_eval.judging import (
 )
 from laconian_eval.models import (
     ErrorInfo,
+    HardConstraints,
+    JudgeProvenance,
     RawAttempt,
     ResponseCase,
     SemanticRubric,
@@ -184,9 +186,28 @@ def test_attach_judgments_matches_opaque_ids_and_leaves_missing_as_none() -> Non
 
     assert attached[0].semantic_pass is False
     assert attached[0].judgment_id == if_id
+    assert attached[0].judge_provenance == JudgeProvenance(
+        provider="fixture",
+        model="fixture-judge-v1",
+        prompt_sha256=digest("judge prompt"),
+    )
     assert attached[1].semantic_pass is None
     assert attached[1].judgment_id is None
+    assert attached[1].judge_provenance is None
     assert scored[0].semantic_pass is None
+
+
+def test_attach_judgments_rejects_a_judgment_for_a_hard_failure() -> None:
+    response_case = case().model_copy(
+        update={"hard_constraints": HardConstraints(required_literals=("REQUIRED",))}
+    )
+    raw_response = raw(output="too short")
+    hard_failure = score_attempt(response_case, raw_response)
+    response_id = build_judge_request(response_case, raw_response).response_id
+
+    assert not hard_failure.hard_pass
+    with pytest.raises(ValueError, match="hard-fail"):
+        attach_judgments((hard_failure,), (judgment(response_id),))
 
 
 def test_attach_judgments_rejects_duplicate_unknown_and_duplicate_scored_ids() -> None:
@@ -202,6 +223,30 @@ def test_attach_judgments_rejects_duplicate_unknown_and_duplicate_scored_ids() -
         attach_judgments((scored,), (judgment("f" * 64),))
     with pytest.raises(ValueError, match="duplicate scored response_id"):
         attach_judgments((scored, scored), ())
+
+
+def test_attach_judgments_revalidates_provider_error_records() -> None:
+    error_scored = score_attempt(
+        case(),
+        raw(
+            output=None,
+            error=ErrorInfo(kind="timeout", message="Timed out.", retryable=True),
+        ),
+    )
+    tampered = error_scored.model_copy(
+        update={
+            "semantic_pass": True,
+            "judgment_id": digest("response-id"),
+            "judge_provenance": JudgeProvenance(
+                provider="fixture",
+                model="fixture-judge-v1",
+                prompt_sha256=digest("judge prompt"),
+            ),
+        }
+    )
+
+    with pytest.raises(ValidationError, match="hard-fail"):
+        attach_judgments((tampered,), ())
 
 
 def test_load_synthetic_judgment_fixture_has_pass_and_failure() -> None:

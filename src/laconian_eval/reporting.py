@@ -27,7 +27,10 @@ def _price_estimate(
     attempts: Sequence[ScoredAttempt], snapshot: PriceSnapshot
 ) -> PriceEstimate | None:
     successful = [attempt for attempt in attempts if attempt.raw.error is None]
-    if any(attempt.raw.usage is None for attempt in successful):
+    if not successful or any(
+        attempt.raw.usage is None or attempt.raw.usage.cached_input_tokens is None
+        for attempt in successful
+    ):
         return None
 
     usages = cast(
@@ -38,7 +41,8 @@ def _price_estimate(
     cached_tokens = 0
     output_tokens = 0
     for usage in usages:
-        cached = usage.cached_input_tokens or 0
+        assert usage.cached_input_tokens is not None
+        cached = usage.cached_input_tokens
         input_tokens += usage.input_tokens - cached
         cached_tokens += cached
         output_tokens += usage.output_tokens
@@ -80,6 +84,7 @@ def _arm_metrics(
         total=len(attempts),
         hard_passed=sum(attempt.hard_pass for attempt in attempts),
         semantic_passed=semantic_passed,
+        semantic_judged=len(judged),
         provider_errors=sum(attempt.raw.error is not None for attempt in attempts),
         retry_attempts=sum(attempt.raw.attempt - 1 for attempt in attempts),
         exact_violations=sum(
@@ -168,6 +173,12 @@ def summarize(
     arms = tuple(
         _arm_metrics(arm, by_arm[arm], price_snapshot) for arm in _ARM_ORDER if arm in by_arm
     )
+    provenance_by_key = {
+        (provenance.provider, provenance.model, provenance.prompt_sha256): provenance
+        for attempt in scored
+        if (provenance := attempt.judge_provenance) is not None
+    }
+    judge_provenance = tuple(provenance_by_key[key] for key in sorted(provenance_by_key))
     return RunSummary(
         quality_gate="semantic" if require_semantic else "hard",
         raw_attempts=sum(attempt.raw.attempt for attempt in scored),
@@ -175,6 +186,7 @@ def summarize(
         arms=arms,
         paired=_paired_metrics(instances, require_semantic=require_semantic),
         price_snapshot=price_snapshot,
+        judge_provenance=judge_provenance,
     )
 
 
@@ -207,10 +219,29 @@ def _format_metric(value: float | None) -> str:
     return "n/a" if value is None else f"{value:g}"
 
 
+def _percentage(numerator: int, denominator: int) -> str:
+    if denominator == 0:
+        return "n/a"
+    return f"{100 * numerator / denominator:.1f}%"
+
+
+def _hard_pass_label(metrics: ArmMetrics) -> str:
+    return (
+        f"{metrics.hard_passed}/{metrics.total} ({_percentage(metrics.hard_passed, metrics.total)})"
+    )
+
+
 def _semantic_label(metrics: ArmMetrics) -> str:
+    coverage = (
+        f"{metrics.semantic_judged}/{metrics.hard_passed} hard-pass coverage "
+        f"({_percentage(metrics.semantic_judged, metrics.hard_passed)})"
+    )
     if metrics.semantic_passed is None:
-        return "not judged"
-    return f"{metrics.semantic_passed} passed"
+        return f"not judged; {coverage}"
+    return (
+        f"{metrics.semantic_passed}/{metrics.semantic_judged} passed "
+        f"({_percentage(metrics.semantic_passed, metrics.semantic_judged)}); {coverage}"
+    )
 
 
 def _price_label(price: PriceEstimate | None) -> str:
@@ -242,7 +273,7 @@ def _markdown(summary: RunSummary) -> str:
                 (
                     f"`{metrics.arm}`",
                     str(metrics.total),
-                    str(metrics.hard_passed),
+                    _hard_pass_label(metrics),
                     _semantic_label(metrics),
                     str(metrics.provider_errors),
                     str(metrics.exact_violations),
@@ -275,10 +306,20 @@ def _markdown(summary: RunSummary) -> str:
                 f"{_format_metric(summary.paired.median_output_character_delta)}"
             ),
             "",
-            "## Price estimate",
-            "",
         )
     )
+    lines.extend(("## Semantic judge provenance", ""))
+    if summary.judge_provenance:
+        lines.extend(
+            (
+                f"- `{provenance.provider}` / `{provenance.model}`; judge-prompt "
+                f"SHA-256 `{provenance.prompt_sha256}`"
+            )
+            for provenance in summary.judge_provenance
+        )
+    else:
+        lines.append("No semantic judgments attached.")
+    lines.extend(("", "## Price estimate", ""))
     snapshot = summary.price_snapshot
     if snapshot is None:
         lines.append("Not estimated: no dated price snapshot was supplied.")

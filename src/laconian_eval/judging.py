@@ -8,6 +8,7 @@ from pydantic import Field, ValidationError
 from yaml import YAMLError
 
 from laconian_eval.models import (
+    JudgeProvenance,
     RawAttempt,
     ResponseCase,
     ScoredAttempt,
@@ -113,8 +114,11 @@ def attach_judgments(
     scored: Sequence[ScoredAttempt],
     judgments: Sequence[SemanticJudgment],
 ) -> tuple[ScoredAttempt, ...]:
+    validated_scored = tuple(
+        ScoredAttempt.model_validate(attempt.model_dump(mode="python")) for attempt in scored
+    )
     scored_by_id: dict[str, ScoredAttempt] = {}
-    for attempt in scored:
+    for attempt in validated_scored:
         if attempt.raw.output_text is None:
             continue
         response_id = _response_id(attempt.raw)
@@ -128,23 +132,36 @@ def attach_judgments(
             raise ValueError(f"duplicate judgment response_id {judgment.response_id!r}")
         if judgment.response_id not in scored_by_id:
             raise ValueError(f"unknown response_id {judgment.response_id!r} in judgments")
+        if not scored_by_id[judgment.response_id].hard_pass:
+            raise ValueError(
+                f"judgment response_id {judgment.response_id!r} targets a hard-fail response"
+            )
         judgments_by_id[judgment.response_id] = judgment
 
     attached: list[ScoredAttempt] = []
-    for attempt in scored:
+    for attempt in validated_scored:
         if attempt.raw.output_text is None:
-            attached.append(attempt.model_copy(update={"semantic_pass": None, "judgment_id": None}))
+            attached.append(attempt)
             continue
         response_id = _response_id(attempt.raw)
         attached_judgment = judgments_by_id.get(response_id)
-        attached.append(
-            attempt.model_copy(
-                update={
-                    "semantic_pass": (
-                        attached_judgment.passed if attached_judgment is not None else None
-                    ),
-                    "judgment_id": response_id if attached_judgment is not None else None,
-                }
-            )
+        updated = attempt.model_dump(mode="python")
+        updated.update(
+            {
+                "semantic_pass": (
+                    attached_judgment.passed if attached_judgment is not None else None
+                ),
+                "judgment_id": response_id if attached_judgment is not None else None,
+                "judge_provenance": (
+                    JudgeProvenance(
+                        provider=attached_judgment.judge_provider,
+                        model=attached_judgment.judge_model,
+                        prompt_sha256=attached_judgment.judge_prompt_sha256,
+                    )
+                    if attached_judgment is not None
+                    else None
+                ),
+            }
         )
+        attached.append(ScoredAttempt.model_validate(updated))
     return tuple(attached)

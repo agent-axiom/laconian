@@ -199,12 +199,44 @@ class CheckResult(StrictModel):
     detail: str
 
 
+class JudgeProvenance(StrictModel):
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ScoredAttempt(StrictModel):
     raw: RawAttempt
     checks: tuple[CheckResult, ...]
     hard_pass: bool
     semantic_pass: bool | None = None
     judgment_id: str | None = None
+    judge_provenance: JudgeProvenance | None = None
+
+    @model_validator(mode="after")
+    def validate_scoring_integrity(self) -> Self:
+        if not self.raw.terminal:
+            raise ValueError("scored raw attempt must be terminal")
+
+        expected_hard_pass = self.raw.error is None and all(check.passed for check in self.checks)
+        if self.hard_pass != expected_hard_pass:
+            raise ValueError(
+                "hard_pass must equal provider success and the conjunction of all checks"
+            )
+
+        judgment_values = (
+            self.semantic_pass,
+            self.judgment_id,
+            self.judge_provenance,
+        )
+        populated = sum(value is not None for value in judgment_values)
+        if populated not in (0, len(judgment_values)):
+            raise ValueError(
+                "semantic_pass, judgment_id, and judge_provenance must all be set or all be null"
+            )
+        if not self.hard_pass and populated:
+            raise ValueError("hard-fail scored attempts cannot carry semantic judgments")
+        return self
 
 
 class PriceEstimate(StrictModel):
@@ -219,6 +251,7 @@ class ArmMetrics(StrictModel):
     total: int
     hard_passed: int
     semantic_passed: int | None
+    semantic_judged: int = 0
     provider_errors: int
     retry_attempts: int
     exact_violations: int
@@ -226,6 +259,20 @@ class ArmMetrics(StrictModel):
     median_output_tokens: float | None
     median_output_characters: float | None
     price: PriceEstimate | None = None
+
+    @model_validator(mode="after")
+    def validate_semantic_counts(self) -> Self:
+        if self.semantic_judged < 0 or self.semantic_judged > self.hard_passed:
+            raise ValueError("semantic_judged must be between zero and hard_passed")
+        if self.semantic_judged == 0 and self.semantic_passed is not None:
+            raise ValueError("semantic_passed must be null when semantic_judged is zero")
+        if self.semantic_judged > 0 and self.semantic_passed is None:
+            raise ValueError("semantic_passed must be present when semantic_judged is nonzero")
+        if self.semantic_passed is not None and not (
+            0 <= self.semantic_passed <= self.semantic_judged
+        ):
+            raise ValueError("semantic_passed must be between zero and semantic_judged")
+        return self
 
 
 class PairedMetrics(StrictModel):
@@ -244,3 +291,4 @@ class RunSummary(StrictModel):
     arms: tuple[ArmMetrics, ...]
     paired: PairedMetrics
     price_snapshot: PriceSnapshot | None = None
+    judge_provenance: tuple[JudgeProvenance, ...] = ()

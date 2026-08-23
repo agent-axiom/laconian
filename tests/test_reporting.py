@@ -8,9 +8,11 @@ import pytest
 from laconian_eval.models import (
     ErrorInfo,
     HardConstraints,
+    JudgeProvenance,
     PriceSnapshot,
     RawAttempt,
     ResponseCase,
+    ScoredAttempt,
     TokenUsageModel,
 )
 from laconian_eval.reporting import summarize, write_markdown_report, write_summary_json
@@ -82,10 +84,11 @@ def scored(
     input_tokens: int = 10,
     cached_tokens: int | None = 0,
     semantic: bool | None = None,
+    provenance: JudgeProvenance | None = None,
     repetition: int = 0,
     run_id: str = "run-1",
     manifest_hash: str = "a" * 64,
-):
+) -> ScoredAttempt:
     result = score_attempt(
         response_case,
         raw(
@@ -103,7 +106,33 @@ def scored(
             manifest_hash=manifest_hash,
         ),
     )
-    return result.model_copy(update={"semantic_pass": semantic})
+    if semantic is None:
+        return result
+    selected_provenance = provenance or JudgeProvenance(
+        provider="fixture",
+        model="fixture-judge-v1",
+        prompt_sha256=digest("judge prompt"),
+    )
+    judgment_id = digest(
+        ":".join(
+            (
+                result.raw.run_id,
+                result.raw.manifest_sha256,
+                result.raw.case_id,
+                result.raw.arm,
+                str(result.raw.repetition),
+                result.raw.output_text or "",
+            )
+        )
+    )
+    return ScoredAttempt.model_validate(
+        {
+            **result.model_dump(mode="python"),
+            "semantic_pass": semantic,
+            "judgment_id": judgment_id,
+            "judge_provenance": selected_provenance,
+        }
+    )
 
 
 def test_shorter_failed_if_is_excluded_and_paired_delta_is_right_minus_left() -> None:
@@ -243,6 +272,7 @@ def test_arm_metrics_count_attempts_errors_and_violation_categories() -> None:
     assert summary.terminal_records == 3
     assert metrics.total == 3
     assert metrics.hard_passed == 0
+    assert metrics.semantic_judged == 0
     assert metrics.provider_errors == 1
     assert metrics.retry_attempts == 2
     assert metrics.exact_violations == 1
@@ -265,13 +295,21 @@ def test_semantic_status_is_nullable_and_semantic_gate_requires_full_coverage() 
 
     assert hard_summary.quality_gate == "hard"
     assert hard_summary.arms[0].semantic_passed is None
+    assert hard_summary.arms[0].semantic_judged == 0
     with pytest.raises(ValueError, match="semantic judgment coverage"):
         summarize((not_judged,), require_semantic=True)
 
-    failed = not_judged.model_copy(update={"semantic_pass": False})
+    failed = scored(
+        response_case,
+        arm="if",
+        output="answer",
+        output_tokens=2,
+        semantic=False,
+    )
     semantic_summary = summarize((failed,), require_semantic=True)
     assert semantic_summary.quality_gate == "semantic"
     assert semantic_summary.arms[0].semantic_passed == 0
+    assert semantic_summary.arms[0].semantic_judged == 1
 
 
 def test_semantic_gate_does_not_require_judgments_for_hard_failures() -> None:
@@ -288,6 +326,7 @@ def test_semantic_gate_does_not_require_judgments_for_hard_failures() -> None:
 
     assert summary.arms[0].hard_passed == 0
     assert summary.arms[0].semantic_passed is None
+    assert summary.arms[0].semantic_judged == 0
 
 
 def test_semantic_pairing_requires_both_sides_to_pass_semantic_gate() -> None:
@@ -372,6 +411,37 @@ def test_price_cached_rate_falls_back_and_missing_success_usage_suppresses_cost(
     assert partial.price is None
 
 
+def test_price_requires_known_cache_accounting_and_at_least_one_success() -> None:
+    response_case = case()
+    unknown_cache = scored(
+        response_case,
+        arm="if",
+        output="answer",
+        output_tokens=5,
+        cached_tokens=None,
+    )
+    provider_error = score_attempt(
+        response_case,
+        raw(
+            response_case,
+            arm="baseline",
+            output=None,
+            error=ErrorInfo(kind="timeout", message="Timed out.", retryable=True),
+        ),
+    )
+    explicit_zero_cache = scored(
+        response_case,
+        arm="concise",
+        output="answer",
+        output_tokens=5,
+        cached_tokens=0,
+    )
+
+    assert summarize((unknown_cache,), price_snapshot=snapshot()).arms[0].price is None
+    assert summarize((provider_error,), price_snapshot=snapshot()).arms[0].price is None
+    assert summarize((explicit_zero_cache,), price_snapshot=snapshot()).arms[0].price is not None
+
+
 def test_summary_and_markdown_writers_are_deterministic_and_refuse_existing_paths(
     tmp_path: Path,
 ) -> None:
@@ -406,12 +476,23 @@ def test_summary_and_markdown_writers_are_deterministic_and_refuse_existing_path
     assert "Exact violations" in markdown
     assert "Format violations" in markdown
     assert "not judged" not in markdown
-    assert "0 passed" in markdown
+    assert "1/1 (100.0%)" in markdown
+    assert "0/1 passed (0.0%)" in markdown
+    assert "1/1 hard-pass coverage (100.0%)" in markdown
     assert "concise - if" in markdown
     assert "positive means `if` is shorter" in markdown
     assert "(input - cached input)" in markdown
     assert "2026-01-01" in markdown
     assert "https://example.test/pricing" in markdown
+    assert "fixture-judge-v1" in markdown
+    assert digest("judge prompt") in markdown
+    assert summary.judge_provenance == (
+        JudgeProvenance(
+            provider="fixture",
+            model="fixture-judge-v1",
+            prompt_sha256=digest("judge prompt"),
+        ),
+    )
     for forbidden in ("composite score", "leaderboard", "rank"):
         assert forbidden not in markdown.lower()
 
@@ -443,4 +524,60 @@ def test_markdown_distinguishes_not_judged_from_semantic_failure(tmp_path: Path)
 
     markdown = report.read_text(encoding="utf-8")
     assert "not judged" in markdown
-    assert "0 passed" in markdown
+    assert "0/1 passed (0.0%)" in markdown
+    assert "1/1 hard-pass coverage (100.0%)" in markdown
+
+
+def test_markdown_shows_partial_semantic_coverage_and_unique_sorted_provenance(
+    tmp_path: Path,
+) -> None:
+    response_case = case()
+    first_provenance = JudgeProvenance(
+        provider="alpha",
+        model="judge-a",
+        prompt_sha256="1" * 64,
+    )
+    second_provenance = JudgeProvenance(
+        provider="zeta",
+        model="judge-z",
+        prompt_sha256="2" * 64,
+    )
+    rows = (
+        scored(
+            response_case,
+            arm="if",
+            output="judged z",
+            output_tokens=2,
+            semantic=True,
+            provenance=second_provenance,
+            repetition=1,
+        ),
+        scored(
+            response_case,
+            arm="if",
+            output="not judged",
+            output_tokens=2,
+            repetition=2,
+        ),
+        scored(
+            response_case,
+            arm="if",
+            output="judged a",
+            output_tokens=2,
+            semantic=False,
+            provenance=first_provenance,
+            repetition=0,
+        ),
+    )
+
+    summary = summarize(rows)
+    report = tmp_path / "partial.md"
+    write_markdown_report(summary, report)
+    markdown = report.read_text(encoding="utf-8")
+
+    assert summary.judge_provenance == (first_provenance, second_provenance)
+    assert summary.arms[0].semantic_judged == 2
+    assert summary.arms[0].semantic_passed == 1
+    assert "1/2 passed (50.0%)" in markdown
+    assert "2/3 hard-pass coverage (66.7%)" in markdown
+    assert markdown.index("judge-a") < markdown.index("judge-z")

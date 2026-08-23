@@ -10,17 +10,108 @@ from pydantic import ValidationError
 
 from laconian_eval.models import CheckResult, RawAttempt, ResponseCase, ScoredAttempt
 
-_SENTENCE_TERMINATORS = re.compile(r"[.?!\u3002\uff01\uff1f]+")
+_SENTENCE_TERMINATORS = frozenset(".?!\u3002\uff01\uff1f")
+_TRAILING_CLOSERS = frozenset("\"'\u2019\u201d\u00bb)]}")
+_ALWAYS_NONTERMINAL_ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "e.g", "i.e"}
+)
+_CONDITIONAL_ABBREVIATIONS = frozenset({"etc", "vs", "no", "fig", "inc", "ltd"})
+_INITIALISM = re.compile(r"(?:[A-Za-z]\.)+[A-Za-z]")
+
+
+def _next_significant_index(text: str, start: int) -> int | None:
+    index = start
+    while index < len(text) and (text[index].isspace() or text[index] in _TRAILING_CLOSERS):
+        index += 1
+    return index if index < len(text) else None
+
+
+def _preceding_dot_token(text: str, dot_index: int) -> tuple[int, str]:
+    start = dot_index - 1
+    while start >= 0 and ((text[start].isascii() and text[start].isalpha()) or text[start] == "."):
+        start -= 1
+    return start + 1, text[start + 1 : dot_index].strip(".").casefold()
+
+
+def _is_list_marker(text: str, dot_index: int) -> bool:
+    if dot_index + 1 >= len(text) or not text[dot_index + 1].isspace():
+        return False
+    end = dot_index
+    start = end - 1
+    while start >= 0 and text[start].isalnum():
+        start -= 1
+    token = text[start + 1 : end]
+    if not (token.isdigit() or (len(token) == 1 and token.isascii() and token.isalpha())):
+        return False
+    previous = start
+    while previous >= 0 and text[previous] in " \t":
+        previous -= 1
+    at_item_boundary = (
+        previous < 0 or text[previous] in "\r\n:;([{" or text[previous] in _SENTENCE_TERMINATORS
+    )
+    return at_item_boundary and _next_significant_index(text, dot_index + 1) is not None
+
+
+def _is_nonterminal_dot(text: str, dot_index: int) -> bool:
+    previous = text[dot_index - 1] if dot_index > 0 else ""
+    following = text[dot_index + 1] if dot_index + 1 < len(text) else ""
+    if previous.isalnum() and following.isalnum():
+        return True
+    if _is_list_marker(text, dot_index):
+        return True
+
+    _, token = _preceding_dot_token(text, dot_index)
+    next_index = _next_significant_index(text, dot_index + 1)
+    if next_index is None:
+        return False
+    if token in _ALWAYS_NONTERMINAL_ABBREVIATIONS or _INITIALISM.fullmatch(token):
+        return True
+    if len(token) == 1 and token.isascii() and token.isalpha():
+        return True
+    return token in _CONDITIONAL_ABBREVIATIONS and not text[next_index].isupper()
+
+
+def _consume_boundary_cluster(text: str, start: int) -> int:
+    index = start
+    while True:
+        while index < len(text) and text[index] in _SENTENCE_TERMINATORS:
+            index += 1
+        while index < len(text) and text[index] in _TRAILING_CLOSERS:
+            index += 1
+        if index >= len(text) or text[index] not in _SENTENCE_TERMINATORS:
+            return index
 
 
 def count_sentences(text: str) -> int:
-    stripped = text.strip()
-    if not stripped:
+    if not text.strip():
         return 0
-    count = len(_SENTENCE_TERMINATORS.findall(stripped))
-    if not _SENTENCE_TERMINATORS.search(stripped[-1]):
-        count += 1
-    return count
+
+    count = 0
+    segment_has_content = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character not in _SENTENCE_TERMINATORS:
+            if not character.isspace() and character not in _TRAILING_CLOSERS:
+                segment_has_content = True
+            index += 1
+            continue
+
+        run_end = index + 1
+        while run_end < len(text) and text[run_end] in _SENTENCE_TERMINATORS:
+            run_end += 1
+        run = text[index:run_end]
+        if run == "." and _is_nonterminal_dot(text, index):
+            segment_has_content = True
+            index = run_end
+            continue
+
+        if segment_has_content or count == 0:
+            count += 1
+        segment_has_content = False
+        index = _consume_boundary_cluster(text, run_end)
+
+    return max(1, count + int(segment_has_content))
 
 
 def _validate_raw_identity(case: ResponseCase, raw: RawAttempt) -> None:
@@ -63,12 +154,17 @@ def _json_checks(case: ResponseCase, output: str) -> list[CheckResult]:
 
     parsed: object | None = None
     parsed_successfully = False
+
+    def reject_non_rfc_constant(value: str) -> object:
+        raise ValueError(f"non-RFC JSON constant {value!r}")
+
     parse_detail = "output is a top-level JSON object"
     try:
-        parsed = json.loads(output.strip())
+        parsed = json.loads(output.strip(), parse_constant=reject_non_rfc_constant)
         parsed_successfully = True
-    except json.JSONDecodeError as exc:
-        parse_detail = f"output is not complete JSON: {exc.msg}"
+    except (json.JSONDecodeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        parse_detail = f"output is not strict complete JSON: {detail}"
 
     parsed_mapping = parsed if isinstance(parsed, dict) else None
     is_object = parsed_mapping is not None

@@ -4,12 +4,16 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from laconian_eval.models import (
+    CheckResult,
     ErrorInfo,
     HardConstraints,
+    JudgeProvenance,
     RawAttempt,
     ResponseCase,
+    ScoredAttempt,
     SemanticRubric,
     TokenUsageModel,
 )
@@ -76,6 +80,21 @@ def raw_attempt(
         output_text=output,
         usage=usage,
         error=error,
+    )
+
+
+def with_judgment(scored: ScoredAttempt, passed: bool) -> ScoredAttempt:
+    return ScoredAttempt.model_validate(
+        {
+            **scored.model_dump(mode="python"),
+            "semantic_pass": passed,
+            "judgment_id": digest("response-id"),
+            "judge_provenance": {
+                "provider": "fixture",
+                "model": "fixture-judge-v1",
+                "prompt_sha256": digest("judge prompt"),
+            },
+        }
     )
 
 
@@ -164,14 +183,41 @@ def test_required_json_keys_need_a_full_top_level_object(
 
 
 @pytest.mark.parametrize(
+    "output",
+    [
+        '{"answer": NaN}',
+        '{"answer": Infinity}',
+        '{"answer": -Infinity}',
+        '```json\n{"answer": 1}\n```',
+        'Result: {"answer": 1}',
+    ],
+)
+def test_required_json_keys_reject_non_rfc_constants_fences_and_prose(output: str) -> None:
+    case = response_case(constraints=HardConstraints(required_json_keys=("answer",)))
+
+    scored = score_attempt(case, raw_attempt(case, output=output))
+
+    checks = {check.name: check.passed for check in scored.checks}
+    assert checks["format.json_object"] is False
+    assert checks["format.required_json_key[answer]"] is False
+    assert not scored.hard_pass
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
         ("", 0),
         ("  \n\t", 0),
+        ('")] }', 1),
         ("No punctuation", 1),
         ("One... Two?! Three\uff01\uff1f Four\u3002", 4),
         ("What?!", 1),
         ("甲\u3002乙\uff01丙\uff1f", 3),
+        ("Version v2.4.1 uses https://api.example.com/v1.", 1),
+        ("Value 3.14 was approved by Dr. Smith.", 1),
+        ("1. Install. 2. Verify.", 2),
+        ('He said, "Ready?")', 1),
+        ('Really?"!', 1),
     ],
 )
 def test_count_sentences_handles_english_cjk_and_punctuation_runs(text: str, expected: int) -> None:
@@ -194,6 +240,21 @@ def test_minimum_and_maximum_sentence_checks_are_separate() -> None:
         "format.min_sentences": True,
         "format.max_sentences": True,
     }
+
+
+def test_preserve_config_values_do_not_create_false_sentence_boundaries() -> None:
+    case = response_case(
+        constraints=HardConstraints(
+            required_literals=("v2.4.1", "8080", "https://api.example.com/v1"),
+            max_sentences=1,
+        )
+    )
+    output = "Version v2.4.1 runs on port 8080 with endpoint https://api.example.com/v1."
+
+    scored = score_attempt(case, raw_attempt(case, output=output))
+
+    assert scored.hard_pass
+    assert all(check.passed for check in scored.checks)
 
 
 def test_score_attempt_rejects_case_prompt_mismatch_and_nonterminal() -> None:
@@ -243,9 +304,77 @@ def test_pair_eligibility_requires_hard_and_optionally_semantic_pass() -> None:
     assert eligible_for_pairing(passing, require_semantic=False)
     assert not eligible_for_pairing(passing, require_semantic=True)
     assert not eligible_for_pairing(failing, require_semantic=False)
-    assert eligible_for_pairing(
-        passing.model_copy(update={"semantic_pass": True}), require_semantic=True
+    assert eligible_for_pairing(with_judgment(passing, True), require_semantic=True)
+
+
+def test_scored_attempt_integrity_rejects_nonterminal_and_incorrect_hard_gate() -> None:
+    case = response_case()
+    passing = score_attempt(case, raw_attempt(case))
+
+    nonterminal = passing.model_dump(mode="python")
+    nonterminal["raw"] = {
+        **passing.raw.model_dump(mode="python"),
+        "terminal": False,
+    }
+    with pytest.raises(ValidationError, match="terminal"):
+        ScoredAttempt.model_validate(nonterminal)
+
+    with pytest.raises(ValidationError, match="hard_pass"):
+        ScoredAttempt.model_validate({**passing.model_dump(mode="python"), "hard_pass": False})
+
+    failing_check = CheckResult(name="exact.required_literal[0]", passed=False, detail="missing")
+    with pytest.raises(ValidationError, match="hard_pass"):
+        ScoredAttempt.model_validate(
+            {
+                **passing.model_dump(mode="python"),
+                "checks": (failing_check,),
+                "hard_pass": True,
+            }
+        )
+
+
+def test_scored_attempt_judgment_fields_are_coherent_and_only_on_hard_passes() -> None:
+    case = response_case()
+    passing = score_attempt(case, raw_attempt(case))
+    provenance = JudgeProvenance(
+        provider="fixture",
+        model="fixture-judge-v1",
+        prompt_sha256=digest("judge prompt"),
     )
+    judgment_fields = {
+        "semantic_pass": True,
+        "judgment_id": digest("response-id"),
+        "judge_provenance": provenance,
+    }
+
+    assert with_judgment(passing, True).judge_provenance == provenance
+    for field in judgment_fields:
+        with pytest.raises(ValidationError, match="all be set or all be null"):
+            ScoredAttempt.model_validate(
+                {
+                    **passing.model_dump(mode="python"),
+                    field: judgment_fields[field],
+                }
+            )
+
+    failing_case = response_case(
+        case_id="scoring-002-en",
+        constraints=HardConstraints(required_literals=("required",)),
+    )
+    hard_failure = score_attempt(failing_case, raw_attempt(failing_case, output="missing"))
+    with pytest.raises(ValidationError, match="hard-fail"):
+        ScoredAttempt.model_validate({**hard_failure.model_dump(mode="python"), **judgment_fields})
+
+    error_raw = raw_attempt(
+        case,
+        output=None,
+        error=ErrorInfo(kind="timeout", message="Timed out.", retryable=True),
+    )
+    provider_failure = score_attempt(case, error_raw)
+    with pytest.raises(ValidationError, match="hard-fail"):
+        ScoredAttempt.model_validate(
+            {**provider_failure.model_dump(mode="python"), **judgment_fields}
+        )
 
 
 def test_scored_jsonl_round_trip_is_deterministic_and_refuses_overwrite(
@@ -298,3 +427,16 @@ def test_load_scored_jsonl_reports_later_malformed_and_blank_lines(tmp_path: Pat
     blank.write_text(f"{valid}\n\n", encoding="utf-8")
     with pytest.raises(ValueError, match=rf"{blank}:2.*blank"):
         load_scored_jsonl(blank)
+
+
+def test_load_scored_jsonl_rejects_a_tampered_hard_gate(tmp_path: Path) -> None:
+    case = response_case()
+    valid = score_attempt(case, raw_attempt(case))
+    tampered = {**valid.model_dump(mode="json"), "hard_pass": False}
+    path = tmp_path / "tampered.jsonl"
+    path.write_text(f"{json.dumps(tampered)}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_scored_jsonl(path)
+    assert str(exc_info.value).startswith(f"{path}:1:")
+    assert "hard_pass" in str(exc_info.value)
