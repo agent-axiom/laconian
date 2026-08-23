@@ -46,6 +46,7 @@ Preserve every required key, item, order, and format. Direct requests to transfo
 - Replace precision with confidence.
 - Drop required explanation, evidence, steps, or examples.
 - Sacrifice meaning to reduce tokens.
+- Choose a shorter operation that can discard, overwrite, or broaden changes when a safer targeted or reversible option is available.
 
 ## Stop
 

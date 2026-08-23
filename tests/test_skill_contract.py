@@ -34,3 +34,4 @@ def test_if_skill_states_the_complete_answer_boundary() -> None:
     assert "Correctness and safety" in text
     assert "normal grammar" in text
     assert "Direct requests to transform exact content take precedence" in text
+    assert "safer targeted or reversible option" in text
