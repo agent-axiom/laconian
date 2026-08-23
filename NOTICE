@@ -2,9 +2,11 @@ Laconian licensing map
 
 Code under src/, tests/, .github/, pyproject.toml, and skills/if/SKILL.md: Apache-2.0.
 README files, docs/, evals/cases/, benchmarks/methodology.md, and published benchmark results: CC-BY-4.0.
+evals/baselines/caveman/SOURCE.md: CC-BY-4.0.
 
 Third-party material
 
 evals/baselines/caveman/SKILL.md is copied from JuliusBrussee/caveman at commit
 781c384cafc28d7ca392014dbab569f985b5b2fd and remains MIT-licensed.
 Copyright (c) 2026 Julius Brussee.
+Full terms: LICENSES/CAVEMAN-MIT.txt.
