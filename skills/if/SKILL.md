@@ -1,6 +1,6 @@
 ---
 name: if
-description: Use only when the user explicitly invokes the `if` skill or asks for a concise, laconic, no-fluff, or to-the-point answer. Do not trigger on the ordinary word or programming keyword `if`, or when the user asks for a detailed, step-by-step, exhaustive, educational, or fixed-length response.
+description: Use when the user explicitly invokes the `if` skill, or otherwise asks for a concise, laconic, no-fluff, or to-the-point answer. Without explicit invocation, do not trigger on the ordinary word or programming keyword `if`, or on detailed, step-by-step, exhaustive, educational, or fixed-length requests.
 ---
 
 # if
