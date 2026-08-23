@@ -3,6 +3,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+ProviderKind = Literal["fake", "replay", "openai"]
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -93,7 +95,7 @@ class ActivationCaseFile(StrictModel):
 
 
 class ProviderConfig(StrictModel):
-    kind: Literal["fake", "replay", "openai"]
+    kind: ProviderKind
     model: str = Field(min_length=1)
     api_key_env: str | None = None
     replay_file: str | None = None
@@ -296,7 +298,17 @@ class RunSummary(StrictModel):
     quality_gate: Literal["hard", "semantic"]
     raw_attempts: int
     terminal_records: int
+    providers: tuple[str, ...] = ()
     arms: tuple[ArmMetrics, ...]
     paired: PairedMetrics
     price_snapshot: PriceSnapshot | None = None
     judge_provenance: tuple[JudgeProvenance, ...] = ()
+
+    @field_validator("providers")
+    @classmethod
+    def validate_provider_provenance(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not provider.strip() for provider in value):
+            raise ValueError("providers must be nonblank")
+        if value != tuple(sorted(set(value))):
+            raise ValueError("providers must be sorted and unique")
+        return value

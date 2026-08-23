@@ -55,9 +55,7 @@ def test_response_smoke_has_twelve_bilingual_scenarios() -> None:
 def test_response_smoke_matches_matrix_and_pair_invariants() -> None:
     grouped = _response_cases_by_scenario()
     assert {
-        (scenario_id, case.category)
-        for scenario_id, cases in grouped.items()
-        for case in cases
+        (scenario_id, case.category) for scenario_id, cases in grouped.items() for case in cases
     } == set(RESPONSE_MATRIX.items())
 
     for scenario_id, cases in grouped.items():
@@ -133,14 +131,11 @@ def test_response_smoke_rubrics_cover_required_semantics() -> None:
         "summary-ordered": 3,
     }
     for scenario_id, fact_count in expected_fact_counts.items():
-        assert {
-            len(case.semantic_rubric.required_facts) for case in grouped[scenario_id]
-        } == {fact_count}
+        assert {len(case.semantic_rubric.required_facts) for case in grouped[scenario_id]} == {
+            fact_count
+        }
 
-    assert all(
-        case.semantic_rubric.material_warning
-        for case in grouped["preserve-command"]
-    )
+    assert all(case.semantic_rubric.material_warning for case in grouped["preserve-command"])
 
     expected_summary_rubrics = {
         "en": (
@@ -278,11 +273,7 @@ def test_activation_smoke_has_four_bilingual_scenarios() -> None:
     cases = load_activation_cases([ROOT / "evals/cases/activation-smoke.yaml"])
     assert len(cases) == 8
     assert len({case.scenario_id for case in cases}) == 4
-    expected = {
-        case.scenario_id: case.expected_activation
-        for case in cases
-        if case.locale == "en"
-    }
+    expected = {case.scenario_id: case.expected_activation for case in cases if case.locale == "en"}
     assert expected == {
         "activation-explicit": True,
         "activation-concise": True,

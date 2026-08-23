@@ -184,6 +184,7 @@ def summarize(
         quality_gate="semantic" if require_semantic else "hard",
         raw_attempts=sum(attempt.raw.attempt for attempt in validated_scored),
         terminal_records=len(validated_scored),
+        providers=tuple(sorted({attempt.raw.provider for attempt in validated_scored})),
         arms=arms,
         paired=_paired_metrics(instances, require_semantic=require_semantic),
         price_snapshot=price_snapshot,
@@ -253,20 +254,39 @@ def _markdown(summary: RunSummary) -> str:
     lines = [
         "# Laconian benchmark report",
         "",
-        f"Quality gate: `{summary.quality_gate}`",
-        "",
-        f"Raw attempts represented: {summary.raw_attempts}",
-        f"Terminal records: {summary.terminal_records}",
-        "",
-        "## Per-arm results",
-        "",
-        (
-            "| Arm | Terminal | Hard passed | Semantic | Provider errors | "
-            "Exact violations | Format violations | Retries | Median output tokens | "
-            "Median output characters | Estimated cost |"
-        ),
-        ("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|"),
     ]
+    fixture_label = None
+    if "replay" in summary.providers:
+        fixture_label = "Replay fixture"
+    elif "fake" in summary.providers:
+        fixture_label = "Synthetic fixture"
+    if fixture_label is not None:
+        lines.extend(
+            (
+                f"> **{fixture_label}:** synthetic test data for pipeline verification; "
+                "not a public benchmark result.",
+                "",
+            )
+        )
+    lines.extend(
+        (
+            f"Quality gate: `{summary.quality_gate}`",
+            "",
+            f"Providers: {', '.join(summary.providers) if summary.providers else 'not recorded'}",
+            "",
+            f"Raw attempts represented: {summary.raw_attempts}",
+            f"Terminal records: {summary.terminal_records}",
+            "",
+            "## Per-arm results",
+            "",
+            (
+                "| Arm | Terminal | Hard passed | Semantic | Provider errors | "
+                "Exact violations | Format violations | Retries | Median output tokens | "
+                "Median output characters | Estimated cost |"
+            ),
+            ("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|"),
+        )
+    )
     for metrics in summary.arms:
         lines.append(
             "| "

@@ -54,6 +54,7 @@ def raw(
     run_id: str = "run-1",
     manifest_hash: str = "a" * 64,
     repetition: int = 0,
+    provider: str = "fake",
 ) -> RawAttempt:
     return RawAttempt(
         run_id=run_id,
@@ -66,7 +67,7 @@ def raw(
         retry_of_attempt=attempt - 1 if attempt > 1 else None,
         prompt_sha256=digest(response_case.prompt),
         instruction_sha256=digest(f"{arm}-instruction"),
-        provider="fake",
+        provider=provider,
         model="fixture-v1",
         started_at=datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
         elapsed_ms=5,
@@ -89,6 +90,7 @@ def scored(
     repetition: int = 0,
     run_id: str = "run-1",
     manifest_hash: str = "a" * 64,
+    provider: str = "fake",
 ) -> ScoredAttempt:
     result = score_attempt(
         response_case,
@@ -105,6 +107,7 @@ def scored(
             repetition=repetition,
             run_id=run_id,
             manifest_hash=manifest_hash,
+            provider=provider,
         ),
     )
     if semantic is None:
@@ -591,3 +594,66 @@ def test_markdown_shows_partial_semantic_coverage_and_unique_sorted_provenance(
     assert "1/2 passed (50.0%)" in markdown
     assert "2/3 hard-pass coverage (66.7%)" in markdown
     assert markdown.index("judge-a") < markdown.index("judge-z")
+
+
+def test_summary_records_providers_and_markdown_labels_non_live_inputs(
+    tmp_path: Path,
+) -> None:
+    response_case = case()
+    mixed = summarize(
+        (
+            scored(
+                response_case,
+                arm="if",
+                output="fixture",
+                output_tokens=1,
+                provider="replay",
+            ),
+            scored(
+                response_case,
+                arm="concise",
+                output="live",
+                output_tokens=1,
+                provider="openai",
+            ),
+        )
+    )
+    mixed_report = tmp_path / "mixed.md"
+
+    write_markdown_report(mixed, mixed_report)
+
+    assert mixed.providers == ("openai", "replay")
+    assert "Replay fixture" in mixed_report.read_text(encoding="utf-8")
+    assert "not a public benchmark result" in mixed_report.read_text(encoding="utf-8")
+
+    live = summarize(
+        (
+            scored(
+                response_case,
+                arm="if",
+                output="live",
+                output_tokens=1,
+                provider="openai",
+            ),
+        )
+    )
+    live_report = tmp_path / "live.md"
+
+    write_markdown_report(live, live_report)
+
+    assert live.providers == ("openai",)
+    assert "not a public benchmark result" not in live_report.read_text(encoding="utf-8")
+
+    custom = summarize(
+        (
+            scored(
+                response_case,
+                arm="if",
+                output="custom",
+                output_tokens=1,
+                provider="custom-provider",
+            ),
+        )
+    )
+
+    assert custom.providers == ("custom-provider",)

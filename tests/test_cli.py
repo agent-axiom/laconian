@@ -188,6 +188,7 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     summary = RunSummary.model_validate_json(summary_path.read_text(encoding="utf-8"))
     assert len(scored) == 96
     assert summary.terminal_records == 96
+    assert summary.providers == ("replay",)
     assert tuple(metrics.arm for metrics in summary.arms) == (
         "baseline",
         "concise",
@@ -207,6 +208,8 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     assert main(report_args) == 0
     report = report_path.read_text(encoding="utf-8")
     assert "# Laconian benchmark report" in report
+    assert "Replay fixture" in report
+    assert "not a public benchmark result" in report
     assert "Terminal records: 96" in report
     report_before = report_path.read_bytes()
     assert main(report_args) == 2
