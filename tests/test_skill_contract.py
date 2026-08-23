@@ -50,6 +50,10 @@ def test_if_skill_states_the_complete_answer_boundary() -> None:
         "exact form is required." in text
     )
     assert (
+        "Preserve every required key, item, order, and format. Direct requests to "
+        "transform exact content take precedence." in text
+    )
+    assert (
         "- Choose a shorter operation that can discard, overwrite, or broaden changes "
         "when a safer targeted or reversible option is available." in text
     )
