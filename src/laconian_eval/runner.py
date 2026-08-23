@@ -174,11 +174,14 @@ def _resume_position(
     terminal_seen = False
     for attempt in existing:
         expected_retry = None if expected_attempt == 1 else expected_attempt - 1
+        expected_backoff = 100 * (2 ** (expected_attempt - 1))
         if (
             terminal_seen
             or attempt.attempt != expected_attempt
             or attempt.retry_of_attempt != expected_retry
             or (not attempt.terminal and (attempt.error is None or not attempt.error.retryable))
+            or (attempt.terminal and attempt.backoff_ms is not None)
+            or (not attempt.terminal and attempt.backoff_ms != expected_backoff)
         ):
             raise ValueError(f"{path}: impossible historical retry chain for {key}")
         terminal_seen = attempt.terminal
@@ -199,6 +202,83 @@ def _resume_position(
     if previous_attempt >= max_attempts:
         raise ValueError(f"{path}: exhausted nonterminal retry chain for {key}")
     return previous_attempt + 1, previous_attempt
+
+
+def validate_complete_run(
+    *,
+    manifest: RunManifest,
+    cases: Sequence[ResponseCase],
+    arms: Sequence[Arm],
+    attempts: Sequence[RawAttempt],
+    path: Path,
+    run_id: str,
+) -> None:
+    arm_names = tuple(arm.name for arm in arms)
+    if arm_names != manifest.arms:
+        raise ValueError(f"{path}: loaded arms do not match manifest arms")
+
+    by_key = _validate_existing(
+        attempts,
+        expected_manifest_sha256=manifest_sha256(manifest),
+        run_id=run_id,
+        path=path,
+    )
+    plan = build_run_plan(
+        cases,
+        arms,
+        repetitions=manifest.repetitions,
+        seed=manifest.arm_order_seed,
+    )
+    plan_by_key = {item.key: item for item in plan}
+    if len(plan_by_key) != len(plan):
+        raise ValueError(f"{path}: manifest cases produce duplicate plan keys")
+
+    response_models: set[str] = set()
+    for attempt in attempts:
+        if attempt.provider != manifest.provider.kind:
+            raise ValueError(f"{path}: raw provider {attempt.provider!r} conflicts with manifest")
+        if attempt.model != manifest.provider.model:
+            raise ValueError(f"{path}: raw model {attempt.model!r} conflicts with manifest")
+        if attempt.arm not in manifest.arms:
+            raise ValueError(f"{path}: raw arm {attempt.arm!r} conflicts with manifest")
+        if attempt.repetition >= manifest.repetitions:
+            raise ValueError(f"{path}: raw repetition {attempt.repetition} conflicts with manifest")
+        if manifest.provider.kind == "openai" and attempt.terminal and attempt.error is None:
+            if attempt.response_model is None or not attempt.response_model.strip():
+                raise ValueError(f"{path}: successful OpenAI row has no response_model provenance")
+            response_models.add(attempt.response_model)
+
+    if len(response_models) > 1:
+        raise ValueError(f"{path}: mixed OpenAI response_model provenance")
+
+    unexpected = sorted(set(by_key) - set(plan_by_key))
+    if unexpected:
+        raise ValueError(f"{path}: unexpected raw plan key(s): {', '.join(unexpected)}")
+    missing = sorted(set(plan_by_key) - set(by_key))
+    if missing:
+        raise ValueError(
+            f"{path}: run is incomplete; missing terminal combination(s): {', '.join(missing)}"
+        )
+
+    max_attempts = 1 + manifest.retry.max_transient_retries
+    for key, item in plan_by_key.items():
+        history = by_key[key]
+        expected_prompt_sha256 = sha256(item.case.prompt.encode("utf-8")).hexdigest()
+        for attempt in history:
+            if attempt.prompt_sha256 != expected_prompt_sha256:
+                raise ValueError(f"{path}: raw prompt_sha256 conflicts with case for {key}")
+            if attempt.instruction_sha256 != item.arm.sha256:
+                raise ValueError(f"{path}: raw instruction_sha256 conflicts with arm for {key}")
+        if (
+            _resume_position(
+                history,
+                max_attempts=max_attempts,
+                path=path,
+                key=key,
+            )
+            is not None
+        ):
+            raise ValueError(f"{path}: run is incomplete; missing terminal record for {key}")
 
 
 def _append_attempt(file: TextIO, attempt: RawAttempt) -> None:
@@ -322,6 +402,7 @@ def run_to_jsonl(
                     instruction_sha256=item.arm.sha256,
                     provider=manifest.provider.kind,
                     model=manifest.provider.model,
+                    response_model=redact(result.response_model),
                     started_at=started_at,
                     elapsed_ms=elapsed_ms,
                     output_text=cast(str, redact(result.output_text)),

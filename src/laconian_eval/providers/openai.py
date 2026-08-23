@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Protocol, cast
 
 from laconian_eval.providers.base import (
@@ -80,6 +81,9 @@ def _classify_api_error(error: Exception) -> ProviderError | None:
     elif "APIConnectionError" in names:
         kind = "connection"
         retryable = True
+    elif status in (408, 409):
+        kind = "provider_status"
+        retryable = True
     elif "InternalServerError" in names or (status is not None and status >= 500):
         kind = "server_error"
         retryable = True
@@ -94,58 +98,62 @@ def _classify_api_error(error: Exception) -> ProviderError | None:
     )
 
 
-def _required_count(usage: object, field: str) -> int:
+def _malformed(message: str, request_id: str | None) -> ProviderError:
+    return ProviderError(
+        kind="malformed_response",
+        message=message,
+        retryable=False,
+        request_id=request_id,
+    )
+
+
+def _required_count(usage: object, field: str, request_id: str | None) -> int:
     value = getattr(usage, field, None)
     if type(value) is not int or value < 0:
-        raise ProviderError(
-            kind="malformed_response",
-            message=f"response usage {field} must be a nonnegative integer",
-            retryable=False,
+        raise _malformed(
+            f"response usage {field} must be a nonnegative integer",
+            request_id,
         )
     return value
 
 
-def _optional_cached_count(usage: object) -> int | None:
+def _optional_cached_count(usage: object, request_id: str | None) -> int | None:
     details = getattr(usage, "input_tokens_details", None)
     if details is None:
         return None
     missing = object()
     value = getattr(details, "cached_tokens", missing)
     if value is missing:
-        raise ProviderError(
-            kind="malformed_response",
-            message="response usage input_tokens_details must expose cached_tokens",
-            retryable=False,
+        raise _malformed(
+            "response usage input_tokens_details must expose cached_tokens",
+            request_id,
         )
     if value is None:
         return None
     if type(value) is not int or value < 0:
-        raise ProviderError(
-            kind="malformed_response",
-            message="response usage cached_tokens must be a nonnegative integer or null",
-            retryable=False,
+        raise _malformed(
+            "response usage cached_tokens must be a nonnegative integer or null",
+            request_id,
         )
     return value
 
 
-def _parse_usage(raw_usage: object | None) -> TokenUsage | None:
+def _parse_usage(raw_usage: object | None, request_id: str | None) -> TokenUsage | None:
     if raw_usage is None:
         return None
-    input_tokens = _required_count(raw_usage, "input_tokens")
-    output_tokens = _required_count(raw_usage, "output_tokens")
-    total_tokens = _required_count(raw_usage, "total_tokens")
-    cached_tokens = _optional_cached_count(raw_usage)
+    input_tokens = _required_count(raw_usage, "input_tokens", request_id)
+    output_tokens = _required_count(raw_usage, "output_tokens", request_id)
+    total_tokens = _required_count(raw_usage, "total_tokens", request_id)
+    cached_tokens = _optional_cached_count(raw_usage, request_id)
     if total_tokens < input_tokens + output_tokens:
-        raise ProviderError(
-            kind="malformed_response",
-            message="response usage total_tokens must cover input_tokens + output_tokens",
-            retryable=False,
+        raise _malformed(
+            "response usage total_tokens must cover input_tokens + output_tokens",
+            request_id,
         )
     if cached_tokens is not None and cached_tokens > input_tokens:
-        raise ProviderError(
-            kind="malformed_response",
-            message="response usage cached_tokens cannot exceed input_tokens",
-            retryable=False,
+        raise _malformed(
+            "response usage cached_tokens cannot exceed input_tokens",
+            request_id,
         )
     return TokenUsage(
         input_tokens=input_tokens,
@@ -155,30 +163,81 @@ def _parse_usage(raw_usage: object | None) -> TokenUsage | None:
     )
 
 
-def _optional_response_string(response: object, field: str, label: str) -> str | None:
-    value = getattr(response, field, None)
+def _response_request_id(response: object) -> str | None:
+    value = getattr(response, "_request_id", None)
     if value is not None and not isinstance(value, str):
-        raise ProviderError(
-            kind="malformed_response",
-            message=f"response {label} must be a string or null",
-            retryable=False,
-        )
+        raise _malformed("response request ID must be a string or null", None)
     return value
 
 
+def _public_response_error(error: object, request_id: str | None) -> tuple[str, str]:
+    code = getattr(error, "code", None)
+    message = getattr(error, "message", None)
+    if not isinstance(code, str) or not code.strip():
+        raise _malformed("response error code must be a nonblank string", request_id)
+    if not isinstance(message, str) or not message.strip():
+        raise _malformed("response error message must be a nonblank string", request_id)
+    return code, message
+
+
 def _parse_response(response: object) -> GenerationResult:
-    output_text = getattr(response, "output_text", None)
-    if not isinstance(output_text, str):
+    request_id = _response_request_id(response)
+    status = getattr(response, "status", None)
+    if not isinstance(status, str):
+        raise _malformed("response status must be a string", request_id)
+    response_model = getattr(response, "model", None)
+    if not isinstance(response_model, str) or not response_model.strip():
+        raise _malformed("response model must be a nonblank string", request_id)
+
+    response_error = getattr(response, "error", None)
+    if status == "incomplete":
         raise ProviderError(
-            kind="malformed_response",
-            message="response output_text must be a string",
+            kind="incomplete_response",
+            message=f"OpenAI response is incomplete for model {response_model}",
             retryable=False,
+            request_id=request_id,
         )
+    if status == "failed":
+        if response_error is None:
+            raise ProviderError(
+                kind="failed_response",
+                message=f"OpenAI response failed for model {response_model}",
+                retryable=False,
+                request_id=request_id,
+            )
+        code, message = _public_response_error(response_error, request_id)
+        raise ProviderError(
+            kind=code,
+            message=message,
+            retryable=code in {"rate_limit", "server_error", "vector_store_timeout"},
+            request_id=request_id,
+        )
+    if status == "cancelled":
+        message = f"OpenAI response was cancelled for model {response_model}"
+        if response_error is not None:
+            _, message = _public_response_error(response_error, request_id)
+        raise ProviderError(
+            kind="cancelled",
+            message=message,
+            retryable=False,
+            request_id=request_id,
+        )
+    if status != "completed":
+        raise _malformed(
+            f"response status {status!r} is not a completed terminal status", request_id
+        )
+    if response_error is not None:
+        raise _malformed("completed response must not contain an error", request_id)
+
+    output_text = getattr(response, "output_text", None)
+    if not isinstance(output_text, str) or not output_text.strip():
+        raise _malformed("response output_text must be a nonblank string", request_id)
     return GenerationResult(
         output_text=output_text,
-        usage=_parse_usage(getattr(response, "usage", None)),
-        request_id=_optional_response_string(response, "_request_id", "request ID"),
-        finish_reason=_optional_response_string(response, "status", "status"),
+        usage=_parse_usage(getattr(response, "usage", None), request_id),
+        request_id=request_id,
+        finish_reason=status,
+        response_model=response_model,
     )
 
 
@@ -198,6 +257,10 @@ class OpenAIProvider:
             return
         if not isinstance(api_key, str) or not api_key.strip():
             raise _configuration_error("a nonblank OpenAI API key is required")
+        if os.environ.get("OPENAI_CUSTOM_HEADERS", "").strip():
+            raise _configuration_error(
+                "OPENAI_CUSTOM_HEADERS must be unset or blank for reproducible runs"
+            )
         try:
             from openai import OpenAI
         except ImportError as exc:
@@ -206,7 +269,16 @@ class OpenAIProvider:
             ) from exc
         self._client = cast(
             _OpenAIClient,
-            OpenAI(api_key=api_key, timeout=self._timeout_seconds, max_retries=0),
+            OpenAI(
+                api_key=api_key,
+                timeout=self._timeout_seconds,
+                max_retries=0,
+                base_url="https://api.openai.com/v1",
+                organization="",
+                project="",
+                admin_api_key="",
+                webhook_secret="",
+            ),
         )
 
     def _validate_request(self, request: GenerationRequest) -> None:

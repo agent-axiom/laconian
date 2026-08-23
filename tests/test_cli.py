@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import TypeAdapter
 
 import laconian_eval.cli as cli
@@ -256,7 +257,7 @@ def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fa
     assert "Quality gate: `hard`" in fallback_report.read_text(encoding="utf-8")
 
 
-def test_missing_openai_key_and_fake_provider_fail_before_result_creation(
+def test_missing_openai_key_fails_before_results_and_fake_runs_as_offline_error_adapter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -294,9 +295,19 @@ repetitions: 1
         encoding="utf-8",
     )
     fake_results = tmp_path / "fake-results"
-    assert main(["run", str(fake_manifest), "--results-root", str(fake_results)]) == 2
-    assert not fake_results.exists()
-    assert "fake" in capsys.readouterr().err.lower()
+    assert main(["run", str(fake_manifest), "--results-root", str(fake_results)]) == 0
+    fake_run = _only_run_directory(fake_results)
+    attempts = tuple(
+        RawAttempt.model_validate_json(line)
+        for line in (fake_run / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(attempts) == 24
+    assert all(attempt.terminal for attempt in attempts)
+    assert {attempt.error.kind for attempt in attempts if attempt.error is not None} == {
+        "missing_fake_key"
+    }
+    assert {path.name for path in fake_run.iterdir()} == {"manifest.json", "raw.jsonl", "run.log"}
+    assert "status=complete" in (fake_run / "run.log").read_text(encoding="utf-8")
 
 
 def test_unexpected_run_failure_returns_one_without_printing_a_traceback(
@@ -305,30 +316,45 @@ def test_unexpected_run_failure_returns_one_without_printing_a_traceback(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(REPOSITORY_ROOT)
+    secret = "sk-secret-must-not-leak"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
 
     class ExplodingProvider:
         def generate(self, request: object) -> object:
-            raise RuntimeError("synthetic programming defect")
+            raise RuntimeError(f"synthetic programming defect: {secret}")
 
-    monkeypatch.setattr(
-        cli.ReplayProvider,
-        "from_path",
-        classmethod(lambda cls, path: ExplodingProvider()),
-    )
+    def make_exploding_provider(**kwargs: object) -> ExplodingProvider:
+        assert kwargs["api_key"] == secret
+        return ExplodingProvider()
+
+    monkeypatch.setattr(cli, "OpenAIProvider", make_exploding_provider)
+    results_root = tmp_path / "results"
 
     code = main(
         [
             "run",
-            "evals/manifests/replay-smoke.yaml",
+            "evals/manifests/openai-example.yaml",
             "--results-root",
-            str(tmp_path / "results"),
+            str(results_root),
         ]
     )
 
+    run_directory = _only_run_directory(results_root)
+    assert {path.name for path in run_directory.iterdir()} == {
+        "manifest.json",
+        "raw.jsonl",
+        "run.log",
+    }
+    log = (run_directory / "run.log").read_text(encoding="utf-8")
     captured = capsys.readouterr()
     assert code == 1
     assert "run failed" in captured.err.lower()
     assert "traceback" not in captured.err.lower()
+    assert "status=incomplete" in log
+    assert "failure_kind=run_failure" in log
+    assert "[REDACTED]" in log
+    assert secret not in log
+    assert secret not in captured.err
 
 
 def test_authentication_stopped_run_writes_an_incomplete_log_and_returns_one(
@@ -443,6 +469,69 @@ retry:
     )
     assert not output.exists()
     assert field in capsys.readouterr().err
+
+
+def test_score_rejects_a_subset_of_the_manifest_plan_before_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    raw_path = run_directory / "raw.jsonl"
+    lines = raw_path.read_text(encoding="utf-8").splitlines()
+    raw_path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    output = tmp_path / "score"
+
+    assert (
+        main(
+            [
+                "score",
+                str(raw_path),
+                "--cases",
+                "evals/cases/response-smoke.yaml",
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
+    assert not output.exists()
+    assert "complete" in capsys.readouterr().err.lower()
+
+
+def test_score_rejects_cases_that_differ_from_manifest_declared_definitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_directory = _run_replay(tmp_path, monkeypatch)
+    original_path = REPOSITORY_ROOT / "evals/cases/response-smoke.yaml"
+    changed_document = yaml.safe_load(original_path.read_text(encoding="utf-8"))
+    changed_document["cases"][0]["semantic_rubric"]["required_facts"][0] = (
+        "A materially different rubric definition."
+    )
+    changed_cases = tmp_path / "changed-cases.yaml"
+    changed_cases.write_text(
+        yaml.safe_dump(changed_document, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    output = tmp_path / "score"
+
+    assert (
+        main(
+            [
+                "score",
+                str(run_directory / "raw.jsonl"),
+                "--cases",
+                str(changed_cases),
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
+    assert not output.exists()
+    assert "case definitions" in capsys.readouterr().err.lower()
 
 
 def test_argument_errors_return_two_and_version_behavior_is_preserved(

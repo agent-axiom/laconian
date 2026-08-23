@@ -29,6 +29,7 @@ class GenerationResult:
     usage: TokenUsage | None = None
     request_id: str | None = None
     finish_reason: str | None = None
+    response_model: str | None = None
 
 
 @runtime_checkable

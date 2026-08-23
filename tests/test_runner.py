@@ -151,6 +151,7 @@ def test_four_arms_write_four_terminal_successes_and_exact_requests(tmp_path: Pa
         [
             GenerationResult(
                 output_text=f"Output {index}.",
+                response_model=f"resolved-model-{index}",
                 usage=TokenUsage(
                     input_tokens=10 + index,
                     output_tokens=2,
@@ -206,9 +207,228 @@ def test_four_arms_write_four_terminal_successes_and_exact_requests(tmp_path: Pa
     assert {attempt.prompt_sha256 for attempt in attempts} == {digest(case.prompt)}
     assert {attempt.provider for attempt in attempts} == {"fake"}
     assert {attempt.model for attempt in attempts} == {"fixture-v1"}
+    assert [attempt.response_model for attempt in attempts] == [
+        f"resolved-model-{index}" for index in range(4)
+    ]
     assert all(attempt.started_at.tzinfo is not None for attempt in attempts)
     assert all(attempt.elapsed_ms >= 0 for attempt in attempts)
     assert load_raw_attempts(path) == attempts
+
+
+def _completed_two_arm_run(
+    tmp_path: Path,
+) -> tuple[RunManifest, tuple[ResponseCase, ...], tuple[Arm, ...], Path, tuple[RawAttempt, ...]]:
+    manifest = run_manifest(retries=2).model_copy(update={"arms": ("baseline", "concise")})
+    cases = (response_case(),)
+    arms = ARMS[:2]
+    path = tmp_path / "raw.jsonl"
+    attempts = run_to_jsonl(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        provider=ScriptedProvider(
+            [GenerationResult(output_text="First."), GenerationResult(output_text="Second.")]
+        ),
+        output_path=path,
+        run_id="run-1",
+        sleep=lambda _: None,
+    )
+    return manifest, cases, arms, path, attempts
+
+
+def test_complete_run_validator_accepts_exact_terminal_plan(tmp_path: Path) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+
+    runner_module.validate_complete_run(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        attempts=attempts,
+        path=path,
+        run_id="run-1",
+    )
+
+
+def _as_openai_run(
+    manifest: RunManifest,
+    attempts: tuple[RawAttempt, ...],
+    *,
+    response_models: tuple[str | None, ...],
+) -> tuple[RunManifest, tuple[RawAttempt, ...]]:
+    openai_manifest = manifest.model_copy(
+        update={
+            "provider": ProviderConfig(
+                kind="openai",
+                model="gpt-5.5",
+                api_key_env="LACONIAN_TEST_OPENAI_KEY",
+            )
+        }
+    )
+    manifest_hash = manifest_sha256(openai_manifest)
+    openai_attempts = tuple(
+        attempt.model_copy(
+            update={
+                "manifest_sha256": manifest_hash,
+                "provider": "openai",
+                "model": "gpt-5.5",
+                "response_model": response_model,
+            }
+        )
+        for attempt, response_model in zip(attempts, response_models, strict=True)
+    )
+    return openai_manifest, openai_attempts
+
+
+def test_complete_run_validator_accepts_uniform_openai_response_model(
+    tmp_path: Path,
+) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+    manifest, attempts = _as_openai_run(
+        manifest,
+        attempts,
+        response_models=("gpt-5.5-2026-08-01", "gpt-5.5-2026-08-01"),
+    )
+
+    runner_module.validate_complete_run(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        attempts=attempts,
+        path=path,
+        run_id="run-1",
+    )
+
+
+def test_complete_run_validator_allows_openai_error_rows_without_response_model(
+    tmp_path: Path,
+) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+    manifest, attempts = _as_openai_run(
+        manifest,
+        attempts,
+        response_models=(None, None),
+    )
+    attempts = tuple(
+        attempt.model_copy(
+            update={
+                "output_text": None,
+                "error": ErrorInfo(
+                    kind="bad_request",
+                    message="Request rejected.",
+                    retryable=False,
+                ),
+            }
+        )
+        for attempt in attempts
+    )
+
+    runner_module.validate_complete_run(
+        manifest=manifest,
+        cases=cases,
+        arms=arms,
+        attempts=attempts,
+        path=path,
+        run_id="run-1",
+    )
+
+
+@pytest.mark.parametrize(
+    "response_models",
+    [
+        (None, "gpt-5.5-2026-08-01"),
+        ("   ", "gpt-5.5-2026-08-01"),
+        ("gpt-5.5-2026-08-01", "gpt-5.5-2026-08-02"),
+    ],
+    ids=("missing", "blank", "mixed"),
+)
+def test_complete_run_validator_rejects_invalid_openai_response_model_provenance(
+    response_models: tuple[str | None, str | None],
+    tmp_path: Path,
+) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+    manifest, attempts = _as_openai_run(
+        manifest,
+        attempts,
+        response_models=response_models,
+    )
+
+    with pytest.raises(ValueError, match="response_model"):
+        runner_module.validate_complete_run(
+            manifest=manifest,
+            cases=cases,
+            arms=arms,
+            attempts=attempts,
+            path=path,
+            run_id="run-1",
+        )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "empty",
+        "subset",
+        "extra-plan-key",
+        "impossible-retry",
+        "duplicate-terminal",
+        "missing-terminal",
+        "instruction-hash",
+        "prompt-hash",
+        "wrong-run-id",
+        "mixed-run-id",
+    ],
+)
+def test_complete_run_validator_rejects_incomplete_or_impossible_evidence(
+    defect: str,
+    tmp_path: Path,
+) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+    invalid = attempts
+    if defect == "empty":
+        invalid = ()
+    elif defect == "subset":
+        invalid = attempts[:-1]
+    elif defect == "extra-plan-key":
+        invalid = (*attempts, attempts[0].model_copy(update={"case_id": "extra-001-en"}))
+    elif defect == "impossible-retry":
+        invalid = (
+            attempts[0].model_copy(update={"attempt": 2, "retry_of_attempt": None}),
+            attempts[1],
+        )
+    elif defect == "duplicate-terminal":
+        invalid = (*attempts, attempts[0])
+    elif defect == "missing-terminal":
+        pending = RawAttempt.model_validate(
+            {
+                **attempts[0].model_dump(mode="python"),
+                "terminal": False,
+                "backoff_ms": 100,
+                "output_text": None,
+                "error": ErrorInfo(kind="rate_limit", message="Retry.", retryable=True),
+            }
+        )
+        invalid = (pending, attempts[1])
+    elif defect == "instruction-hash":
+        invalid = (
+            attempts[0].model_copy(update={"instruction_sha256": digest("wrong")}),
+            *attempts[1:],
+        )
+    elif defect == "prompt-hash":
+        invalid = (attempts[0].model_copy(update={"prompt_sha256": digest("wrong")}), *attempts[1:])
+    elif defect == "wrong-run-id":
+        invalid = tuple(attempt.model_copy(update={"run_id": "wrong-run"}) for attempt in attempts)
+    elif defect == "mixed-run-id":
+        invalid = (attempts[0].model_copy(update={"run_id": "other-run"}), attempts[1])
+
+    with pytest.raises(ValueError):
+        runner_module.validate_complete_run(
+            manifest=manifest,
+            cases=cases,
+            arms=arms,
+            attempts=invalid,
+            path=path,
+            run_id="run-1",
+        )
 
 
 def test_build_run_plan_only_shuffles_arms_within_case_repetition_groups() -> None:

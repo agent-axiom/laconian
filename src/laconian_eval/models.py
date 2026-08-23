@@ -178,6 +178,7 @@ class RawAttempt(StrictModel):
     instruction_sha256: str
     provider: str
     model: str
+    response_model: str | None = None
     started_at: datetime
     elapsed_ms: int = Field(ge=0)
     output_text: str | None = None

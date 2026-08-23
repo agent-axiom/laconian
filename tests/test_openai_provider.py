@@ -49,6 +49,8 @@ def response(**overrides: object) -> SimpleNamespace:
         "output_text": "Complete answer.",
         "_request_id": "req_123",
         "status": "completed",
+        "model": "gpt-5.5-2026-08-01",
+        "error": None,
         "usage": SimpleNamespace(
             input_tokens=15,
             output_tokens=4,
@@ -97,6 +99,7 @@ def test_injected_client_uses_exact_responses_contract_and_maps_public_fields(
     assert result.output_text == "Complete answer."
     assert result.request_id == "req_123"
     assert result.finish_reason == "completed"
+    assert result.response_model == "gpt-5.5-2026-08-01"
     assert result.usage is not None
     assert result.usage.input_tokens == 15
     assert result.usage.output_tokens == 4
@@ -106,9 +109,7 @@ def test_injected_client_uses_exact_responses_contract_and_maps_public_fields(
 
 
 def test_nullable_fields_are_explicit_and_temperature_is_only_sent_when_present() -> None:
-    client = StubClient(
-        response(_request_id=None, status=None, usage=None, output_text="No metadata.")
-    )
+    client = StubClient(response(_request_id=None, usage=None, output_text="No metadata."))
     provider = OpenAIProvider(client=client)
 
     result = provider.generate(request(instructions=None, temperature=0.25, arm="baseline"))
@@ -125,7 +126,7 @@ def test_nullable_fields_are_explicit_and_temperature_is_only_sent_when_present(
     ]
     assert result.usage is None
     assert result.request_id is None
-    assert result.finish_reason is None
+    assert result.finish_reason == "completed"
 
 
 @pytest.mark.parametrize(
@@ -164,6 +165,7 @@ def test_invalid_local_requests_are_rejected_before_the_api_call(
         (response(output_text=None), "output_text"),
         (response(_request_id=123), "request ID"),
         (response(status=7), "status"),
+        (response(model=None), "model"),
         (response(usage=SimpleNamespace(input_tokens=1)), "usage"),
         (
             response(
@@ -219,6 +221,7 @@ def test_malformed_responses_become_nonretryable_provider_errors(
 
     assert caught.value.kind == "malformed_response"
     assert caught.value.retryable is False
+    assert caught.value.request_id == (None if message == "request ID" else "req_123")
 
 
 @pytest.mark.parametrize(
@@ -231,8 +234,9 @@ def test_malformed_responses_become_nonretryable_provider_errors(
         ("APITimeoutError", None, "timeout", True),
         ("APIConnectionError", None, "connection", True),
         ("InternalServerError", 500, "server_error", True),
+        ("APIStatusError", 408, "provider_status", True),
         ("APIStatusError", 503, "server_error", True),
-        ("APIStatusError", 409, "provider_status", False),
+        ("APIStatusError", 409, "provider_status", True),
     ],
 )
 def test_recognized_sdk_errors_are_classified_and_preserve_request_ids(
@@ -263,6 +267,72 @@ def test_unrelated_exceptions_and_base_exceptions_are_not_reclassified() -> None
         OpenAIProvider(client=StubClient(KeyboardInterrupt())).generate(request())
 
 
+def test_incomplete_response_is_a_nonretryable_provider_error() -> None:
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=StubClient(response(status="incomplete"))).generate(request())
+
+    assert caught.value.kind == "incomplete_response"
+    assert caught.value.retryable is False
+    assert caught.value.request_id == "req_123"
+    assert "gpt-5.5-2026-08-01" in caught.value.message
+
+
+@pytest.mark.parametrize("output_text", ["", " \n\t"])
+def test_completed_response_rejects_blank_output_with_request_id(output_text: str) -> None:
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=StubClient(response(output_text=output_text))).generate(request())
+
+    assert caught.value.kind == "malformed_response"
+    assert caught.value.retryable is False
+    assert caught.value.request_id == "req_123"
+
+
+@pytest.mark.parametrize(
+    ("status", "public_error", "kind", "retryable", "message"),
+    [
+        (
+            "failed",
+            SimpleNamespace(
+                code="server_error",
+                message="Public server failure.",
+                private_detail="must-not-leak",
+            ),
+            "server_error",
+            True,
+            "Public server failure.",
+        ),
+        ("cancelled", None, "cancelled", False, "cancelled"),
+    ],
+)
+def test_failed_and_cancelled_responses_become_public_provider_errors(
+    status: str,
+    public_error: object | None,
+    kind: str,
+    retryable: bool,
+    message: str,
+) -> None:
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=StubClient(response(status=status, error=public_error))).generate(
+            request()
+        )
+
+    assert caught.value.kind == kind
+    assert caught.value.retryable is retryable
+    assert caught.value.request_id == "req_123"
+    assert message in caught.value.message
+    assert "must-not-leak" not in caught.value.message
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "unknown"])
+def test_nonterminal_or_unknown_response_status_is_rejected_with_request_id(status: str) -> None:
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=StubClient(response(status=status))).generate(request())
+
+    assert caught.value.kind == "malformed_response"
+    assert caught.value.retryable is False
+    assert caught.value.request_id == "req_123"
+
+
 def test_live_client_is_configured_with_timeout_and_sdk_retries_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -276,12 +346,51 @@ def test_live_client_is_configured_with_timeout_and_sdk_retries_disabled(
 
     module.OpenAI = make_client  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "openai", module)
+    monkeypatch.delenv("OPENAI_CUSTOM_HEADERS", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.invalid/v9")
+    monkeypatch.setenv("OPENAI_ORG_ID", "ambient-org")
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "ambient-project")
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", "ambient-admin")
+    monkeypatch.setenv("OPENAI_WEBHOOK_SECRET", "ambient-webhook")
 
     provider = OpenAIProvider(api_key="test-key", timeout_seconds=120)
     provider.generate(request(timeout_seconds=120))
 
-    assert calls == [{"api_key": "test-key", "timeout": 120.0, "max_retries": 0}]
+    assert calls == [
+        {
+            "api_key": "test-key",
+            "timeout": 120.0,
+            "max_retries": 0,
+            "base_url": "https://api.openai.com/v1",
+            "organization": "",
+            "project": "",
+            "admin_api_key": "",
+            "webhook_secret": "",
+        }
+    ]
     assert "timeout" not in client.responses.calls[0]
+
+
+def test_live_client_rejects_ambient_custom_headers_before_sdk_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    module = ModuleType("openai")
+
+    def make_client(**kwargs: object) -> StubClient:
+        calls.append(kwargs)
+        return StubClient(response())
+
+    module.OpenAI = make_client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", module)
+    monkeypatch.setenv("OPENAI_CUSTOM_HEADERS", '{"X-Ambient": "unsafe"}')
+
+    with pytest.raises(ProviderError, match="OPENAI_CUSTOM_HEADERS") as caught:
+        OpenAIProvider(api_key="configured-key")
+
+    assert caught.value.kind == "configuration"
+    assert caught.value.retryable is False
+    assert calls == []
 
 
 def test_live_client_requires_nonblank_key_and_the_optional_sdk(

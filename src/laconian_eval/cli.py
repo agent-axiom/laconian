@@ -20,11 +20,16 @@ from laconian_eval.cases import (
     load_response_cases,
 )
 from laconian_eval.judging import attach_judgments, load_judgments
-from laconian_eval.models import RawAttempt, RunManifest, RunSummary
-from laconian_eval.providers import Provider, ProviderError, ReplayProvider
+from laconian_eval.models import RunManifest, RunSummary
+from laconian_eval.providers import FakeProvider, Provider, ProviderError, ReplayProvider
 from laconian_eval.providers.openai import OpenAIProvider
 from laconian_eval.reporting import summarize, write_markdown_report, write_summary_json
-from laconian_eval.runner import load_raw_attempts, manifest_sha256, run_to_jsonl
+from laconian_eval.runner import (
+    load_raw_attempts,
+    manifest_sha256,
+    run_to_jsonl,
+    validate_complete_run,
+)
 from laconian_eval.scoring import (
     load_scored_jsonl,
     score_terminal_attempts,
@@ -103,9 +108,7 @@ def _provider(manifest: RunManifest) -> tuple[Provider, tuple[str, ...]]:
         assert config.replay_file is not None
         return ReplayProvider.from_path(_declared_path(config.replay_file)), ()
     if config.kind == "fake":
-        raise ValueError(
-            "fake provider has no manifest script source; use the replay provider for CLI runs"
-        )
+        return FakeProvider({}), ()
 
     assert config.kind == "openai"
     assert config.api_key_env is not None
@@ -178,7 +181,16 @@ def _run(manifest_path: Path, results_root: Path) -> None:
             secret_values=secret_values,
         )
     except Exception as exc:
-        raise _RunFailure(_redact(str(exc), secret_values)) from exc
+        message = _redact(str(exc), secret_values)
+        log = (
+            f"run_id={run_directory.name}\n"
+            f"manifest_sha256={manifest_sha256(manifest)}\n"
+            "status=incomplete\n"
+            "failure_kind=run_failure\n"
+            f"failure_message={json.dumps(message, ensure_ascii=False)}\n"
+        )
+        _exclusive_text(run_directory / "run.log", log)
+        raise _RunFailure(message) from exc
 
     terminal = sum(attempt.terminal for attempt in attempts)
     authentication_failure = next(
@@ -243,29 +255,6 @@ def _preflight_score_outputs(output: Path) -> tuple[Path, Path]:
     return scored_path, summary_path
 
 
-def _validate_raw_manifest_coherence(
-    raw_path: Path,
-    manifest: RunManifest,
-    raw: Sequence[RawAttempt],
-) -> None:
-    for attempt in raw:
-        if attempt.provider != manifest.provider.kind:
-            raise ValueError(
-                f"{raw_path}: raw provider {attempt.provider!r} conflicts with manifest"
-            )
-        if attempt.model != manifest.provider.model:
-            raise ValueError(f"{raw_path}: raw model {attempt.model!r} conflicts with manifest")
-        if attempt.arm not in manifest.arms:
-            raise ValueError(f"{raw_path}: raw arm {attempt.arm!r} conflicts with manifest")
-        if attempt.repetition >= manifest.repetitions:
-            raise ValueError(
-                f"{raw_path}: raw repetition {attempt.repetition} conflicts with manifest"
-            )
-    run_ids = {attempt.run_id for attempt in raw}
-    if len(run_ids) > 1 or any(not run_id.strip() for run_id in run_ids):
-        raise ValueError(f"{raw_path}: raw run_id values are not coherent")
-
-
 def _score(
     raw_path: Path,
     cases_path: Path,
@@ -276,13 +265,25 @@ def _score(
     raw = load_raw_attempts(raw_path)
     manifest_path = raw_path.parent / "manifest.json"
     manifest = _load_manifest_json(manifest_path)
-    expected_manifest_hash = manifest_sha256(manifest)
-    if any(attempt.manifest_sha256 != expected_manifest_hash for attempt in raw):
-        raise ValueError(f"{raw_path}: raw records do not match copied manifest.json")
-    _validate_raw_manifest_coherence(raw_path, manifest, raw)
+    manifest_cases = load_response_cases(
+        tuple(_declared_path(value) for value in manifest.case_files)
+    )
+    selected_cases = load_response_cases((cases_path,))
+    manifest_case_map = {case.id: case for case in manifest_cases}
+    selected_case_map = {case.id: case for case in selected_cases}
+    if selected_case_map != manifest_case_map:
+        raise ValueError("--cases case definitions differ from manifest-declared cases")
+    arms = load_arms(Path.cwd(), manifest.arms)
+    validate_complete_run(
+        manifest=manifest,
+        cases=manifest_cases,
+        arms=arms,
+        attempts=raw,
+        path=raw_path,
+        run_id=raw_path.parent.name,
+    )
 
-    cases = load_response_cases((cases_path,))
-    scored = score_terminal_attempts({case.id: case for case in cases}, raw)
+    scored = score_terminal_attempts(selected_case_map, raw)
     require_semantic = judgments_path is not None
     if judgments_path is not None:
         scored = attach_judgments(scored, load_judgments(judgments_path))
