@@ -6,10 +6,11 @@ ROOT = Path(__file__).parents[1]
 SKILL_DIR = ROOT / "skills/if"
 SKILL = SKILL_DIR / "SKILL.md"
 EXPECTED_DESCRIPTION = (
-    "Use when the user explicitly invokes the `if` skill, or otherwise asks for a "
-    "concise, laconic, no-fluff, or to-the-point answer. Without explicit invocation, "
-    "do not trigger on the ordinary word or programming keyword `if`, or on detailed, "
-    "step-by-step, exhaustive, educational, or fixed-length requests."
+    "Use when the user explicitly invokes the `if` skill or asks for a concise, "
+    "laconic, no-fluff, or to-the-point answer. Do not trigger on the ordinary word or "
+    "programming keyword `if`. Detailed, step-by-step, exhaustive, educational, or "
+    "fixed-length requests activate only when they also include an explicit invocation "
+    "or brevity request."
 )
 
 
@@ -43,8 +44,15 @@ def test_if_skill_states_the_complete_answer_boundary() -> None:
     assert 0 <= correctness_index < brevity_index
     assert "Brevity never overrides a higher priority." in text
     assert "normal grammar" in text
-    assert "Direct requests to transform exact content take precedence" in text
-    assert "safer targeted or reversible option" in text
+    assert (
+        "Do not alter code, commands, errors, numbers, versions, URLs, identifiers, "
+        "quotations, schemas, machine-readable formats, or other exact values when their "
+        "exact form is required." in text
+    )
+    assert (
+        "- Choose a shorter operation that can discard, overwrite, or broaden changes "
+        "when a safer targeted or reversible option is available." in text
+    )
     assert (
         "Stop editing when the next deletion would reduce correctness, safety, "
         "requirement coverage, clarity, completeness, usefulness, tone, or force." in text
