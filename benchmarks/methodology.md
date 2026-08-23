@@ -49,7 +49,11 @@ returned identifiers must both be disclosed; an alias is not silently presented 
 
 Response scenarios are represented as an English/Russian pair with one shared `scenario_id`.
 Activation scenarios use the same pairing rule but are not response records. The manifest fixes
-the case files, repetition count, and arm-order seed.
+`runner_version`, case files, repetition count, and arm-order seed. The runner accepts only its
+current package version. Every attempt records `case_definition_sha256`, the canonical SHA-256 of
+the complete response-case definition, including identity, locale, category, prompt,
+deterministic constraints, and semantic rubric. Editing any of those fields creates different
+evidence even when the prompt is unchanged.
 
 For each case and repetition, the runner shuffles only the four-arm order with the recorded
 arm-order seed. Case order remains the validated file order. A publication must report the
@@ -135,11 +139,12 @@ efficiency result.
 
 A public run publishes enough evidence to reproduce and audit it:
 
-- `manifest.json`, including provider, exact requested model, settings, retry policy, arm-order
-  seed, repetitions, and any dated price snapshot;
+- `manifest.json`, including runner version, provider, exact requested model, settings, retry
+  policy, arm-order seed, repetitions, and any dated price snapshot;
 - append-only `raw.jsonl` and `run.log`, including failures, retries, and any provider-returned
-  model identifier;
-- `scored.jsonl`, `summary.json`, and `report.md`;
+  model identifier plus the full case-definition hashes;
+- `scored.jsonl`, `summary.json`, and `report.md`, with runner-version and sorted per-case hash
+  provenance;
 - the exact case files, repository revision, runner/schema version, arm hashes, and Caveman
   provenance;
 - judge records and protocol metadata when semantic scoring is used;

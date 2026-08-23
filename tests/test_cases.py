@@ -415,6 +415,7 @@ def test_valid_manifest_loads(tmp_path: Path) -> None:
         path,
         """
         schema_version: "1"
+        runner_version: 0.1.0.dev0
         run_name: smoke
         provider:
           kind: fake
@@ -440,6 +441,7 @@ def test_invalid_manifest_is_rejected_with_source_path(tmp_path: Path) -> None:
         path,
         """
         schema_version: "1"
+        runner_version: 0.1.0.dev0
         run_name: smoke
         provider:
           kind: fake

@@ -20,9 +20,10 @@ neutrality rules.
 
 ## Manifests
 
-`evals/manifests/` fixes provider configuration, case paths, arm identifiers, repetitions,
-arm-order seed, instruction placement, generation settings, retry policy, and an optional dated
-price snapshot.
+`evals/manifests/` fixes the exact `runner_version`, provider configuration, case paths, arm
+identifiers, repetitions, arm-order seed, instruction placement, generation settings, retry
+policy, and an optional dated price snapshot. A manifest for another package version is rejected
+instead of being silently reinterpreted.
 
 - `replay-smoke.yaml` is the credential-free offline path used by tests and the quickstart.
 - `openai-example.yaml` is an optional live-run example, not a recorded benchmark result. Model
@@ -49,7 +50,10 @@ the copied manifest, all raw attempts and failures, scored records, machine summ
 source-case and arm provenance, and any semantic-judge metadata required by the
 [methodology](../benchmarks/methodology.md).
 
-The walking skeleton starts this directory empty except for `.gitkeep`.
+Raw and scored attempts carry `case_definition_sha256`; summaries and reports carry the same
+canonical hashes for every complete response-case definition. Changing a deterministic constraint
+or semantic rubric therefore invalidates old scoring evidence even when the prompt text is
+unchanged. The walking skeleton starts this directory empty except for `.gitkeep`.
 
 ## Validation
 

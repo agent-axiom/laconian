@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import Field, ValidationError, field_validator
 from yaml import YAMLError
 
+from laconian_eval import __version__
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import (
     JudgeProvenance,
     RawAttempt,
@@ -57,9 +59,19 @@ def _validate_raw_identity(case: ResponseCase, raw: RawAttempt) -> None:
         raise ValueError(f"raw attempt for {raw.case_id!r} must be terminal")
     if raw.case_id != case.id:
         raise ValueError(f"raw case_id {raw.case_id!r} does not match response case {case.id!r}")
+    if raw.runner_version != __version__:
+        raise ValueError(
+            f"raw runner_version {raw.runner_version!r} "
+            f"does not match current runner {__version__!r}"
+        )
     expected_prompt_sha256 = sha256(case.prompt.encode("utf-8")).hexdigest()
     if raw.prompt_sha256 != expected_prompt_sha256:
         raise ValueError(f"raw prompt_sha256 does not match response case {case.id!r} prompt")
+    expected_case_definition_sha256 = response_case_sha256(case)
+    if raw.case_definition_sha256 != expected_case_definition_sha256:
+        raise ValueError(
+            f"raw case_definition_sha256 does not match response case {case.id!r} definition"
+        )
 
 
 def _response_id(raw: RawAttempt) -> str:
@@ -68,12 +80,14 @@ def _response_id(raw: RawAttempt) -> str:
     preimage = {
         "attempt": raw.attempt,
         "case_id": raw.case_id,
+        "case_definition_sha256": raw.case_definition_sha256,
         "instruction_sha256": raw.instruction_sha256,
         "manifest_sha256": raw.manifest_sha256,
         "prompt_sha256": raw.prompt_sha256,
         "repetition": raw.repetition,
         "response_text": raw.output_text,
         "run_id": raw.run_id,
+        "runner_version": raw.runner_version,
     }
     canonical = json.dumps(
         preimage,

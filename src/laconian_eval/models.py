@@ -3,6 +3,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from laconian_eval import __version__
+
 ProviderKind = Literal["fake", "replay", "openai"]
 
 
@@ -150,6 +152,7 @@ class PriceSnapshot(StrictModel):
 
 class RunManifest(StrictModel):
     schema_version: Literal["1"]
+    runner_version: str
     run_name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]+$")
     provider: ProviderConfig
     case_files: tuple[str, ...] = Field(min_length=1)
@@ -160,6 +163,13 @@ class RunManifest(StrictModel):
     generation: GenerationSettings = GenerationSettings()
     retry: RetryPolicy = RetryPolicy()
     price_snapshot: PriceSnapshot | None = None
+
+    @field_validator("runner_version")
+    @classmethod
+    def require_current_runner_version(cls, value: str) -> str:
+        if value != __version__:
+            raise ValueError(f"runner_version must equal current runner version {__version__!r}")
+        return value
 
     @field_validator("arms")
     @classmethod
@@ -194,9 +204,11 @@ class TokenUsageModel(StrictModel):
 
 class RawAttempt(StrictModel):
     schema_version: Literal["1"] = "1"
+    runner_version: str = Field(min_length=1)
     run_id: str
     manifest_sha256: str
     case_id: str
+    case_definition_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     arm: Literal["baseline", "concise", "caveman", "if"]
     repetition: int = Field(ge=0)
     attempt: int = Field(ge=1)
@@ -328,16 +340,51 @@ class PairedMetrics(StrictModel):
     median_output_character_delta: float | None
 
 
+class CaseDefinitionProvenance(StrictModel):
+    case_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RunSummary(StrictModel):
     schema_version: Literal["1"] = "1"
     quality_gate: Literal["hard", "semantic"]
     raw_attempts: int
     terminal_records: int
+    runner_versions: tuple[str, ...] = Field(min_length=1)
+    case_definitions: tuple[CaseDefinitionProvenance, ...] = ()
     providers: tuple[str, ...] = ()
     arms: tuple[ArmMetrics, ...]
     paired: PairedMetrics
     price_snapshot: PriceSnapshot | None = None
     judge_provenance: tuple[JudgeProvenance, ...] = ()
+
+    @field_validator("runner_versions")
+    @classmethod
+    def validate_runner_versions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not version.strip() for version in value):
+            raise ValueError("runner_versions must be nonblank")
+        if value != tuple(sorted(set(value))):
+            raise ValueError("runner_versions must be sorted and unique")
+        return value
+
+    @field_validator("case_definitions")
+    @classmethod
+    def validate_case_definitions(
+        cls,
+        value: tuple[CaseDefinitionProvenance, ...],
+    ) -> tuple[CaseDefinitionProvenance, ...]:
+        case_ids = tuple(item.case_id for item in value)
+        if case_ids != tuple(sorted(set(case_ids))):
+            raise ValueError("case_definitions must be sorted by unique case_id")
+        return value
+
+    @model_validator(mode="after")
+    def validate_scoring_provenance(self) -> Self:
+        if len(self.runner_versions) != 1:
+            raise ValueError("runner_versions must contain exactly one version")
+        if self.terminal_records > 0 and not self.case_definitions:
+            raise ValueError("case_definitions must be present when terminal_records is nonzero")
+        return self
 
     @field_validator("providers")
     @classmethod

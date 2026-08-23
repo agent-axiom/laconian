@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from laconian_eval import __version__
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import (
     CheckResult,
     ErrorInfo,
@@ -63,9 +65,11 @@ def raw_attempt(
     prompt_hash: str | None = None,
 ) -> RawAttempt:
     return RawAttempt(
+        runner_version=__version__,
         run_id=run_id,
         manifest_sha256=manifest_hash or digest("manifest-1"),
         case_id=case.id,
+        case_definition_sha256=response_case_sha256(case),
         arm=arm,
         repetition=repetition,
         attempt=attempt,
@@ -350,6 +354,29 @@ def test_score_attempt_rejects_case_prompt_mismatch_and_nonterminal() -> None:
         score_attempt(case, raw_attempt(case, prompt_hash=digest("wrong")))
     with pytest.raises(ValueError, match="terminal"):
         score_attempt(case, raw_attempt(case, terminal=False))
+
+
+def test_score_attempt_rejects_a_changed_case_definition_with_the_same_prompt() -> None:
+    original = response_case()
+    original_raw = raw_attempt(original)
+    changed = original.model_copy(
+        update={
+            "semantic_rubric": SemanticRubric(
+                required_facts=("A newly revised required fact.",),
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="case_definition_sha256"):
+        score_attempt(changed, original_raw)
+
+
+def test_score_attempt_rejects_a_different_runner_version() -> None:
+    case = response_case()
+    incompatible = raw_attempt(case).model_copy(update={"runner_version": "0.0.0-incompatible"})
+
+    with pytest.raises(ValueError, match="runner_version"):
+        score_attempt(case, incompatible)
 
 
 def test_score_terminal_attempts_ignores_retries_and_rejects_unknown_case() -> None:

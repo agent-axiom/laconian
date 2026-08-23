@@ -109,6 +109,10 @@ Semantic rubrics must be evidence-backed. Cite a primary or authoritative source
 request when a required fact is technical, historical, medical, legal, financial, or otherwise
 contestable. Keep the source out of the user prompt unless source use is itself the task.
 
+The runner hashes the complete validated response-case definition. Changing an ID, locale,
+category, prompt, hard constraint, or semantic rubric intentionally creates new scoring
+provenance; old raw attempts cannot be rescored against the edited definition.
+
 A good rubric states the smallest observable facts needed for a correct answer. It does not copy
 one preferred prose answer, encode taste as correctness, reward phrases taken from the `if` skill,
 or penalize natural variation. Cases designed only to favor `if` are not accepted. A useful case

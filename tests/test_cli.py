@@ -8,6 +8,7 @@ import yaml
 from pydantic import TypeAdapter
 
 import laconian_eval.cli as cli
+from laconian_eval import __version__
 from laconian_eval.cli import main
 from laconian_eval.models import RawAttempt, RunManifest, RunSummary, ScoredAttempt
 from laconian_eval.providers import ProviderError
@@ -87,6 +88,7 @@ def test_replay_run_is_offline_complete_canonical_and_non_overwriting(
         (run_directory / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest.provider.kind == "replay"
+    assert manifest.runner_version == __version__
     assert manifest.arms == ("baseline", "concise", "caveman", "if")
     attempts = tuple(
         RawAttempt.model_validate_json(line)
@@ -96,7 +98,16 @@ def test_replay_run_is_offline_complete_canonical_and_non_overwriting(
     assert all(attempt.terminal for attempt in attempts)
     assert {attempt.arm for attempt in attempts} == set(manifest.arms)
     assert {attempt.run_id for attempt in attempts} == {run_directory.name}
+    assert {attempt.runner_version for attempt in attempts} == {__version__}
     assert {attempt.manifest_sha256 for attempt in attempts} == {manifest_sha256(manifest)}
+    case_hashes = {
+        case_id: {
+            attempt.case_definition_sha256 for attempt in attempts if attempt.case_id == case_id
+        }
+        for case_id in {attempt.case_id for attempt in attempts}
+    }
+    assert len(case_hashes) == 24
+    assert all(len(hashes) == 1 for hashes in case_hashes.values())
     assert run_directory.name in capsys.readouterr().out
     combined = "".join(path.read_text(encoding="utf-8") for path in run_directory.iterdir())
     assert "OPENAI_API_KEY" not in combined
@@ -143,6 +154,7 @@ def test_run_rejects_empty_plan_configuration_before_result_artifacts(
     monkeypatch.chdir(REPOSITORY_ROOT)
     document: dict[str, object] = {
         "schema_version": "1",
+        "runner_version": "0.1.0.dev0",
         "run_name": "empty-plan",
         "provider": {"kind": "fake", "model": "fake-v1"},
         "case_files": ["evals/cases/response-smoke.yaml"],
@@ -220,6 +232,11 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     summary = RunSummary.model_validate_json(summary_path.read_text(encoding="utf-8"))
     assert len(scored) == 96
     assert summary.terminal_records == 96
+    assert summary.runner_versions == (__version__,)
+    assert len(summary.case_definitions) == 24
+    assert {item.case_id: item.sha256 for item in summary.case_definitions} == {
+        attempt.raw.case_id: attempt.raw.case_definition_sha256 for attempt in scored
+    }
     assert summary.providers == ("replay",)
     assert tuple(metrics.arm for metrics in summary.arms) == (
         "baseline",
@@ -242,6 +259,8 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     assert "# Laconian benchmark report" in report
     assert "Replay fixture" in report
     assert "not a public benchmark result" in report
+    assert f"Runner versions: `{__version__}`" in report
+    assert "Case definitions: 24" in report
     assert "Terminal records: 96" in report
     report_before = report_path.read_bytes()
     assert main(report_args) == 2
@@ -446,7 +465,7 @@ def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fa
     scored_path = score_directory / "scored.jsonl"
     summary_path = score_directory / "summary.json"
     summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
-    summary_data["terminal_records"] = 95
+    summary_data["case_definitions"][0]["sha256"] = "f" * 64
     summary_path.write_text(json.dumps(summary_data), encoding="utf-8")
 
     mismatched_report = tmp_path / "mismatched.md"
@@ -489,6 +508,7 @@ def test_missing_openai_key_fails_before_results_and_fake_runs_as_offline_error_
     fake_manifest = tmp_path / "fake.yaml"
     fake_manifest.write_text(
         """schema_version: \"1\"
+runner_version: 0.1.0.dev0
 run_name: fake-example
 provider:
   kind: fake
@@ -628,6 +648,7 @@ def test_score_rejects_raw_manifest_coherence_conflicts_before_outputs(
     manifest_path = tmp_path / "baseline-replay.yaml"
     manifest_path.write_text(
         """schema_version: \"1\"
+runner_version: 0.1.0.dev0
 run_name: integrity-replay
 provider:
   kind: replay

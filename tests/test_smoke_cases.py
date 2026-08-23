@@ -1,6 +1,7 @@
 from collections import defaultdict
 from pathlib import Path
 
+from laconian_eval import __version__
 from laconian_eval.cases import load_activation_cases, load_manifest, load_response_cases
 from laconian_eval.models import ActivationCase, ResponseCase
 
@@ -308,6 +309,7 @@ def test_replay_smoke_manifest_has_exact_settings() -> None:
     manifest = load_manifest(REPLAY_MANIFEST)
 
     assert manifest.schema_version == "1"
+    assert manifest.runner_version == __version__
     assert manifest.run_name == "replay-smoke"
     assert manifest.provider.model_dump(exclude_none=True) == {
         "kind": "replay",

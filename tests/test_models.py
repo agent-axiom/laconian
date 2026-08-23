@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from laconian_eval import __version__
 from laconian_eval.models import (
     ActivationCase,
     ActivationCaseFile,
@@ -10,6 +11,32 @@ from laconian_eval.models import (
     ResponseCaseFile,
     RunManifest,
 )
+
+
+def manifest_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "run_name": "smoke",
+        "provider": {"kind": "fake", "model": "fake-v1"},
+        "case_files": ["evals/cases/response-smoke.yaml"],
+        "arms": ["baseline"],
+    }
+
+
+def test_manifest_requires_an_explicit_current_runner_version() -> None:
+    with pytest.raises(ValidationError, match="runner_version"):
+        RunManifest.model_validate(manifest_payload())
+
+
+def test_manifest_records_the_current_runner_version() -> None:
+    manifest = RunManifest.model_validate({**manifest_payload(), "runner_version": __version__})
+
+    assert manifest.runner_version == __version__
+
+
+def test_manifest_rejects_a_different_runner_version() -> None:
+    with pytest.raises(ValidationError, match="current runner version"):
+        RunManifest.model_validate({**manifest_payload(), "runner_version": "0.0.0-incompatible"})
 
 
 def test_response_case_rejects_unknown_fields() -> None:
@@ -44,6 +71,7 @@ def test_manifest_rejects_duplicate_arms() -> None:
         RunManifest.model_validate(
             {
                 "schema_version": "1",
+                "runner_version": __version__,
                 "run_name": "smoke",
                 "provider": {"kind": "fake", "model": "fake-v1"},
                 "case_files": ["evals/cases/response-smoke.yaml"],
@@ -68,6 +96,7 @@ def test_provider_config_preserves_exact_nonblank_model() -> None:
 def test_manifest_rejects_empty_plan_collections(empty_field: str) -> None:
     payload: dict[str, object] = {
         "schema_version": "1",
+        "runner_version": __version__,
         "run_name": "smoke",
         "provider": {"kind": "fake", "model": "fake-v1"},
         "case_files": ["evals/cases/response-smoke.yaml"],

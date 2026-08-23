@@ -4,8 +4,10 @@ from pathlib import Path
 from statistics import median
 from typing import Literal, cast
 
+from laconian_eval import __version__
 from laconian_eval.models import (
     ArmMetrics,
+    CaseDefinitionProvenance,
     PairedMetrics,
     PriceEstimate,
     PriceSnapshot,
@@ -166,6 +168,25 @@ def summarize(
         if require_semantic and attempt.hard_pass and attempt.semantic_pass is None:
             raise ValueError("semantic judgment coverage is incomplete for hard-pass attempts")
 
+    runner_versions = tuple(sorted({attempt.raw.runner_version for attempt in validated_scored}))
+    if len(runner_versions) > 1:
+        raise ValueError("runner_versions conflict across scored attempts")
+    if not runner_versions:
+        runner_versions = (__version__,)
+
+    case_hashes: dict[str, str] = {}
+    for attempt in validated_scored:
+        existing_hash = case_hashes.setdefault(
+            attempt.raw.case_id,
+            attempt.raw.case_definition_sha256,
+        )
+        if existing_hash != attempt.raw.case_definition_sha256:
+            raise ValueError(f"conflicting case definition provenance for {attempt.raw.case_id!r}")
+    case_definitions = tuple(
+        CaseDefinitionProvenance(case_id=case_id, sha256=case_hashes[case_id])
+        for case_id in sorted(case_hashes)
+    )
+
     instances = _group_instances(validated_scored)
     by_arm: dict[ArmName, list[ScoredAttempt]] = {}
     for attempt in validated_scored:
@@ -184,6 +205,8 @@ def summarize(
         quality_gate="semantic" if require_semantic else "hard",
         raw_attempts=sum(attempt.raw.attempt for attempt in validated_scored),
         terminal_records=len(validated_scored),
+        runner_versions=runner_versions,
+        case_definitions=case_definitions,
         providers=tuple(sorted({attempt.raw.provider for attempt in validated_scored})),
         arms=arms,
         paired=_paired_metrics(instances, require_semantic=require_semantic),
@@ -272,6 +295,9 @@ def _markdown(summary: RunSummary) -> str:
         (
             f"Quality gate: `{summary.quality_gate}`",
             "",
+            "Runner versions: " + ", ".join(f"`{version}`" for version in summary.runner_versions),
+            f"Case definitions: {len(summary.case_definitions)}",
+            "",
             f"Providers: {', '.join(summary.providers) if summary.providers else 'not recorded'}",
             "",
             f"Raw attempts represented: {summary.raw_attempts}",
@@ -340,6 +366,13 @@ def _markdown(summary: RunSummary) -> str:
         )
     else:
         lines.append("No semantic judgments attached.")
+    lines.extend(("", "## Case-definition provenance", ""))
+    if summary.case_definitions:
+        lines.extend(
+            f"- `{item.case_id}`: SHA-256 `{item.sha256}`" for item in summary.case_definitions
+        )
+    else:
+        lines.append("No case definitions represented.")
     lines.extend(("", "## Price estimate", ""))
     snapshot = summary.price_snapshot
     if snapshot is None:

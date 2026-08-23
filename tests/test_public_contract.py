@@ -238,6 +238,16 @@ def test_evals_readme_separates_inputs_fixtures_and_evidence() -> None:
         assert phrase in text
 
 
+@pytest.mark.parametrize(
+    "filename",
+    ("docs/design.md", "benchmarks/methodology.md", "evals/README.md"),
+)
+def test_provenance_docs_name_the_artifact_schema_fields(filename: str) -> None:
+    text = _read(filename)
+    assert "runner_version" in text
+    assert "case_definition_sha256" in text
+
+
 def test_case_contribution_guide_documents_valid_exact_schemas() -> None:
     text = _read("docs/contributing-cases.md")
     blocks = re.findall(r"```yaml\n(.*?)\n```", text, flags=re.DOTALL)

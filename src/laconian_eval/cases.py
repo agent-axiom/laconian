@@ -1,4 +1,6 @@
+import json
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import TypeVar
 
@@ -17,6 +19,16 @@ from laconian_eval.yaml_io import safe_load_unique
 _CASE_FILE_KEYS = ("schema_version", "kind", "cases")
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _CaseT = TypeVar("_CaseT", ResponseCase, ActivationCase)
+
+
+def response_case_sha256(case: ResponseCase) -> str:
+    canonical = json.dumps(
+        case.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
 
 
 def _read_yaml_mapping(path: Path) -> Mapping[object, object]:

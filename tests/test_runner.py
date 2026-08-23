@@ -10,15 +10,18 @@ import pytest
 from pydantic import ValidationError
 
 import laconian_eval.runner as runner_module
+from laconian_eval import __version__
 from laconian_eval.arms import Arm
 from laconian_eval.models import (
     ErrorInfo,
     GenerationSettings,
+    HardConstraints,
     ProviderConfig,
     RawAttempt,
     ResponseCase,
     RetryPolicy,
     RunManifest,
+    SemanticRubric,
     TokenUsageModel,
 )
 from laconian_eval.providers import (
@@ -37,6 +40,16 @@ from laconian_eval.runner import (
 
 def digest(text: str) -> str:
     return sha256(text.encode("utf-8")).hexdigest()
+
+
+def case_definition_digest(case: ResponseCase) -> str:
+    canonical = json.dumps(
+        case.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return digest(canonical)
 
 
 def response_case(case_id: str = "case-001-en") -> ResponseCase:
@@ -76,6 +89,7 @@ def run_manifest(
 ) -> RunManifest:
     return RunManifest(
         schema_version="1",
+        runner_version=__version__,
         run_name=run_name,
         provider=ProviderConfig(kind="fake", model=model),
         case_files=("cases.yaml",),
@@ -126,9 +140,11 @@ def existing_attempt(
         error = ErrorInfo(kind=error_kind, message="Retry.", retryable=error_retryable)
         output_text = None
     return RawAttempt(
+        runner_version=__version__,
         run_id=run_id,
         manifest_sha256=manifest_hash,
         case_id="case-001-en",
+        case_definition_sha256=case_definition_digest(response_case()),
         arm=arm_name,
         repetition=0,
         attempt=attempt,
@@ -210,6 +226,10 @@ def test_four_arms_write_four_terminal_successes_and_exact_requests(tmp_path: Pa
         item.arm.sha256 for item in plan
     ]
     assert {attempt.prompt_sha256 for attempt in attempts} == {digest(case.prompt)}
+    assert {attempt.runner_version for attempt in attempts} == {__version__}
+    assert {attempt.case_definition_sha256 for attempt in attempts} == {
+        case_definition_digest(case)
+    }
     assert {attempt.provider for attempt in attempts} == {"fake"}
     assert {attempt.model for attempt in attempts} == {"fixture-v1"}
     assert [attempt.response_model for attempt in attempts] == [
@@ -252,6 +272,40 @@ def test_complete_run_validator_accepts_exact_terminal_plan(tmp_path: Path) -> N
         path=path,
         run_id="run-1",
     )
+
+
+@pytest.mark.parametrize(
+    "case_update",
+    [
+        {
+            "hard_constraints": HardConstraints(
+                required_literals=("NEW-REQUIRED-LITERAL",),
+            )
+        },
+        {
+            "semantic_rubric": SemanticRubric(
+                required_facts=("A newly revised required fact.",),
+            )
+        },
+    ],
+    ids=("hard-constraint", "semantic-rubric"),
+)
+def test_complete_run_rejects_case_definition_changes_with_the_same_prompt(
+    case_update: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    manifest, cases, arms, path, attempts = _completed_two_arm_run(tmp_path)
+    changed_cases = (cases[0].model_copy(update=case_update),)
+
+    with pytest.raises(ValueError, match="case_definition_sha256"):
+        runner_module.validate_complete_run(
+            manifest=manifest,
+            cases=changed_cases,
+            arms=arms,
+            attempts=attempts,
+            path=path,
+            run_id="run-1",
+        )
 
 
 def _as_openai_run(
@@ -828,6 +882,8 @@ def test_resume_with_valid_history_ending_at_authentication_still_makes_no_call(
         ("model", {"model": "other-model"}),
         ("prompt-sha256", {"prompt_sha256": digest("wrong prompt")}),
         ("instruction-sha256", {"instruction_sha256": digest("wrong instruction")}),
+        ("runner-version", {"runner_version": "0.0.0-incompatible"}),
+        ("case-definition-sha256", {"case_definition_sha256": digest("wrong case")}),
         ("repetition", {"repetition": 1}),
         ("arm", {"arm": "concise"}),
     ],

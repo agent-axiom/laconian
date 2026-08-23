@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from laconian_eval import __version__
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.judging import (
     JudgeRequest,
     SemanticJudgment,
@@ -44,22 +46,25 @@ def case() -> ResponseCase:
 
 def raw(
     *,
+    response_case: ResponseCase | None = None,
     output: str | None = "The exact response.",
     arm: str = "if",
     instruction_hash: str | None = None,
     error: ErrorInfo | None = None,
     run_id: str = "run-1",
 ) -> RawAttempt:
-    response_case = case()
+    selected_case = response_case or case()
     return RawAttempt(
+        runner_version=__version__,
         run_id=run_id,
         manifest_sha256=digest("manifest"),
-        case_id=response_case.id,
+        case_id=selected_case.id,
+        case_definition_sha256=response_case_sha256(selected_case),
         arm=arm,
         repetition=0,
         attempt=1,
         terminal=True,
-        prompt_sha256=digest(response_case.prompt),
+        prompt_sha256=digest(selected_case.prompt),
         instruction_sha256=instruction_hash or digest(f"{arm}-instruction"),
         provider="fake",
         model="fixture-v1",
@@ -169,12 +174,14 @@ def test_response_id_is_deterministic_opaque_and_distinguishes_arm_instances() -
         {
             "attempt": first_raw.attempt,
             "case_id": first_raw.case_id,
+            "case_definition_sha256": first_raw.case_definition_sha256,
             "instruction_sha256": first_raw.instruction_sha256,
             "manifest_sha256": first_raw.manifest_sha256,
             "prompt_sha256": first_raw.prompt_sha256,
             "repetition": first_raw.repetition,
             "response_text": first_raw.output_text,
             "run_id": first_raw.run_id,
+            "runner_version": first_raw.runner_version,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -200,6 +207,17 @@ def test_build_judge_request_validates_raw_identity_and_rejects_errors() -> None
     with pytest.raises(ValueError, match="prompt_sha256"):
         build_judge_request(
             response_case.model_copy(update={"prompt": "Different prompt."}),
+            raw(),
+        )
+    with pytest.raises(ValueError, match="case_definition_sha256"):
+        build_judge_request(
+            response_case.model_copy(
+                update={
+                    "semantic_rubric": SemanticRubric(
+                        required_facts=("A revised required fact.",),
+                    )
+                }
+            ),
             raw(),
         )
 
@@ -245,7 +263,7 @@ def test_attach_judgments_rejects_a_judgment_for_a_hard_failure() -> None:
     response_case = case().model_copy(
         update={"hard_constraints": HardConstraints(required_literals=("REQUIRED",))}
     )
-    raw_response = raw(output="too short")
+    raw_response = raw(response_case=response_case, output="too short")
     hard_failure = score_attempt(response_case, raw_response)
     response_id = build_judge_request(response_case, raw_response).response_id
 

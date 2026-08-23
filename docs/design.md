@@ -53,19 +53,27 @@ but they never affect response-quality metrics.
 
 ## Reproducibility
 
-A manifest fixes the provider kind, requested model, case paths, arms, repetitions, arm-order
-seed, `system_suffix` instruction location, generation settings, timeout, retry budget, and an
-optional price snapshot. A raw record carries manifest, prompt, and instruction hashes along with
-the provider and requested-model labels, the provider-returned model identifier when available,
-attempt lineage, timestamps, text or classified error, and any public usage fields.
+A manifest fixes the `runner_version`, provider kind, requested model, case paths, arms,
+repetitions, arm-order seed, `system_suffix` instruction location, generation settings, timeout,
+retry budget, and an optional price snapshot. The current runner rejects a manifest for another
+package version. A raw record carries that version and `case_definition_sha256`, the canonical
+SHA-256 of the complete case definition, plus manifest, prompt, and instruction hashes, provider
+and requested-model labels, the provider-returned model identifier when available, attempt
+lineage, timestamps, text or classified error, and any public usage fields.
 
 The CLI creates a unique UTC-stamped run directory and writes `manifest.json`, `raw.jsonl`, and
 `run.log`. Scoring loads the manifest-declared case definitions from the checked-out revision,
 requires the explicit `--cases` input to match them, and validates the complete planned key set,
-retry chains, prompt and arm hashes, run identity, and consistent returned-model provenance before
-creating `scored.jsonl` and `summary.json`. A publishable run pins the exact case files and
-repository revision; raw rows do not currently contain a hash of the full rubric definition.
-Reporting recomputes and verifies a sibling summary before rendering it.
+retry chains, complete case-definition hashes, prompt and arm hashes, runner and run identity, and
+consistent returned-model provenance before creating `scored.jsonl` and `summary.json`. Summaries
+and reports disclose the sorted runner-version and per-case hash provenance. A publishable run
+also pins the exact case files and repository revision as external publication metadata; runtime
+validation does not depend on a Git checkout. Reporting recomputes and verifies a sibling summary
+before rendering it.
+
+This is a pre-release schema hardening change. Manifests and raw rows created before these
+required provenance fields are intentionally rejected; no public benchmark result predates the
+change.
 
 ## Safety and failure semantics
 

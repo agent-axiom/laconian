@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from laconian_eval import __version__
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import (
     ErrorInfo,
     HardConstraints,
@@ -57,9 +59,11 @@ def raw(
     provider: str = "fake",
 ) -> RawAttempt:
     return RawAttempt(
+        runner_version=__version__,
         run_id=run_id,
         manifest_sha256=manifest_hash,
         case_id=response_case.id,
+        case_definition_sha256=response_case_sha256(response_case),
         arm=arm,
         repetition=repetition,
         attempt=attempt,
@@ -482,7 +486,15 @@ def test_summary_and_markdown_writers_are_deterministic_and_refuse_existing_path
     write_summary_json(summary, json_path)
     write_markdown_report(summary, report_path)
 
-    assert json.loads(json_path.read_text(encoding="utf-8"))["schema_version"] == "1"
+    summary_data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert summary_data["schema_version"] == "1"
+    assert summary_data["runner_versions"] == [__version__]
+    assert summary_data["case_definitions"] == [
+        {
+            "case_id": response_case.id,
+            "sha256": response_case_sha256(response_case),
+        }
+    ]
     assert json_path.read_bytes().endswith(b"\n")
     markdown = report_path.read_text(encoding="utf-8")
     assert "Provider errors" in markdown
@@ -499,6 +511,9 @@ def test_summary_and_markdown_writers_are_deterministic_and_refuse_existing_path
     assert "https://example.test/pricing" in markdown
     assert "fixture-judge-v1" in markdown
     assert digest("judge prompt") in markdown
+    assert f"Runner versions: `{__version__}`" in markdown
+    assert response_case.id in markdown
+    assert response_case_sha256(response_case) in markdown
     assert summary.judge_provenance == (
         JudgeProvenance(
             provider="fixture",
@@ -513,6 +528,59 @@ def test_summary_and_markdown_writers_are_deterministic_and_refuse_existing_path
         write_summary_json(summary, json_path)
     with pytest.raises(FileExistsError, match="refuse"):
         write_markdown_report(summary, report_path)
+
+
+def test_summary_rejects_mixed_runner_versions_and_conflicting_case_definitions() -> None:
+    original = case()
+    first = scored(original, arm="if", output="short", output_tokens=1)
+    other_version = ScoredAttempt.model_validate(
+        {
+            **first.model_dump(mode="python"),
+            "raw": {
+                **first.raw.model_dump(mode="python"),
+                "runner_version": "0.0.0-incompatible",
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="runner_versions"):
+        summarize((first, other_version))
+
+    changed = original.model_copy(
+        update={"hard_constraints": HardConstraints(required_literals=("NEW",))}
+    )
+    changed_score = scored(changed, arm="concise", output="NEW", output_tokens=1)
+
+    with pytest.raises(ValueError, match="conflicting case definition"):
+        summarize((first, changed_score))
+
+
+def test_run_summary_schema_rejects_two_hashes_for_one_case_id() -> None:
+    response_case = case()
+    summary = summarize((scored(response_case, arm="if", output="short", output_tokens=1),))
+    payload = summary.model_dump(mode="python")
+    payload["case_definitions"] = [
+        {"case_id": response_case.id, "sha256": "0" * 64},
+        {"case_id": response_case.id, "sha256": "f" * 64},
+    ]
+
+    with pytest.raises(ValidationError, match="case_id"):
+        type(summary).model_validate(payload)
+
+
+def test_run_summary_schema_requires_complete_single_run_provenance() -> None:
+    response_case = case()
+    summary = summarize((scored(response_case, arm="if", output="short", output_tokens=1),))
+
+    multiple_versions = summary.model_dump(mode="python")
+    multiple_versions["runner_versions"] = [__version__, "9.9.9"]
+    with pytest.raises(ValidationError, match="exactly one"):
+        type(summary).model_validate(multiple_versions)
+
+    missing_cases = summary.model_dump(mode="python")
+    missing_cases["case_definitions"] = []
+    with pytest.raises(ValidationError, match="case_definitions"):
+        type(summary).model_validate(missing_cases)
 
 
 def test_markdown_distinguishes_not_judged_from_semantic_failure(tmp_path: Path) -> None:

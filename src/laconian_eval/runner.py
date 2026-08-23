@@ -11,7 +11,9 @@ from typing import Literal, TextIO, cast
 
 from pydantic import ValidationError
 
+from laconian_eval import __version__
 from laconian_eval.arms import Arm
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import (
     ErrorInfo,
     RawAttempt,
@@ -291,6 +293,8 @@ def _validate_partial_history(
     arm_name_set = set(arm_names)
     response_models: set[str] = set()
     for attempt in attempts:
+        if attempt.runner_version != manifest.runner_version:
+            raise ValueError(f"{path}: raw runner_version conflicts with manifest")
         if attempt.provider != manifest.provider.kind:
             raise ValueError(f"{path}: raw provider {attempt.provider!r} conflicts with manifest")
         if attempt.model != manifest.provider.model:
@@ -322,11 +326,16 @@ def _validate_partial_history(
             key=key,
         )
         expected_prompt_sha256 = sha256(item.case.prompt.encode("utf-8")).hexdigest()
+        expected_case_definition_sha256 = response_case_sha256(item.case)
         for attempt in history:
             if attempt.prompt_sha256 != expected_prompt_sha256:
                 raise ValueError(f"{path}: raw prompt_sha256 conflicts with case for {key}")
             if attempt.instruction_sha256 != item.arm.sha256:
                 raise ValueError(f"{path}: raw instruction_sha256 conflicts with arm for {key}")
+            if attempt.case_definition_sha256 != expected_case_definition_sha256:
+                raise ValueError(
+                    f"{path}: raw case_definition_sha256 conflicts with case for {key}"
+                )
 
     authentication_seen = False
     for attempt in attempts:
@@ -433,9 +442,11 @@ def run_to_jsonl(
                     will_retry = effective_retryable and attempt_number < max_attempts
                     backoff_ms = 100 * (2 ** (attempt_number - 1)) if will_retry else None
                     attempt = RawAttempt(
+                        runner_version=__version__,
                         run_id=run_id,
                         manifest_sha256=current_manifest_sha256,
                         case_id=item.case.id,
+                        case_definition_sha256=response_case_sha256(item.case),
                         arm=cast(ArmName, item.arm.name),
                         repetition=item.repetition,
                         attempt=attempt_number,
@@ -470,9 +481,11 @@ def run_to_jsonl(
 
                 elapsed_ms = max(0, int((time.monotonic() - monotonic_start) * 1000))
                 attempt = RawAttempt(
+                    runner_version=__version__,
                     run_id=run_id,
                     manifest_sha256=current_manifest_sha256,
                     case_id=item.case.id,
+                    case_definition_sha256=response_case_sha256(item.case),
                     arm=cast(ArmName, item.arm.name),
                     repetition=item.repetition,
                     attempt=attempt_number,

@@ -16,6 +16,9 @@ assign a release date to work still under review.
   contract coverage.
 - Append-only attempts, bounded retry lineage, secret redaction, deterministic checks, optional
   blind semantic judgment attachment, quality-gated pairing, and non-composite reports.
+- Immutable scoring provenance that binds manifests and raw attempts to the runner version and
+  every complete response-case definition, with the same hashes disclosed in summaries and
+  reports.
 - Mixed-license attribution for Apache-2.0 project code and skill, CC BY 4.0 documentation and
   benchmark materials, and the MIT Caveman fixture.
 - Public philosophy, methodology, case-contribution, contributor, and security documentation.
