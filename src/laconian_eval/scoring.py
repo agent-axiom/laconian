@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
-from yaml import YAMLError
 
 from laconian_eval import __version__
 from laconian_eval.cases import response_case_sha256
@@ -264,7 +263,9 @@ def _json_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     try:
         parsed = json.loads(output.strip(), parse_constant=reject_non_rfc_constant)
         parsed_successfully = True
-    except (json.JSONDecodeError, ValueError) as exc:
+    except Exception as exc:
+        # The decoder runs only on untrusted model output; no ordinary parser
+        # exception may abort scoring the remaining attempts.
         detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
         parse_detail = f"output is not strict complete JSON: {detail}"
 
@@ -308,7 +309,9 @@ def _yaml_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     parse_detail = "output is a top-level YAML mapping"
     try:
         parsed = safe_load_unique(output.strip())
-    except YAMLError as exc:
+    except Exception as exc:
+        # PyYAML SafeLoader constructors can leak built-in exceptions for
+        # malformed tagged scalars, so contain them at the trust boundary.
         parse_detail = f"output is not one complete strict YAML document: {exc}"
 
     parsed_mapping = parsed if isinstance(parsed, Mapping) else None

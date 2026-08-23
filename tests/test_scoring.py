@@ -239,6 +239,18 @@ def test_declared_json_keys_are_an_exact_top_level_set() -> None:
     assert not {check.name: check.passed for check in extra.checks}["format.json_key_set"]
 
 
+def test_deeply_nested_json_fails_the_check_without_aborting_scoring() -> None:
+    case = response_case(constraints=HardConstraints(required_json_keys=("answer",)))
+    output = "[" * 1_100 + "0" + "]" * 1_100
+
+    scored = score_attempt(case, raw_attempt(case, output=output))
+
+    checks = {check.name: check.passed for check in scored.checks}
+    assert checks["format.json_object"] is False
+    assert checks["format.required_json_key[answer]"] is False
+    assert not scored.hard_pass
+
+
 @pytest.mark.parametrize(
     ("output", "mapping_passed", "key_set_passed"),
     [
@@ -281,6 +293,30 @@ def test_required_yaml_keys_need_one_complete_exact_top_level_mapping(
     assert checks["format.yaml_mapping"] is mapping_passed
     assert checks["format.yaml_key_set"] is key_set_passed
     assert scored.hard_pass is (mapping_passed and key_set_passed)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "status: 2020-99-99\nreason: x\nnext_step: y\n",
+        'status: !!int ""\nreason: x\nnext_step: y\n',
+        "status: !!timestamp nope\nreason: x\nnext_step: y\n",
+    ],
+)
+def test_yaml_constructor_failure_fails_the_check_without_aborting_scoring(output: str) -> None:
+    case = response_case(
+        constraints=HardConstraints(required_yaml_keys=("status", "reason", "next_step"))
+    )
+
+    scored = score_attempt(
+        case,
+        raw_attempt(case, output=output),
+    )
+
+    checks = {check.name: check.passed for check in scored.checks}
+    assert checks["format.yaml_mapping"] is False
+    assert checks["format.yaml_key_set"] is False
+    assert not scored.hard_pass
 
 
 @pytest.mark.parametrize(
