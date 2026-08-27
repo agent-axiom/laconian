@@ -12,6 +12,8 @@ from pathlib import PurePosixPath
 from typing import TypeAlias
 from uuid import UUID
 
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
+
 JsonScalar: TypeAlias = bool | int | float | str | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -39,7 +41,12 @@ def _project_path(value: PurePosixPath) -> str:
     return value.as_posix()
 
 
-def _project(value: object) -> JsonValue:
+def _project(
+    value: object,
+    *,
+    depth: int,
+    active_containers: set[int],
+) -> JsonValue:
     if isinstance(value, Enum):
         if not isinstance(value.value, str):
             raise TypeError("canonical JSON supports only string enums")
@@ -60,22 +67,43 @@ def _project(value: object) -> JsonValue:
         if value == 0.0:
             return 0.0
         return value
-    if isinstance(value, Mapping):
-        projected: dict[str, JsonValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("canonical JSON requires string mapping keys")
-            projected[key] = _project(item)
-        return projected
-    if isinstance(value, (list, tuple)):
-        return [_project(item) for item in value]
+    if isinstance(value, (Mapping, list, tuple)):
+        container_depth = depth + 1
+        if container_depth > RESOURCE_LIMITS_V1.nesting_depth:
+            raise ResourceLimitError("nesting_depth_limit")
+        identity = id(value)
+        if identity in active_containers:
+            raise ResourceLimitError("cyclic_structure")
+        active_containers.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                projected: dict[str, JsonValue] = {}
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise TypeError("canonical JSON requires string mapping keys")
+                    projected[key] = _project(
+                        item,
+                        depth=container_depth,
+                        active_containers=active_containers,
+                    )
+                return projected
+            return [
+                _project(
+                    item,
+                    depth=container_depth,
+                    active_containers=active_containers,
+                )
+                for item in value
+            ]
+        finally:
+            active_containers.remove(identity)
     raise TypeError("unsupported canonical JSON value")
 
 
 def canonical_json(value: object) -> bytes:
     """Encode a supported value using the normative capsule JSON contract."""
 
-    projected = _project(value)
+    projected = _project(value, depth=0, active_containers=set())
     encoded = json.dumps(
         projected,
         sort_keys=True,

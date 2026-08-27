@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
 from laconian_eval.capsule.limits import (
     RESOURCE_LIMITS_V1,
     ResourceLimitError,
+    ResourceLimitsV1,
     bounded_utf8_length,
     check_collection_count,
     check_nesting_depth,
@@ -52,11 +53,51 @@ def test_resource_limits_v1_is_frozen() -> None:
         RESOURCE_LIMITS_V1.plan_rows = 1  # type: ignore[misc]
 
 
+@pytest.mark.parametrize("version", ["2", "", 1, None])
+def test_resource_limits_v1_rejects_invalid_version(version: object) -> None:
+    with pytest.raises(ResourceLimitError) as caught:
+        replace(RESOURCE_LIMITS_V1, version=version)
+    assert caught.value.code == "invalid_resource_limits"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [field.name for field in fields(ResourceLimitsV1) if field.name != "version"],
+)
+@pytest.mark.parametrize("invalid_value", [True, False, 0, -1, 1.0, "1"])
+def test_resource_limits_v1_rejects_invalid_numeric_override(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ResourceLimitError) as caught:
+        replace(RESOURCE_LIMITS_V1, **{field_name: invalid_value})
+    assert caught.value.code == "invalid_resource_limits"
+
+
 def test_bounded_utf8_length_counts_encoded_bytes() -> None:
     assert bounded_utf8_length("\u03b1", limit=2, code="test_bytes") == 2
     with pytest.raises(ResourceLimitError) as caught:
         bounded_utf8_length("\u03b1\u03b1", limit=3, code="test_bytes")
     assert caught.value.code == "test_bytes"
+
+
+def test_bounded_utf8_length_rejects_by_character_lower_bound_before_encoding() -> None:
+    class EncodeMustNotRun(str):
+        def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+            raise AssertionError("encode must not run")
+
+    value = EncodeMustNotRun("oversized")
+    with pytest.raises(ResourceLimitError) as caught:
+        bounded_utf8_length(value, limit=8, code="bounded_string_limit")
+    assert caught.value.code == "bounded_string_limit"
+
+
+def test_bounded_utf8_length_counts_chunks_and_rejects_invalid_utf8() -> None:
+    value = "a" * 4095 + "\u03b1"
+    assert bounded_utf8_length(value, limit=4097, code="test_bytes") == 4097
+    with pytest.raises(ResourceLimitError) as caught:
+        bounded_utf8_length("\ud800", limit=10, code="test_bytes")
+    assert caught.value.code == "invalid_utf8"
 
 
 def test_bounded_utf8_length_does_not_echo_rejected_content() -> None:

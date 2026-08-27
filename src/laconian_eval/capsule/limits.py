@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 _KIB = 1024
 _MIB = 1024 * _KIB
 _GIB = 1024 * _MIB
+_UTF8_CHUNK_CHARACTERS = 4096
+
+
+class ResourceLimitError(ValueError):
+    """A fail-closed resource check with a stable machine-readable code."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__("resource limit rejected")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,16 +48,17 @@ class ResourceLimitsV1:
     bounded_string_bytes: int = 1 * _KIB
     nesting_depth: int = 64
 
+    def __post_init__(self) -> None:
+        for definition in fields(self):
+            value = object.__getattribute__(self, definition.name)
+            if definition.name == "version":
+                if type(value) is not str or value != "1":
+                    raise ResourceLimitError("invalid_resource_limits")
+            elif type(value) is not int or value <= 0:
+                raise ResourceLimitError("invalid_resource_limits")
+
 
 RESOURCE_LIMITS_V1 = ResourceLimitsV1()
-
-
-class ResourceLimitError(ValueError):
-    """A fail-closed resource check with a stable machine-readable code."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__("resource limit rejected")
 
 
 def _nonnegative_integer(value: object) -> int:
@@ -63,12 +73,18 @@ def bounded_utf8_length(value: str, *, limit: int, code: str) -> int:
     if not isinstance(value, str):
         raise ResourceLimitError("invalid_string")
     checked_limit = _nonnegative_integer(limit)
-    try:
-        byte_length = len(value.encode("utf-8", errors="strict"))
-    except UnicodeEncodeError:
-        raise ResourceLimitError("invalid_utf8") from None
-    if byte_length > checked_limit:
+    character_length = str.__len__(value)
+    if character_length > checked_limit:
         raise ResourceLimitError(code)
+    byte_length = 0
+    for start in range(0, character_length, _UTF8_CHUNK_CHARACTERS):
+        chunk = str.__getitem__(value, slice(start, start + _UTF8_CHUNK_CHARACTERS))
+        try:
+            byte_length += len(chunk.encode("utf-8", errors="strict"))
+        except UnicodeEncodeError:
+            raise ResourceLimitError("invalid_utf8") from None
+        if byte_length > checked_limit:
+            raise ResourceLimitError(code)
     return byte_length
 
 

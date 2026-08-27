@@ -16,6 +16,7 @@ from laconian_eval.capsule.canonical import (
     stable_digest,
     stable_digest_bytes,
 )
+from laconian_eval.capsule.limits import ResourceLimitError
 
 
 class SampleEnum(str, Enum):  # noqa: UP042 - contract covers classic string Enum.
@@ -104,6 +105,43 @@ def test_canonical_json_normalizes_nested_negative_zero() -> None:
 def test_canonical_json_accepts_nested_json_containers() -> None:
     value = {"outer": ({"inner": [None, True, 7, 2.5, "text"]},)}
     assert canonical_json(value) == (b'{"outer":[{"inner":[null,true,7,2.5,"text"]}]}')
+
+
+def test_canonical_json_accepts_exactly_64_nested_containers() -> None:
+    value: object = 0
+    for _ in range(64):
+        value = [value]
+    assert canonical_json(value) == b"[" * 64 + b"0" + b"]" * 64
+
+
+def test_canonical_json_rejects_65_nested_containers() -> None:
+    value: object = 0
+    for _ in range(65):
+        value = [value]
+    with pytest.raises(ResourceLimitError) as caught:
+        canonical_json(value)
+    assert caught.value.code == "nesting_depth_limit"
+
+
+def test_canonical_json_rejects_cyclic_list_and_mapping() -> None:
+    cyclic_list: list[object] = []
+    cyclic_list.append(cyclic_list)
+    with pytest.raises(ResourceLimitError) as list_error:
+        canonical_json(cyclic_list)
+    assert list_error.value.code == "cyclic_structure"
+
+    cyclic_mapping: dict[str, object] = {}
+    cyclic_mapping["self"] = cyclic_mapping
+    with pytest.raises(ResourceLimitError) as mapping_error:
+        canonical_json(cyclic_mapping)
+    assert mapping_error.value.code == "cyclic_structure"
+
+
+def test_canonical_json_accepts_shared_noncyclic_container() -> None:
+    shared = [{"value": 1}]
+    assert canonical_json({"left": shared, "right": shared}) == (
+        b'{"left":[{"value":1}],"right":[{"value":1}]}'
+    )
 
 
 def test_canonical_timestamp_handles_date_boundary_when_converting_to_utc() -> None:
