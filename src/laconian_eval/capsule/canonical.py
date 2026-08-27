@@ -24,7 +24,11 @@ def canonical_timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("canonical timestamp requires an aware datetime")
     utc_value = value.astimezone(UTC)
-    return utc_value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return (
+        f"{utc_value.year:04d}-{utc_value.month:02d}-{utc_value.day:02d}"
+        f"T{utc_value.hour:02d}:{utc_value.minute:02d}:{utc_value.second:02d}"
+        f".{utc_value.microsecond:06d}Z"
+    )
 
 
 def _project_path(value: PurePosixPath) -> str:

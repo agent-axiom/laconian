@@ -78,6 +78,24 @@ def test_canonical_timestamp_converts_offset_to_utc() -> None:
     assert canonical_timestamp(value) == "2026-08-27T09:34:56.123456Z"
 
 
+def test_canonical_timestamp_zero_pads_four_digit_year() -> None:
+    value = datetime(1, 1, 2, 3, 4, 5, 6, tzinfo=timezone.utc)  # noqa: UP017
+    assert canonical_timestamp(value) == "0001-01-02T03:04:05.000006Z"
+
+
+def test_canonical_timestamp_does_not_depend_on_platform_year_padding() -> None:
+    class UnpaddedPlatformDatetime(datetime):
+        def astimezone(self, tz: object = None) -> UnpaddedPlatformDatetime:
+            return self
+
+        def strftime(self, format_string: str) -> str:
+            assert format_string == "%Y-%m-%dT%H:%M:%S.%fZ"
+            return "1-01-02T03:04:05.000006Z"
+
+    value = UnpaddedPlatformDatetime(1, 1, 2, 3, 4, 5, 6, tzinfo=UTC)
+    assert canonical_timestamp(value) == "0001-01-02T03:04:05.000006Z"
+
+
 def test_canonical_json_normalizes_nested_negative_zero() -> None:
     value = {"items": (-0.0, [-0.0, {"value": -0.0}])}
     assert canonical_json(value) == b'{"items":[0.0,[0.0,{"value":0.0}]]}'
