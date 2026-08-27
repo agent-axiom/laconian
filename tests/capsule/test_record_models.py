@@ -33,6 +33,7 @@ from laconian_eval.capsule.record_models import (
     PreparedEventV1,
     RunnerSourceIndexV1,
     SessionEnvironmentV1,
+    VerifyErrorV1,
     VerifyResultV1,
 )
 
@@ -557,6 +558,35 @@ def test_verify_result_v1_round_trips_complete_shape() -> None:
     ]
 
 
+def test_verify_result_revalidates_corrupted_nested_error_instance() -> None:
+    error = VerifyErrorV1.model_validate(
+        {
+            "code": "invalid_model",
+            "path": None,
+            "sequence": None,
+            "explanation": "schema validation failed",
+        }
+    )
+    corrupted = BaseModel.model_copy(
+        error,
+        update={"explanation": "unsafe\ndiagnostic"},
+    )
+    payload: dict[str, Any] = {
+        "schema_version": "1",
+        "status": "invalid",
+        "run_id": None,
+        "state": None,
+        "capsule_sha256": None,
+        "missing_plan_item_ids": [],
+        "operational_blocker_codes": [],
+        "warnings": [],
+        "first_error": corrupted,
+    }
+
+    with pytest.raises(ValidationError, match="explanation"):
+        VerifyResultV1.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "state",
     [
@@ -837,6 +867,7 @@ def test_every_capsule_model_is_frozen_and_extra_forbid() -> None:
     for model in model_classes:
         assert model.model_config.get("frozen") is True, model.__name__
         assert model.model_config.get("extra") == "forbid", model.__name__
+        assert model.model_config.get("revalidate_instances") == "always", model.__name__
 
 
 def test_models_are_actually_frozen() -> None:

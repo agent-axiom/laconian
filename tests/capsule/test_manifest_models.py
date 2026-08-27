@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from capsule_helpers import SHA_A, resolved_manifest_v2_payload, source_manifest_v2_payload
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from laconian_eval import __version__
 from laconian_eval.capsule.manifest_models import (
@@ -263,9 +263,22 @@ def test_numeric_float_fields_normalize_negative_zero() -> None:
     assert str(dumped["generation"]["temperature"]) == "0.0"
 
 
-def test_price_url_is_exact_and_bounded() -> None:
+@pytest.mark.parametrize(
+    "exact_url",
+    [
+        "HTTP://EXAMPLE.test:80/prices/%7Ecurrent?b=2&a=1",
+        "https://pricing_api.example/prices",
+        "https://foo!bar.example/prices",
+        "https://-service.example/prices",
+        "https://foo..bar/prices",
+        "https://999.999.999.999/prices",
+        "https://[2001:db8::1]/prices",
+        "https://[v1.fe80]/prices",
+        "http://192.0.2.1/prices",
+    ],
+)
+def test_price_url_is_exact_and_bounded(exact_url: str) -> None:
     payload = source_manifest_v2_payload()
-    exact_url = "HTTP://EXAMPLE.test:80/prices/%7Ecurrent?b=2&a=1"
     _set_nested(payload, ("price_snapshot", "source_url"), exact_url)
 
     manifest = SourceManifestV2.model_validate(payload)
@@ -294,8 +307,9 @@ def test_price_url_is_exact_and_bounded() -> None:
         "https://example.test/%ZZ",
         "https://example.test/{bad|path}",
         "https://example.test/prices?[bad]",
-        "https://-bad.example/prices",
-        "https://999.999.999.999/prices",
+        "https://[127.0.0.1]/prices",
+        "https://[v.fe80]/prices",
+        "https://[v1.]/prices",
         "https://example.test/" + "x" * 1024,
     ],
 )
@@ -405,6 +419,12 @@ def test_comparison_and_protocol_references() -> None:
     ("field", "value"),
     [
         ("kind", "rubric"),
+        ("kind", ":rubric"),
+        ("kind", "rubric:"),
+        ("kind", "https://"),
+        ("kind", ".example.rubric"),
+        ("kind", "example..rubric"),
+        ("kind", "example.rubric."),
         ("schema_id", "rubric-v1"),
         ("media_type", "not a media type"),
         ("media_type", "application"),
@@ -426,6 +446,66 @@ def test_protocol_media_type_retains_exact_valid_parameters() -> None:
     manifest = SourceManifestV2.model_validate(payload)
 
     assert manifest.capsule.protocol_bindings[0].media_type == media_type
+
+
+@pytest.mark.parametrize(
+    ("kind", "schema_id"),
+    [
+        ("example:rubric", "example:rubric:v1"),
+        ("urn:example:rubric", "urn:example:rubric:v1"),
+        ("https://example.org/rubric", "https://example.org/rubric/v1"),
+        ("org.example.rubric", "org.example.rubric.v1"),
+    ],
+)
+def test_protocol_namespaces_accept_colon_and_uri_styles(kind: str, schema_id: str) -> None:
+    payload = source_manifest_v2_payload()
+    binding = payload["capsule"]["protocol_bindings"][0]
+    binding["kind"] = kind
+    binding["schema_id"] = schema_id
+
+    manifest = SourceManifestV2.model_validate(payload)
+
+    assert manifest.capsule.protocol_bindings[0].kind == kind
+    assert manifest.capsule.protocol_bindings[0].schema_id == schema_id
+
+
+@pytest.mark.parametrize("nested", ["provider", "protocol"])
+def test_outer_manifest_revalidates_corrupted_nested_instances(nested: str) -> None:
+    manifest = SourceManifestV2.model_validate(source_manifest_v2_payload())
+    payload = source_manifest_v2_payload()
+    if nested == "provider":
+        payload["provider"] = BaseModel.model_copy(
+            manifest.provider,
+            update={"model": 123},
+        )
+    else:
+        binding = manifest.capsule.protocol_bindings[0]
+        payload["capsule"]["protocol_bindings"][0] = BaseModel.model_copy(
+            binding,
+            update={"applies_at": ("publication", "scoring")},
+        )
+
+    with pytest.raises(ValidationError):
+        SourceManifestV2.model_validate(payload)
+
+
+def test_capsule_model_copy_validates_updates() -> None:
+    manifest = SourceManifestV2.model_validate(source_manifest_v2_payload())
+    corrupted_provider = BaseModel.model_copy(
+        manifest.provider,
+        update={"model": 123},
+    )
+
+    with pytest.raises(ValidationError, match="repetitions"):
+        manifest.model_copy(update={"repetitions": True})
+    with pytest.raises(ValidationError, match=r"provider\.model"):
+        manifest.model_copy(update={"provider": corrupted_provider})
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        manifest.model_copy(update={"unknown": "field"})
+
+    copied = manifest.model_copy(update={"repetitions": 3})
+
+    assert copied.repetitions == 3
 
 
 @pytest.mark.parametrize(
@@ -684,15 +764,87 @@ def test_resolved_manifest_rejects_noncanonical_hashes(digest: str) -> None:
         ResolvedManifestV2.model_validate(payload)
 
 
-def test_resolved_manifest_accepts_source_schema_v1_and_future_runner() -> None:
+def _resolved_v1_manifest_payload() -> dict[str, Any]:
     payload = resolved_manifest_v2_payload()
     payload["source_manifest_schema_version"] = "1"
+    payload["capsule"]["datasets"] = [
+        {
+            "dataset_id": payload["run_name"],
+            "dataset_version": "unversioned",
+            "role": "smoke",
+            "case_schema_version": "1",
+            "case_file_ordinals": [0, 1],
+            "dataset_content_sha256": SHA_A,
+        }
+    ]
+    payload["capsule"]["comparisons"] = [
+        {
+            "comparison_id": "if-vs-concise",
+            "left_arm": "if",
+            "right_arm": "concise",
+            "role": "contextual",
+        }
+    ]
+    payload["capsule"]["protocol_bindings"] = []
+    return payload
+
+
+def _add_resolved_protocol_to_v1_projection(payload: dict[str, Any]) -> None:
+    binding = deepcopy(resolved_manifest_v2_payload()["capsule"]["protocol_bindings"][0])
+    binding["scope"]["dataset_ids"] = [payload["run_name"]]
+    payload["capsule"]["protocol_bindings"] = [binding]
+
+
+def test_resolved_manifest_accepts_exact_source_v1_projection_and_future_runner() -> None:
+    payload = _resolved_v1_manifest_payload()
     payload["runner_version"] = "99.4.0-future"
 
     manifest = ResolvedManifestV2.model_validate(payload)
 
     assert manifest.source_manifest_schema_version == "1"
     assert manifest.runner_version == "99.4.0-future"
+
+
+def test_resolved_v1_projection_omits_comparison_without_both_arms() -> None:
+    payload = _resolved_v1_manifest_payload()
+    payload["arms"] = ["baseline"]
+    payload["capsule"]["comparisons"] = []
+
+    manifest = ResolvedManifestV2.model_validate(payload)
+
+    assert manifest.capsule.comparisons == ()
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda payload: payload["capsule"].update(run_purpose="development"),
+        lambda payload: payload["capsule"].update(claim_intent="exploratory"),
+        lambda payload: payload["capsule"].update(
+            datasets=deepcopy(resolved_manifest_v2_payload()["capsule"]["datasets"])
+        ),
+        lambda payload: payload["capsule"]["datasets"][0].update(dataset_id="other-dataset"),
+        lambda payload: payload["capsule"]["datasets"][0].update(dataset_version="versioned"),
+        lambda payload: payload["capsule"]["datasets"][0].update(role="development"),
+        lambda payload: payload["capsule"].update(comparisons=[]),
+        lambda payload: payload["capsule"]["comparisons"][0].update(role="primary"),
+        lambda payload: payload["capsule"]["comparisons"].append(
+            {
+                "comparison_id": "baseline-vs-concise",
+                "left_arm": "baseline",
+                "right_arm": "concise",
+                "role": "secondary",
+            }
+        ),
+        _add_resolved_protocol_to_v1_projection,
+    ],
+)
+def test_resolved_v1_marker_requires_exact_upgrade_projection(mutator: Any) -> None:
+    payload = _resolved_v1_manifest_payload()
+    mutator(payload)
+
+    with pytest.raises(ValidationError, match="v1 source marker"):
+        ResolvedManifestV2.model_validate(payload)
 
 
 @pytest.mark.parametrize(

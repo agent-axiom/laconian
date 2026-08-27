@@ -435,6 +435,35 @@ class ResolvedManifestV2(CapsuleModel):
             comparisons=self.capsule.comparisons,
             protocol_bindings=self.capsule.protocol_bindings,
         )
+        if self.source_manifest_schema_version == "1":
+            dataset = self.capsule.datasets[0] if len(self.capsule.datasets) == 1 else None
+            has_default_comparison = "if" in self.arms and "concise" in self.arms
+            comparison = self.capsule.comparisons[0] if len(self.capsule.comparisons) == 1 else None
+            exact_dataset = (
+                dataset is not None
+                and dataset.dataset_id == self.run_name
+                and dataset.dataset_version == "unversioned"
+                and dataset.role == "smoke"
+                and dataset.case_schema_version == "1"
+                and dataset.case_file_ordinals == tuple(range(len(self.case_files)))
+            )
+            exact_comparisons = (
+                comparison is not None
+                and comparison.comparison_id == "if-vs-concise"
+                and comparison.left_arm == "if"
+                and comparison.right_arm == "concise"
+                and comparison.role == "contextual"
+                if has_default_comparison
+                else not self.capsule.comparisons
+            )
+            if (
+                self.capsule.run_purpose != "integration_smoke"
+                or self.capsule.claim_intent != "none"
+                or not exact_dataset
+                or not exact_comparisons
+                or self.capsule.protocol_bindings
+            ):
+                raise ValueError("v1 source marker requires the exact upgrade projection")
         expected_case_paths = tuple(
             f"inputs/cases/{ordinal:03d}.yaml" for ordinal in range(len(self.case_files))
         )

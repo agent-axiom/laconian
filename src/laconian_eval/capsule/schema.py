@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from ipaddress import ip_address
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal, TypeAlias, TypeVar
+from typing import Annotated, Any, Literal, Self, TypeAlias, TypeVar
 from urllib.parse import urlsplit
 from uuid import RFC_4122, UUID
 
@@ -123,8 +125,10 @@ _CANONICAL_TIMESTAMP_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
 )
 _EXACT_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-_DNS_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _INVALID_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_REG_NAME_PATTERN = re.compile(r"^(?:[A-Za-z0-9\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})+$")
+_IPV_FUTURE_PATTERN = re.compile(r"^[Vv][0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$")
+_URI_NAMESPACE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://.+$")
 _HTTP_PATH_PATTERN = re.compile(r"^[A-Za-z0-9\-._~!$&'()*+,;=:@/%]*$")
 _HTTP_QUERY_PATTERN = re.compile(r"^[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]*$")
 _MEDIA_TYPE_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
@@ -139,7 +143,27 @@ _MEDIA_TYPE_PATTERN = re.compile(
 class CapsuleModel(BaseModel):
     """Capsule-local immutable strict-object base without changing legacy models."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        validate_default=True,
+    )
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Return a fully revalidated copy, including nested capsule models."""
+
+        payload = self.model_dump(mode="python", round_trip=True)
+        if deep:
+            payload = deepcopy(payload)
+        if update is not None:
+            payload.update(update)
+        return type(self).model_validate(payload)
 
 
 def _strict_string(value: object) -> str:
@@ -245,11 +269,25 @@ def _namespaced_string(value: str) -> str:
         for character in value
     ):
         raise ValueError("namespaced string must not contain whitespace or controls")
-    if "\\" in value or "/" not in value:
-        raise ValueError("namespaced string must contain a slash-separated namespace")
-    if any(component in ("", ".", "..") for component in value.split("/")):
-        raise ValueError("namespaced string components must be nonempty")
-    return value
+    if "\\" in value:
+        raise ValueError("namespaced string must not contain backslashes")
+    if _URI_NAMESPACE_PATTERN.fullmatch(value) is not None:
+        return value
+    if value[0] in "/:" or value[-1] in "/:":
+        raise ValueError("namespaced string separators require values on both sides")
+    if "/" in value:
+        if "//" in value or any(component in ("", ".", "..") for component in value.split("/")):
+            raise ValueError("namespaced string components must be nonempty")
+        return value
+    if ":" in value:
+        if "::" in value or any(component in ("", ".", "..") for component in value.split(":")):
+            raise ValueError("namespaced string components must be nonempty")
+        return value
+    if "." in value:
+        if any(component in ("", ".", "..") for component in value.split(".")):
+            raise ValueError("namespaced string components must be nonempty")
+        return value
+    raise ValueError("namespaced string must contain a namespace separator")
 
 
 def _media_type(value: str) -> str:
@@ -441,32 +479,29 @@ def _exact_ascii_http_url(value: str) -> str:
         raise ValueError("URL path contains an invalid character")
     if _HTTP_QUERY_PATTERN.fullmatch(parsed.query) is None:
         raise ValueError("URL query contains an invalid character")
-    host = parsed.hostname
-    if ":" in host:
-        try:
-            ip_address(host)
-        except ValueError:
-            raise ValueError("URL host is invalid") from None
-        if not parsed.netloc.startswith("[") or "]" not in parsed.netloc:
-            raise ValueError("IPv6 URL hosts must use brackets")
-        if parsed.netloc.endswith(":"):
+    authority = parsed.netloc
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        literal = authority[1:closing_bracket]
+        port_suffix = authority[closing_bracket + 1 :]
+        if port_suffix and (not port_suffix.startswith(":") or not port_suffix[1:].isdigit()):
+            raise ValueError("URL IP-literal suffix is invalid")
+        if port_suffix == ":":
             raise ValueError("URL port must not be empty")
-    else:
-        if parsed.netloc.endswith(":"):
-            raise ValueError("URL port must not be empty")
-        dns_host = host[:-1] if host.endswith(".") else host
-        labels = dns_host.split(".")
-        if (
-            not dns_host
-            or len(dns_host.encode("ascii")) > 253
-            or any(_DNS_LABEL_PATTERN.fullmatch(label) is None for label in labels)
-        ):
-            raise ValueError("URL host is invalid")
-        if all(character in "0123456789." for character in dns_host):
+        if _IPV_FUTURE_PATTERN.fullmatch(literal) is None:
             try:
-                ip_address(dns_host)
+                parsed_ip = ip_address(literal)
             except ValueError:
-                raise ValueError("URL numeric host is invalid") from None
+                raise ValueError("URL IP literal is invalid") from None
+            if parsed_ip.version != 6 or "%" in literal:
+                raise ValueError("bracketed URL host must be IPv6 or IPvFuture")
+    else:
+        if "[" in authority or "]" in authority or authority.endswith(":"):
+            raise ValueError("URL host or port is invalid")
+        host = parsed.hostname
+        assert host is not None
+        if _REG_NAME_PATTERN.fullmatch(host) is None:
+            raise ValueError("URL host is invalid")
     return value
 
 
