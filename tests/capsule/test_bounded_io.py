@@ -75,6 +75,17 @@ def test_open_directory_no_follow_rejects_symlink(tmp_path: Path) -> None:
         open_directory_no_follow(link)
 
 
+def test_open_directory_no_follow_rejects_intermediate_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    target = real / "target"
+    target.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        open_directory_no_follow(alias / "target")
+
+
 def test_open_directory_no_follow_fails_closed_without_required_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -269,13 +280,17 @@ def test_write_owned_file_is_descriptor_relative_private_and_no_overwrite(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "owned").mkdir()
-    root_fd = open_directory_no_follow(tmp_path)
+    previous_umask = os.umask(0)
     try:
-        write_owned_file(root_fd, "owned/result.bin", b"result")
-        with pytest.raises(FileExistsError):
-            write_owned_file(root_fd, "owned/result.bin", b"replacement")
+        root_fd = open_directory_no_follow(tmp_path)
+        try:
+            write_owned_file(root_fd, "owned/result.bin", b"result")
+            with pytest.raises(FileExistsError):
+                write_owned_file(root_fd, "owned/result.bin", b"replacement")
+        finally:
+            os.close(root_fd)
     finally:
-        os.close(root_fd)
+        os.umask(previous_umask)
 
     target = tmp_path / "owned" / "result.bin"
     assert target.read_bytes() == b"result"

@@ -83,12 +83,31 @@ def _source_open_flags() -> int:
 
 
 def open_directory_no_follow(path: os.PathLike[str] | str) -> int:
-    """Open one directory without following a symlink at the named component."""
+    """Open a directory without following a symlink at any path component."""
 
-    descriptor = os.open(path, _directory_open_flags())
+    raw_path = os.fspath(path)
+    if type(raw_path) is not str or not raw_path:
+        raise BoundedIOError("not_directory", "source root is not a directory")
+    absolute = raw_path.startswith("/")
+    components = raw_path.split("/")
+    descriptor = os.open("/" if absolute else ".", _directory_open_flags())
     try:
-        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-            raise BoundedIOError("not_directory", "source root is not a directory")
+        for component in components:
+            if component in ("", "."):
+                continue
+            next_descriptor = os.open(
+                component,
+                _directory_open_flags(),
+                dir_fd=descriptor,
+            )
+            try:
+                if not stat.S_ISDIR(os.fstat(next_descriptor).st_mode):
+                    raise BoundedIOError("not_directory", "source root is not a directory")
+            except BaseException:
+                os.close(next_descriptor)
+                raise
+            os.close(descriptor)
+            descriptor = next_descriptor
     except BaseException:
         os.close(descriptor)
         raise

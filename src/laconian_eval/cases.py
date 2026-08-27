@@ -30,6 +30,30 @@ _CASE_FILE_KEYS = ("schema_version", "kind", "cases")
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _CaseT = TypeVar("_CaseT", ResponseCase, ActivationCase)
 _Source = Path | str
+_SAFE_CASE_VALIDATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "cases",
+        "id",
+        "scenario_id",
+        "locale",
+        "category",
+        "prompt",
+        "hard_constraints",
+        "semantic_rubric",
+        "required_literals",
+        "forbidden_literals",
+        "required_json_keys",
+        "required_yaml_keys",
+        "min_sentences",
+        "max_sentences",
+        "required_facts",
+        "material_warning",
+        "expected_activation",
+        "rationale",
+    }
+)
 
 
 def response_case_sha256(case: ResponseCase) -> str:
@@ -57,6 +81,7 @@ def _read_yaml_mapping_bytes(
     data: bytes,
     *,
     source: _Source,
+    remaining_case_records: int,
 ) -> Mapping[object, object]:
     check_collection_count(
         len(data),
@@ -68,6 +93,7 @@ def _read_yaml_mapping_bytes(
             data,
             collection_limit=RESOURCE_LIMITS_V1.case_records,
             collection_code="case_records_limit",
+            top_level_sequence_limits={"cases": (remaining_case_records, "case_records_limit")},
         )
     except StrictYamlError as exc:
         raise ValueError(f"{source}: unable to read YAML: {exc}") from exc
@@ -84,7 +110,11 @@ def _validation_location_summary(error: ValidationError) -> str:
         include_context=False,
         include_input=False,
     ):
-        location = ".".join(str(component) for component in item["loc"])
+        location = ".".join(
+            component
+            for component in item["loc"]
+            if type(component) is str and component in _SAFE_CASE_VALIDATION_FIELDS
+        )
         if location and location not in locations:
             locations.append(location)
     if not locations:
@@ -118,7 +148,11 @@ def _load_model_bytes(
     required_keys: Sequence[str] = (),
     remaining_case_records: int = RESOURCE_LIMITS_V1.case_records,
 ) -> _ModelT:
-    raw = _read_yaml_mapping_bytes(data, source=source)
+    raw = _read_yaml_mapping_bytes(
+        data,
+        source=source,
+        remaining_case_records=remaining_case_records,
+    )
     missing = [key for key in required_keys if key not in raw]
     if missing:
         joined_keys = ", ".join(missing)
@@ -136,7 +170,7 @@ def _load_model_bytes(
         return model_type.model_validate(raw)
     except ValidationError as exc:
         detail = _validation_location_summary(exc)
-        raise ValueError(f"{source}: {detail}") from exc
+        raise ValueError(f"{source}: {detail}") from None
 
 
 def _finalize_cases(records: Sequence[tuple[_CaseT, _Source]]) -> tuple[_CaseT, ...]:
@@ -171,7 +205,12 @@ def _finalize_cases(records: Sequence[tuple[_CaseT, _Source]]) -> tuple[_CaseT, 
     return tuple(case for case, _ in records)
 
 
-def parse_response_case_bytes(data: bytes, *, source: _Source) -> tuple[ResponseCase, ...]:
+def parse_response_case_bytes(
+    data: bytes,
+    *,
+    source: _Source,
+    remaining_case_records: int = RESOURCE_LIMITS_V1.case_records,
+) -> tuple[ResponseCase, ...]:
     """Validate one captured response-case file without cross-file finalization."""
 
     case_file = _load_model_bytes(
@@ -179,11 +218,17 @@ def parse_response_case_bytes(data: bytes, *, source: _Source) -> tuple[Response
         source,
         ResponseCaseFile,
         required_keys=_CASE_FILE_KEYS,
+        remaining_case_records=remaining_case_records,
     )
     return case_file.cases
 
 
-def parse_activation_case_bytes(data: bytes, *, source: _Source) -> tuple[ActivationCase, ...]:
+def parse_activation_case_bytes(
+    data: bytes,
+    *,
+    source: _Source,
+    remaining_case_records: int = RESOURCE_LIMITS_V1.case_records,
+) -> tuple[ActivationCase, ...]:
     """Validate one captured activation-case file without cross-file finalization."""
 
     case_file = _load_model_bytes(
@@ -191,6 +236,7 @@ def parse_activation_case_bytes(data: bytes, *, source: _Source) -> tuple[Activa
         source,
         ActivationCaseFile,
         required_keys=_CASE_FILE_KEYS,
+        remaining_case_records=remaining_case_records,
     )
     return case_file.cases
 
@@ -246,14 +292,12 @@ def load_response_cases(paths: Sequence[Path]) -> tuple[ResponseCase, ...]:
         data = _read_case_path_once(path, limit=effective_limit, code=limit_code)
         captured_bytes += len(data)
         remaining_records = RESOURCE_LIMITS_V1.case_records - len(records)
-        case_file = _load_model_bytes(
+        parsed = parse_response_case_bytes(
             data,
-            path,
-            ResponseCaseFile,
-            required_keys=_CASE_FILE_KEYS,
+            source=path,
             remaining_case_records=remaining_records,
         )
-        records.extend((case, path) for case in case_file.cases)
+        records.extend((case, path) for case in parsed)
     return finalize_response_cases(records)
 
 
@@ -271,14 +315,12 @@ def load_activation_cases(paths: Sequence[Path]) -> tuple[ActivationCase, ...]:
         data = _read_case_path_once(path, limit=effective_limit, code=limit_code)
         captured_bytes += len(data)
         remaining_records = RESOURCE_LIMITS_V1.case_records - len(records)
-        case_file = _load_model_bytes(
+        parsed = parse_activation_case_bytes(
             data,
-            path,
-            ActivationCaseFile,
-            required_keys=_CASE_FILE_KEYS,
+            source=path,
             remaining_case_records=remaining_records,
         )
-        records.extend((case, path) for case in case_file.cases)
+        records.extend((case, path) for case in parsed)
     return finalize_activation_cases(records)
 
 

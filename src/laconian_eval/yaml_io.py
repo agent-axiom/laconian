@@ -1,4 +1,4 @@
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 
 import yaml
@@ -11,6 +11,7 @@ from yaml.events import (
     MappingStartEvent,
     NodeEvent,
     ScalarEvent,
+    SequenceStartEvent,
 )
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken
@@ -35,18 +36,21 @@ class StrictYamlError(ValueError):
 @dataclass(slots=True)
 class _CollectionFrame:
     kind: str
+    limit: int | None
+    code: str
     child_count: int = 0
+    pending_scalar_key: str | None = None
 
     @property
     def next_child_is_mapping_key(self) -> bool:
         return self.kind == "mapping" and self.child_count % 2 == 0
 
-    def add_child(self, *, collection_limit: int | None, collection_code: str) -> None:
+    def add_child(self) -> None:
         self.child_count += 1
-        if collection_limit is None:
+        if self.limit is None:
             return
         count = self.child_count if self.kind == "sequence" else (self.child_count + 1) // 2
-        check_collection_count(count, limit=collection_limit, code=collection_code)
+        check_collection_count(count, limit=self.limit, code=self.code)
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -111,10 +115,14 @@ def _preflight_yaml_events(
     depth_limit: int,
     collection_limit: int | None,
     collection_code: str,
+    top_level_sequence_limits: Mapping[str, tuple[int, str]] | None,
 ) -> None:
     check_collection_count(0, limit=depth_limit, code="nesting_depth_limit")
     if collection_limit is not None:
         check_collection_count(0, limit=collection_limit, code=collection_code)
+    if top_level_sequence_limits is not None:
+        for limit, code in top_level_sequence_limits.values():
+            check_collection_count(0, limit=limit, code=code)
     stack: list[_CollectionFrame] = []
 
     try:
@@ -126,20 +134,36 @@ def _preflight_yaml_events(
                 continue
 
             parent = stack[-1] if stack else None
+            is_mapping_key = parent is not None and parent.next_child_is_mapping_key
+            new_limit = collection_limit
+            new_code = collection_code
             if isinstance(event, AliasEvent):
                 raise StrictYamlError("yaml_alias", "YAML aliases are forbidden")
             if (
                 isinstance(event, ScalarEvent)
-                and parent is not None
-                and parent.next_child_is_mapping_key
+                and is_mapping_key
                 and (event.tag == _MERGE_TAG or event.value == "<<")
             ):
                 raise StrictYamlError("yaml_merge_key", "YAML merge keys are forbidden")
+            if isinstance(event, ScalarEvent) and is_mapping_key and parent is not None:
+                parent.pending_scalar_key = event.value
+            if (
+                isinstance(event, SequenceStartEvent)
+                and parent is not None
+                and len(stack) == 1
+                and not is_mapping_key
+                and parent.pending_scalar_key is not None
+                and top_level_sequence_limits is not None
+                and parent.pending_scalar_key in top_level_sequence_limits
+            ):
+                specific_limit, specific_code = top_level_sequence_limits[parent.pending_scalar_key]
+                if collection_limit is None or specific_limit < collection_limit:
+                    new_limit = specific_limit
+                    new_code = specific_code
             if parent is not None:
-                parent.add_child(
-                    collection_limit=collection_limit,
-                    collection_code=collection_code,
-                )
+                parent.add_child()
+                if parent.kind == "mapping" and not is_mapping_key:
+                    parent.pending_scalar_key = None
 
             if isinstance(event, CollectionStartEvent):
                 depth = len(stack) + 1
@@ -149,7 +173,7 @@ def _preflight_yaml_events(
                     code="nesting_depth_limit",
                 )
                 kind = "mapping" if isinstance(event, MappingStartEvent) else "sequence"
-                stack.append(_CollectionFrame(kind=kind))
+                stack.append(_CollectionFrame(kind=kind, limit=new_limit, code=new_code))
     except StrictYamlError:
         raise
     except YAMLError:
@@ -213,6 +237,7 @@ def safe_load_unique_bytes(
     depth_limit: int = RESOURCE_LIMITS_V1.nesting_depth,
     collection_limit: int | None = None,
     collection_code: str = "collection_limit",
+    top_level_sequence_limits: Mapping[str, tuple[int, str]] | None = None,
 ) -> object:
     """Decode and load one strict, preflight-bounded YAML byte buffer."""
 
@@ -229,6 +254,7 @@ def safe_load_unique_bytes(
         depth_limit=depth_limit,
         collection_limit=collection_limit,
         collection_code=collection_code,
+        top_level_sequence_limits=top_level_sequence_limits,
     )
     _preflight_mapping_keys(text)
     return _construct_strict_yaml(text)
