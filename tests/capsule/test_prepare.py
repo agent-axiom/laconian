@@ -8,9 +8,11 @@ import importlib
 import inspect
 import multiprocessing
 import os
+import platform
 import resource
 import signal
 import stat
+import sys
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -71,6 +73,7 @@ _EVENT_RUN_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
 _EVENT_OPERATION_ID = UUID("223e4567-e89b-42d3-a456-426614174001")
 _EVENT_TIME = datetime(2026, 8, 27, 12, 34, 56, 123456, tzinfo=UTC)
 _DIGESTS = tuple(character * 64 for character in "abcdef")
+_HARNESS_FILESYSTEM_CLASS = "apfs" if sys.platform == "darwin" else "ext-family"
 
 
 def _case(case_id: str, scenario_id: str, locale: str, prompt: str) -> dict[str, object]:
@@ -175,51 +178,67 @@ def _write_manifest(
 
 
 def _runner_source() -> SimpleNamespace:
-    data = b'"""Captured fixture runner."""\n'
-    source_record = RunnerSourceFileV1(
-        path="__init__.py",
-        byte_length=len(data),
-        sha256=sha256_bytes(data),
+    members = {
+        "__init__.py": b'"""Captured fixture runner."""\n',
+        "capsule/import_policy.py": b'"""Captured fixture import policy."""\n',
+        "providers/__init__.py": b'"""Captured fixture provider package."""\n',
+        "providers/fake.py": b'"""Captured fixture fake adapter."""\n',
+        "providers/openai.py": b'"""Captured fixture OpenAI adapter."""\n',
+        "providers/replay.py": b'"""Captured fixture replay adapter."""\n',
+    }
+    source_records = tuple(
+        RunnerSourceFileV1(
+            path=path,
+            byte_length=len(data),
+            sha256=sha256_bytes(data),
+        )
+        for path, data in sorted(members.items(), key=lambda item: item[0].encode("utf-8"))
     )
     root = stable_digest(
         "laconian-runner-source-v1",
         {
             "package_name": "laconian-eval",
-            "files": [source_record.model_dump(mode="json")],
+            "files": [record.model_dump(mode="json") for record in source_records],
         },
     )
     index = RunnerSourceIndexV1(
         schema_version="1",
         package_name="laconian-eval",
-        files=(source_record,),
+        files=source_records,
         runner_source_sha256=root,
     )
-    input_record = InputFileRecordV1(
-        role="runner_source",
-        role_ordinal=0,
-        logical_locator="package[laconian_eval]/__init__.py",
-        capsule_path="inputs/software/runner/laconian_eval/__init__.py",
-        byte_length=len(data),
-        sha256=sha256_bytes(data),
-        dataset_id=None,
-        binding_id=None,
+    captured = tuple(
+        CapturedInputFile(
+            record=InputFileRecordV1(
+                role="runner_source",
+                role_ordinal=ordinal,
+                logical_locator=f"package[laconian_eval]/{record.path}",
+                capsule_path=f"inputs/software/runner/laconian_eval/{record.path}",
+                byte_length=record.byte_length,
+                sha256=record.sha256,
+                dataset_id=None,
+                binding_id=None,
+            ),
+            data=members[record.path],
+        )
+        for ordinal, record in enumerate(source_records)
     )
-    captured = CapturedInputFile(record=input_record, data=data)
     index_bytes = canonical_json(index.model_dump(mode="json"))
     return SimpleNamespace(
         index=index,
         index_bytes=index_bytes,
-        files=(captured,),
-        file_bytes=MappingProxyType({"__init__.py": data}),
+        files=captured,
+        file_bytes=MappingProxyType(dict(members)),
     )
 
 
 def _environment(
-    runner_source_sha256: str,
+    runner_source: SimpleNamespace,
     *,
     filesystem_class: str,
     provider_kind: str,
 ) -> EnvironmentV1:
+    runner_source_sha256 = runner_source.index.runner_source_sha256
     payload = copy.deepcopy(environment_v1_payload())
     payload.update(
         {
@@ -233,6 +252,17 @@ def _environment(
     runtime = payload["runtime"]
     assert isinstance(runtime, dict)
     runtime["filesystem_class"] = filesystem_class
+    runtime["python_implementation"] = platform.python_implementation()
+    runtime["python_version"] = sys.version
+    runtime["os_family"] = platform.system()
+    runtime["os_release"] = platform.release()
+    runtime["architecture"] = platform.machine()
+    import_environment = runtime["import_environment"]
+    assert isinstance(import_environment, dict)
+    runner_members = {record.path: record for record in runner_source.index.files}
+    import_policy_sha256 = runner_members["capsule/import_policy.py"].sha256
+    import_environment["guard_source_sha256"] = import_policy_sha256
+    import_environment["audit_hook_source_sha256"] = import_policy_sha256
     provider = payload["provider"]
     assert isinstance(provider, dict)
     if provider_kind == "replay":
@@ -251,8 +281,6 @@ def _environment(
             0,
             {"distribution": "openai", "version": "3.0.0", "files_sha256": "0" * 64},
         )
-        import_environment = runtime["import_environment"]
-        assert isinstance(import_environment, dict)
         import_roots = import_environment["import_roots"]
         assert isinstance(import_roots, list)
         import_roots.insert(
@@ -271,6 +299,27 @@ def _environment(
                 "sdk_version": "3.0.0",
             }
         )
+    adapter_members = [
+        runner_members["providers/__init__.py"].model_dump(mode="json"),
+        runner_members[f"providers/{provider_kind}.py"].model_dump(mode="json"),
+    ]
+    adapter_sha256 = stable_digest(
+        "laconian-adapter-source-v1",
+        {"provider_kind": provider_kind, "files": adapter_members},
+    )
+    provider["adapter_source_sha256"] = adapter_sha256
+    dependencies = runtime["dependencies"]
+    assert isinstance(dependencies, list)
+    runtime["runtime_fingerprint_sha256"] = stable_digest(
+        "laconian-runtime-v1",
+        {
+            "package_version": payload["package_version"],
+            "runner_source_sha256": runner_source_sha256,
+            "dependencies": dependencies,
+            "import_environment": import_environment,
+            "adapter_source_sha256": adapter_sha256,
+        },
+    )
     return EnvironmentV1.model_validate(payload)
 
 
@@ -473,6 +522,7 @@ def _install_harness(
     swap_results_root_after_open: bool = False,
     forbid_preparation_filesystem: bool = False,
     inject_ambiguous_results_root_close: bool = False,
+    skip_post_publish_verification: bool = True,
 ) -> _PreparationHarness:
     harness = _PreparationHarness(results_root=results_root)
     real_open = os.open
@@ -654,11 +704,12 @@ def _install_harness(
     ) -> None:
         del results_root_fd, destination_name, persistent_lock_descriptor
 
-    monkeypatch.setattr(
-        prepare_module,
-        "_post_publish_verify",
-        skip_task_1_11_verification,
-    )
+    if skip_post_publish_verification:
+        monkeypatch.setattr(
+            prepare_module,
+            "_post_publish_verify",
+            skip_task_1_11_verification,
+        )
 
     credentials = _CredentialSpy(forbidden_credentials)
     harness.credentials = credentials
@@ -718,7 +769,7 @@ def _install_harness(
         harness.staging_directory_fd = staging.descriptor
         workspace = PreparationFilesystem(
             filesystem_identity=FilesystemIdentity(
-                filesystem_class="apfs",
+                filesystem_class=_HARNESS_FILESYSTEM_CLASS,
                 device=os.fstat(results_root_fd).st_dev,
                 mount_id=None,
             ),
@@ -816,7 +867,7 @@ def _install_harness(
         assert harness.captured_inputs is not None
         provider_kind = harness.captured_inputs.resolved_manifest.provider.kind
         harness.environment = _environment(
-            harness.runner_source.index.runner_source_sha256,
+            harness.runner_source,
             filesystem_class=filesystem_class,
             provider_kind=provider_kind,
         )
@@ -1191,6 +1242,13 @@ def test_prepare_writes_the_exact_owned_tree_and_hash_commitments(
         "inputs/software/runner/",
         "inputs/software/runner/laconian_eval/",
         "inputs/software/runner/laconian_eval/__init__.py",
+        "inputs/software/runner/laconian_eval/capsule/",
+        "inputs/software/runner/laconian_eval/capsule/import_policy.py",
+        "inputs/software/runner/laconian_eval/providers/",
+        "inputs/software/runner/laconian_eval/providers/__init__.py",
+        "inputs/software/runner/laconian_eval/providers/fake.py",
+        "inputs/software/runner/laconian_eval/providers/openai.py",
+        "inputs/software/runner/laconian_eval/providers/replay.py",
         "manifest.json",
         "plan.jsonl",
         "raw.jsonl",
@@ -1262,7 +1320,9 @@ def test_prepare_assembles_the_complete_input_index_exactly_once(
     assert index.manifest_sha256 == harness.captured_inputs.manifest_sha256
     assert index.files == expected_records
     assert len(index.files) == len({item.capsule_path for item in index.files})
-    assert [item.role_ordinal for item in index.files if item.role == "runner_source"] == [0]
+    assert [item.role_ordinal for item in index.files if item.role == "runner_source"] == list(
+        range(len(harness.runner_source.files))
+    )
     assert [item.capsule_path for item in index.files] == sorted(
         (item.capsule_path for item in index.files),
         key=lambda value: value.encode("utf-8"),
@@ -1458,7 +1518,7 @@ def test_prepare_wires_every_optional_request_and_opened_filesystem_fact_exactly
     assert harness.provenance_arguments == [(source_root, container_digest)]
     assert harness.runtime_state_calls == 1
     assert harness.import_policy_calls == 1
-    assert harness.project_filesystem_classes == ["apfs"]
+    assert harness.project_filesystem_classes == [_HARNESS_FILESYSTEM_CLASS]
     assert harness.environment is not None
     assert harness.environment.container_image_digest == "9" * 64
     assert prepared.path.joinpath("environment.json").read_bytes() == canonical_json(
@@ -1505,6 +1565,11 @@ def test_prepare_creates_and_fsyncs_in_the_normative_order(
             "inputs/index.json",
             "inputs/software/runner-source.json",
             "inputs/software/runner/laconian_eval/__init__.py",
+            "inputs/software/runner/laconian_eval/capsule/import_policy.py",
+            "inputs/software/runner/laconian_eval/providers/__init__.py",
+            "inputs/software/runner/laconian_eval/providers/fake.py",
+            "inputs/software/runner/laconian_eval/providers/openai.py",
+            "inputs/software/runner/laconian_eval/providers/replay.py",
             "manifest.json",
             "plan.jsonl",
             "raw.jsonl",
@@ -1673,6 +1738,8 @@ def test_prepare_uses_one_exclusive_nofollow_generation_per_owned_file(
         "inputs/software",
         "inputs/software/runner",
         "inputs/software/runner/laconian_eval",
+        "inputs/software/runner/laconian_eval/capsule",
+        "inputs/software/runner/laconian_eval/providers",
     }
 
 

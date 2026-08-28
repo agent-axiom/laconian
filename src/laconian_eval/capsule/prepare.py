@@ -45,6 +45,7 @@ from laconian_eval.capsule.record_models import (
     InputIndexV1,
     RunnerSourceIndexV1,
 )
+from laconian_eval.capsule.verify import _verify_prepared_capsule_descriptors
 
 _GENERIC_PREPARATION_MESSAGE = "capsule preparation failed"
 _GENERIC_PUBLICATION_MESSAGE = "capsule publication failed"
@@ -99,14 +100,16 @@ def _post_publish_verify(
     destination_name: str,
     persistent_lock_descriptor: int,
 ) -> None:
-    """Task 1.11 replaces this no-op with the prepared-capsule verifier."""
+    """Verify the durable visible capsule through descriptors already owned here."""
 
-    del (
+    result = _verify_prepared_capsule_descriptors(
         capsule_directory_fd,
-        results_root_fd,
-        destination_name,
-        persistent_lock_descriptor,
+        results_root_fd=results_root_fd,
+        destination_name=destination_name,
+        persistent_lock_descriptor=persistent_lock_descriptor,
     )
+    if result.status != "valid" or result.state != "PREPARED":
+        raise PostPublishVerificationError(destination_name)
 
 
 def _required_flag(name: str) -> int:
