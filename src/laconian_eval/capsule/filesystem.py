@@ -17,6 +17,7 @@ import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol, Self
 from uuid import RFC_4122, UUID
@@ -150,8 +151,9 @@ class PostPublishSyncError(RuntimeError):
     code = "post_publish_fsync_failed"
     published = True
 
-    def __init__(self, destination_name: str) -> None:
+    def __init__(self, destination_name: str, *, publication_path: Path | None = None) -> None:
         self.destination_name = destination_name
+        self.publication_path = publication_path
         super().__init__(_GENERIC_PUBLICATION_MESSAGE)
 
 

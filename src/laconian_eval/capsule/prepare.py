@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast
 from uuid import RFC_4122, UUID, uuid4
 
 from laconian_eval.capsule.bounded_io import open_directory_no_follow
@@ -32,6 +33,7 @@ from laconian_eval.capsule.import_policy import (
     build_import_policy,
     capture_runtime_import_state,
 )
+from laconian_eval.capsule.manifest_models import ResolvedManifestV2
 from laconian_eval.capsule.planning import materialize_case_index, materialize_plan
 from laconian_eval.capsule.posix import PosixOps
 from laconian_eval.capsule.provenance import (
@@ -40,10 +42,20 @@ from laconian_eval.capsule.provenance import (
 )
 from laconian_eval.capsule.record_models import (
     CapsuleV1,
+    CaseIndexRowV1,
     EnvironmentV1,
     InputFileRecordV1,
     InputIndexV1,
+    PlanRowV1,
     RunnerSourceIndexV1,
+    VerifyResultV1,
+)
+from laconian_eval.capsule.schema import (
+    FilesystemClass,
+    Locale,
+    ProviderKind,
+    Sha256,
+    VerificationWarning,
 )
 from laconian_eval.capsule.verify import _verify_prepared_capsule_descriptors
 
@@ -70,8 +82,9 @@ class PostPublishVerificationError(RuntimeError):
     code = "post_publish_verification_failed"
     published = True
 
-    def __init__(self, destination_name: str) -> None:
+    def __init__(self, destination_name: str, *, publication_path: Path | None = None) -> None:
         self.destination_name = destination_name
+        self.publication_path = publication_path
         super().__init__(_GENERIC_PUBLICATION_MESSAGE)
 
 
@@ -82,7 +95,7 @@ class PrepareRequest:
     invocation_cwd: Path
     input_root: Path | None
     source_root: Path | None
-    container_image_digest: str | None
+    container_image_digest: Sha256 | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +104,54 @@ class PreparedCapsule:
     run_id: UUID
     operation_id: UUID
     capsule: CapsuleV1
+    summary: PreparedPlanSummary
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPlanSummary:
+    case_count: int
+    scenario_count: int
+    locale_case_counts: tuple[tuple[Locale, int], ...]
+    arm_count: int
+    repetition_count: int
+    planned_request_count: int
+    checkout_binding: Literal["bound", "unbound", "unavailable"]
+    git_state: Literal["clean", "dirty", "unavailable"]
+    uv_lock_availability: Literal["present", "unavailable"]
+    filesystem_class: FilesystemClass
+    provider_kind: ProviderKind
+    transport_policy: Literal["offline", "openai-direct-v1"]
+    container_image_digest: str | None
+    verification_warnings: tuple[VerificationWarning, ...]
+
+
+def _make_prepared_plan_summary(
+    manifest: ResolvedManifestV2,
+    *,
+    case_index: Sequence[CaseIndexRowV1],
+    plan: Sequence[PlanRowV1],
+    environment: EnvironmentV1,
+    verification: VerifyResultV1,
+) -> PreparedPlanSummary:
+    locale_counts = {"en": 0, "ru": 0}
+    for row in case_index:
+        locale_counts[row.locale] += 1
+    return PreparedPlanSummary(
+        case_count=len(case_index),
+        scenario_count=len({row.scenario_uid for row in case_index}),
+        locale_case_counts=(("en", locale_counts["en"]), ("ru", locale_counts["ru"])),
+        arm_count=len(manifest.arms),
+        repetition_count=manifest.repetitions,
+        planned_request_count=len(plan),
+        checkout_binding=environment.checkout_binding,
+        git_state=environment.git_state,
+        uv_lock_availability=environment.uv_lock.availability,
+        filesystem_class=environment.runtime.filesystem_class,
+        provider_kind=environment.provider.kind,
+        transport_policy=environment.provider.transport_policy,
+        container_image_digest=environment.container_image_digest,
+        verification_warnings=verification.warnings,
+    )
 
 
 def _post_publish_verify(
@@ -99,7 +160,7 @@ def _post_publish_verify(
     results_root_fd: int,
     destination_name: str,
     persistent_lock_descriptor: int,
-) -> None:
+) -> VerifyResultV1:
     """Verify the durable visible capsule through descriptors already owned here."""
 
     result = _verify_prepared_capsule_descriptors(
@@ -110,6 +171,7 @@ def _post_publish_verify(
     )
     if result.status != "valid" or result.state != "PREPARED":
         raise PostPublishVerificationError(destination_name)
+    return result
 
 
 def _required_flag(name: str) -> int:
@@ -528,7 +590,14 @@ def _build_artifacts(
     environment: EnvironmentV1,
     run_id: UUID,
     operation_id: UUID,
-) -> tuple[CapsuleV1, dict[str, bytes]]:
+) -> tuple[
+    CapsuleV1,
+    dict[str, bytes],
+    ResolvedManifestV2,
+    Sequence[CaseIndexRowV1],
+    Sequence[PlanRowV1],
+    EnvironmentV1,
+]:
     manifest = captured_inputs.resolved_manifest
     runner_source = provenance.runner_source  # type: ignore[attr-defined]
     input_index, captured_artifacts, runner_index, runner_index_bytes = _captured_artifacts(
@@ -614,7 +683,7 @@ def _build_artifacts(
     if set(artifacts).intersection(generated):
         raise PreparationError("artifact_path_collision")
     artifacts.update(generated)
-    return capsule, artifacts
+    return capsule, artifacts, manifest, case_index, plan, environment
 
 
 def _write_and_publish(
@@ -627,6 +696,10 @@ def _write_and_publish(
     operation_id: UUID,
     capsule: CapsuleV1,
     artifacts: dict[str, bytes],
+    manifest: ResolvedManifestV2,
+    case_index: Sequence[CaseIndexRowV1],
+    plan: Sequence[PlanRowV1],
+    environment: EnvironmentV1,
 ) -> PreparedCapsule:
     staging_fd = workspace.staging.descriptor
     destination_name = str(run_id)
@@ -663,9 +736,12 @@ def _write_and_publish(
         workspace.publish(destination_name)
         published = True
         if not _published_directory_matches(staging_fd, results_root_fd, destination_name):
-            raise PostPublishVerificationError(destination_name)
+            raise PostPublishVerificationError(
+                destination_name,
+                publication_path=results_root_path / destination_name,
+            )
         try:
-            _post_publish_verify(
+            verification = _post_publish_verify(
                 staging_fd,
                 results_root_fd=results_root_fd,
                 destination_name=destination_name,
@@ -674,7 +750,10 @@ def _write_and_publish(
         except PostPublishVerificationError:
             raise
         except Exception:
-            raise PostPublishVerificationError(destination_name) from None
+            raise PostPublishVerificationError(
+                destination_name,
+                publication_path=results_root_path / destination_name,
+            ) from None
         if (
             not _regular_path_matches(
                 staging_fd,
@@ -684,13 +763,30 @@ def _write_and_publish(
             or not _directory_path_matches(results_root_path, results_root_fd)
             or not _published_directory_matches(staging_fd, results_root_fd, destination_name)
         ):
-            raise PostPublishVerificationError(destination_name)
-        result = PreparedCapsule(
-            path=results_root_path / destination_name,
-            run_id=run_id,
-            operation_id=operation_id,
-            capsule=capsule,
-        )
+            raise PostPublishVerificationError(
+                destination_name,
+                publication_path=results_root_path / destination_name,
+            )
+        try:
+            summary = _make_prepared_plan_summary(
+                manifest,
+                case_index=case_index,
+                plan=plan,
+                environment=environment,
+                verification=verification,
+            )
+            result = PreparedCapsule(
+                path=results_root_path / destination_name,
+                run_id=run_id,
+                operation_id=operation_id,
+                capsule=capsule,
+                summary=summary,
+            )
+        except Exception:
+            raise PostPublishVerificationError(
+                destination_name,
+                publication_path=results_root_path / destination_name,
+            ) from None
     except BaseException as caught:
         primary_error = caught
         published = workspace.staging.state == "published"
@@ -703,7 +799,10 @@ def _write_and_publish(
     if primary_error is None and lock_error is not None:
         if isinstance(lock_error, Exception):
             primary_error = (
-                PostPublishVerificationError(destination_name)
+                PostPublishVerificationError(
+                    destination_name,
+                    publication_path=results_root_path / destination_name,
+                )
                 if published
                 else PreparationError("artifact_io_failed")
             )
@@ -772,7 +871,7 @@ def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
                 import_environment=import_policy.import_environment,
                 filesystem_class=workspace.filesystem_identity.filesystem_class,
             )
-            capsule, artifacts = _build_artifacts(
+            capsule, artifacts, manifest, case_index, plan, environment = _build_artifacts(
                 captured_inputs,
                 provenance,
                 environment,
@@ -788,11 +887,27 @@ def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
                 operation_id=operation_id,
                 capsule=capsule,
                 artifacts=artifacts,
+                manifest=manifest,
+                case_index=case_index,
+                plan=plan,
+                environment=environment,
             )
+    except PostPublishSyncError as error:
+        if error.publication_path is None:
+            raise PostPublishSyncError(
+                error.destination_name,
+                publication_path=results_root_path / error.destination_name,
+            ) from error
+        raise
+    except PostPublishVerificationError as error:
+        if error.publication_path is None:
+            raise PostPublishVerificationError(
+                error.destination_name,
+                publication_path=results_root_path / error.destination_name,
+            ) from error
+        raise
     except (
         DestinationCollisionError,
-        PostPublishSyncError,
-        PostPublishVerificationError,
         PreparationError,
         UnsupportedFilesystemError,
     ):

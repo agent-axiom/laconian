@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import errno
 import fcntl
 import importlib
 import inspect
+import io
 import multiprocessing
 import os
 import platform
@@ -66,6 +68,7 @@ from laconian_eval.capsule.record_models import (
     PreparedPayloadV1,
     RunnerSourceFileV1,
     RunnerSourceIndexV1,
+    VerifyResultV1,
 )
 
 ROOT = Path(__file__).parents[2]
@@ -74,6 +77,26 @@ _EVENT_OPERATION_ID = UUID("223e4567-e89b-42d3-a456-426614174001")
 _EVENT_TIME = datetime(2026, 8, 27, 12, 34, 56, 123456, tzinfo=UTC)
 _DIGESTS = tuple(character * 64 for character in "abcdef")
 _HARNESS_FILESYSTEM_CLASS = "apfs" if sys.platform == "darwin" else "ext-family"
+
+
+def _valid_prepared_verification(
+    destination_name: str,
+    *,
+    warnings: tuple[str, ...] = (),
+) -> VerifyResultV1:
+    return VerifyResultV1.model_validate(
+        {
+            "schema_version": "1",
+            "status": "valid",
+            "run_id": UUID(destination_name),
+            "state": "PREPARED",
+            "capsule_sha256": None,
+            "missing_plan_item_ids": ["1" * 64],
+            "operational_blocker_codes": ["never_started"],
+            "warnings": list(warnings),
+            "first_error": None,
+        }
+    )
 
 
 def _case(case_id: str, scenario_id: str, locale: str, prompt: str) -> dict[str, object]:
@@ -114,6 +137,7 @@ def _manifest_payload(
     datasets: list[dict[str, object]] | None = None,
     comparisons: list[dict[str, object]] | None = None,
     protocol_bindings: list[dict[str, object]] | None = None,
+    repetitions: int = 1,
 ) -> dict[str, object]:
     return {
         "schema_version": "2",
@@ -127,7 +151,7 @@ def _manifest_payload(
         },
         "case_files": case_files or ["cases/response.yaml"],
         "arms": arms or ["baseline", "concise"],
-        "repetitions": 1,
+        "repetitions": repetitions,
         "arm_order_seed": 17,
         "instruction_placement": "system_suffix",
         "generation": {"max_output_tokens": 128, "temperature": None},
@@ -701,8 +725,9 @@ def _install_harness(
         results_root_fd: int,
         destination_name: str,
         persistent_lock_descriptor: int,
-    ) -> None:
-        del results_root_fd, destination_name, persistent_lock_descriptor
+    ) -> VerifyResultV1:
+        del results_root_fd, persistent_lock_descriptor
+        return _valid_prepared_verification(destination_name)
 
     if skip_post_publish_verification:
         monkeypatch.setattr(
@@ -1200,6 +1225,7 @@ def test_prepared_capsule_has_exact_frozen_provider_free_result_shape(
         "run_id",
         "operation_id",
         "capsule",
+        "summary",
     }
     assert not any(
         "provider" in name or "credential" in name for name in prepared.__dataclass_fields__
@@ -1208,6 +1234,531 @@ def test_prepared_capsule_has_exact_frozen_provider_free_result_shape(
         prepared.path = tmp_path / "replacement"  # type: ignore[misc]
     assert harness.results_root_fd_closed is True
     assert not harness.active_files
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_prepared_plan_summary_is_exact_frozen_and_computed_from_in_memory_projections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, harness, _manifest = _load_success(tmp_path, monkeypatch)
+    assert harness.captured_inputs is not None
+    assert harness.environment is not None
+    summary = prepared.summary
+
+    assert type(summary).__name__ == "PreparedPlanSummary"
+    assert set(summary.__dataclass_fields__) == {
+        "case_count",
+        "scenario_count",
+        "locale_case_counts",
+        "arm_count",
+        "repetition_count",
+        "planned_request_count",
+        "checkout_binding",
+        "git_state",
+        "uv_lock_availability",
+        "filesystem_class",
+        "provider_kind",
+        "transport_policy",
+        "container_image_digest",
+        "verification_warnings",
+    }
+    assert not hasattr(summary, "__dict__")
+    assert summary.case_count == 2
+    assert summary.scenario_count == 1
+    assert summary.locale_case_counts == (("en", 1), ("ru", 1))
+    assert summary.arm_count == 2
+    assert summary.repetition_count == 1
+    assert summary.planned_request_count == 4
+    assert summary.planned_request_count == (
+        summary.case_count * summary.arm_count * summary.repetition_count
+    )
+    assert summary.checkout_binding == harness.environment.checkout_binding
+    assert summary.git_state == harness.environment.git_state
+    assert summary.uv_lock_availability == harness.environment.uv_lock.availability
+    assert summary.filesystem_class == harness.environment.runtime.filesystem_class
+    assert summary.provider_kind == harness.environment.provider.kind
+    assert summary.transport_policy == harness.environment.provider.transport_policy
+    assert summary.container_image_digest == harness.environment.container_image_digest
+    assert summary.verification_warnings == ()
+    with pytest.raises(FrozenInstanceError):
+        summary.case_count = 99  # type: ignore[misc]
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_prepared_plan_summary_builder_accepts_only_exact_in_memory_projections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, harness, _manifest = _load_success(tmp_path, monkeypatch)
+    assert harness.captured_inputs is not None
+    assert harness.environment is not None
+    manifest = harness.captured_inputs.resolved_manifest
+    case_index = materialize_case_index(harness.captured_inputs, manifest)
+    plan = materialize_plan(
+        prepared.run_id,
+        manifest,
+        case_index,
+        harness.captured_inputs.arms,
+    )
+    verification = _valid_prepared_verification(
+        str(prepared.run_id),
+        warnings=("broader_permissions",),
+    )
+    builder = prepare_module._make_prepared_plan_summary
+    parameters = tuple(inspect.signature(builder).parameters.values())
+
+    assert tuple(parameter.name for parameter in parameters) == (
+        "manifest",
+        "case_index",
+        "plan",
+        "environment",
+        "verification",
+    )
+    assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in parameters[1:])
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("summary builder inspected filesystem or artifact bytes")
+
+    with pytest.MonkeyPatch.context() as filesystem_barrier:
+        for name in (
+            "glob",
+            "iterdir",
+            "lstat",
+            "open",
+            "read_bytes",
+            "read_text",
+            "rglob",
+            "stat",
+        ):
+            filesystem_barrier.setattr(Path, name, forbidden)
+        for name in (
+            "fstat",
+            "listdir",
+            "lstat",
+            "open",
+            "read",
+            "readlink",
+            "scandir",
+            "stat",
+        ):
+            filesystem_barrier.setattr(os, name, forbidden)
+        for name in ("pread", "preadv", "readv"):
+            if hasattr(os, name):
+                filesystem_barrier.setattr(os, name, forbidden)
+        filesystem_barrier.setattr(builtins, "open", forbidden)
+        filesystem_barrier.setattr(io, "open", forbidden)
+        summary = builder(
+            manifest,
+            case_index=case_index,
+            plan=plan,
+            environment=harness.environment,
+            verification=verification,
+        )
+
+    assert summary.case_count == len(case_index)
+    assert summary.scenario_count == len({row.scenario_uid for row in case_index})
+    assert summary.locale_case_counts == (("en", 1), ("ru", 1))
+    assert summary.arm_count == len(manifest.arms)
+    assert summary.repetition_count == manifest.repetitions
+    assert summary.planned_request_count == len(plan)
+    assert summary.checkout_binding == harness.environment.checkout_binding
+    assert summary.git_state == harness.environment.git_state
+    assert summary.uv_lock_availability == harness.environment.uv_lock.availability
+    assert summary.filesystem_class == harness.environment.runtime.filesystem_class
+    assert summary.provider_kind == harness.environment.provider.kind
+    assert summary.transport_policy == harness.environment.provider.transport_policy
+    assert summary.container_image_digest == harness.environment.container_image_digest
+    assert summary.verification_warnings == verification.warnings
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_prepared_plan_summary_counts_dataset_scoped_scenario_uids_not_textual_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    case_paths = ["cases/alpha.yaml", "cases/beta.yaml"]
+    for name, prefix in (("alpha.yaml", "alpha"), ("beta.yaml", "beta")):
+        path = source / "cases" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            yaml.safe_dump(
+                {
+                    "schema_version": "1",
+                    "kind": "response",
+                    "cases": [
+                        _case(f"{prefix}-shared-en", "shared-scenario", "en", "English."),
+                        _case(f"{prefix}-shared-ru", "shared-scenario", "ru", "Русский."),
+                    ],
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ).encode("utf-8")
+        )
+    datasets = [
+        {
+            "dataset_id": f"dataset-{prefix}",
+            "dataset_version": "fixture-v1",
+            "role": "smoke",
+            "case_schema_version": "1",
+            "case_file_ordinals": [ordinal],
+        }
+        for ordinal, prefix in enumerate(("alpha", "beta"))
+    ]
+    manifest = source / "manifest.yaml"
+    manifest.write_bytes(
+        yaml.safe_dump(
+            _manifest_payload(
+                case_files=case_paths,
+                arms=["baseline"],
+                datasets=datasets,
+                repetitions=3,
+            ),
+            allow_unicode=True,
+            sort_keys=False,
+        ).encode("utf-8")
+    )
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    prepared = prepare_capsule(_request(manifest, results_root))
+
+    assert harness.captured_inputs is not None
+    case_index = materialize_case_index(
+        harness.captured_inputs,
+        harness.captured_inputs.resolved_manifest,
+    )
+    assert {row.scenario_id for row in case_index} == {"shared-scenario"}
+    assert len({row.scenario_uid for row in case_index}) == 2
+    assert prepared.summary.case_count == 4
+    assert prepared.summary.scenario_count == 2
+    assert prepared.summary.locale_case_counts == (("en", 2), ("ru", 2))
+    assert prepared.summary.repetition_count == 3
+    assert prepared.summary.planned_request_count == 12
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_prepared_plan_summary_projects_openai_and_bound_checkout_disclosures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = _write_manifest(
+        source,
+        provider_kind="openai",
+        api_key_env="LIVE_TEST_API_KEY",
+    )
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+    project_environment = prepare_module.project_environment
+
+    def project_bound_environment(
+        provenance: object,
+        *,
+        import_environment: object,
+        filesystem_class: str,
+    ) -> EnvironmentV1:
+        projected = project_environment(
+            provenance,
+            import_environment=import_environment,
+            filesystem_class=filesystem_class,
+        )
+        payload = projected.model_dump(mode="python")
+        payload.update(
+            {
+                "checkout_binding": "bound",
+                "git_commit": "a" * 40,
+                "git_state": "clean",
+                "uv_lock": {"availability": "present", "sha256": "b" * 64},
+            }
+        )
+        harness.environment = EnvironmentV1.model_validate(payload)
+        return harness.environment
+
+    monkeypatch.setattr(prepare_module, "project_environment", project_bound_environment)
+    prepared = prepare_capsule(
+        _request(
+            manifest,
+            results_root,
+            container_image_digest=f"sha256:{'9' * 64}",
+        )
+    )
+
+    assert harness.environment is not None
+    assert prepared.summary.checkout_binding == "bound"
+    assert prepared.summary.git_state == "clean"
+    assert prepared.summary.uv_lock_availability == "present"
+    assert prepared.summary.provider_kind == "openai"
+    assert prepared.summary.transport_policy == "openai-direct-v1"
+    assert prepared.summary.container_image_digest == "9" * 64
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_post_publish_verifier_returns_the_exact_valid_result_for_summary_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _valid_prepared_verification(
+        str(_EVENT_RUN_ID),
+        warnings=("broader_permissions",),
+    )
+    calls: list[tuple[int, int, str, int]] = []
+
+    def descriptor_verifier(
+        capsule_directory_fd: int,
+        *,
+        results_root_fd: int,
+        destination_name: str,
+        persistent_lock_descriptor: int,
+    ) -> VerifyResultV1:
+        calls.append(
+            (
+                capsule_directory_fd,
+                results_root_fd,
+                destination_name,
+                persistent_lock_descriptor,
+            )
+        )
+        return expected
+
+    monkeypatch.setattr(
+        prepare_module,
+        "_verify_prepared_capsule_descriptors",
+        descriptor_verifier,
+    )
+
+    result = prepare_module._post_publish_verify(
+        11,
+        results_root_fd=22,
+        destination_name=str(_EVENT_RUN_ID),
+        persistent_lock_descriptor=33,
+    )
+
+    assert result is expected
+    assert calls == [(11, 22, str(_EVENT_RUN_ID), 33)]
+
+
+def test_prepared_plan_summary_uses_warnings_returned_by_the_single_held_lock_verifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = _write_manifest(source)
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+    verifier_calls = 0
+    verification_results: list[VerifyResultV1] = []
+    summary_calls: list[tuple[object, object, object, object, VerifyResultV1]] = []
+    materialized_case_indexes: list[object] = []
+    materialized_plans: list[object] = []
+    returned_summaries: list[object] = []
+    summary_builder = prepare_module._make_prepared_plan_summary
+    case_index_materializer = prepare_module.materialize_case_index
+    plan_materializer = prepare_module.materialize_plan
+    real_path_open = Path.open
+    real_path_read_bytes = Path.read_bytes
+    real_path_read_text = Path.read_text
+    tracked_prepare_open = prepare_module.os.open
+    real_os_open = os.open
+    real_os_read = os.read
+    real_builtin_open = builtins.open
+    real_io_open = io.open
+
+    def publication_complete() -> bool:
+        return harness.posix is not None and harness.posix.published
+
+    def forbid_post_publish_path_open(
+        path: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if publication_complete():
+            raise AssertionError("summary reopened an artifact after publication")
+        return real_path_open(path, *args, **kwargs)
+
+    def forbid_post_publish_path_read_bytes(path: Path) -> bytes:
+        if publication_complete():
+            raise AssertionError("summary read artifact bytes after publication")
+        return real_path_read_bytes(path)
+
+    def forbid_post_publish_path_read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        if publication_complete():
+            raise AssertionError("summary read artifact text after publication")
+        return real_path_read_text(path, encoding=encoding, errors=errors)
+
+    def forbid_post_publish_prepare_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if publication_complete():
+            raise AssertionError("summary opened an artifact descriptor after publication")
+        return tracked_prepare_open(path, flags, mode, dir_fd=dir_fd)
+
+    def forbid_post_publish_os_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if publication_complete():
+            raise AssertionError("summary opened an artifact through os after publication")
+        if dir_fd is None:
+            return real_os_open(path, flags, mode)
+        return real_os_open(path, flags, mode, dir_fd=dir_fd)
+
+    def forbid_post_publish_os_read(descriptor: int, count: int) -> bytes:
+        if publication_complete():
+            raise AssertionError("summary read an artifact descriptor after publication")
+        return real_os_read(descriptor, count)
+
+    def forbid_post_publish_builtin_open(*args: object, **kwargs: object) -> object:
+        if publication_complete():
+            raise AssertionError("summary opened an artifact after publication")
+        return real_builtin_open(*args, **kwargs)
+
+    def forbid_post_publish_io_open(*args: object, **kwargs: object) -> object:
+        if publication_complete():
+            raise AssertionError("summary opened an artifact through io after publication")
+        return real_io_open(*args, **kwargs)
+
+    def verify_once(
+        _capsule_directory_fd: int,
+        *,
+        results_root_fd: int,
+        destination_name: str,
+        persistent_lock_descriptor: int,
+    ) -> VerifyResultV1:
+        nonlocal verifier_calls
+        del results_root_fd, persistent_lock_descriptor
+        assert publication_complete()
+        verifier_calls += 1
+        harness.trace.append(("verify-summary", destination_name))
+        result = _valid_prepared_verification(
+            destination_name,
+            warnings=("broader_permissions", "producer_runtime_differs"),
+        )
+        verification_results.append(result)
+        return result
+
+    def materialize_case_index_once(*args: object, **kwargs: object) -> object:
+        case_index = case_index_materializer(*args, **kwargs)
+        materialized_case_indexes.append(case_index)
+        return case_index
+
+    def materialize_plan_once(*args: object, **kwargs: object) -> object:
+        plan = plan_materializer(*args, **kwargs)
+        materialized_plans.append(plan)
+        return plan
+
+    def build_summary_once(
+        manifest_projection: object,
+        *,
+        case_index: object,
+        plan: object,
+        environment: object,
+        verification: VerifyResultV1,
+    ) -> object:
+        assert verifier_calls == 1
+        assert verification_results == [verification]
+        assert harness.captured_inputs is not None
+        assert harness.environment is not None
+        assert manifest_projection is harness.captured_inputs.resolved_manifest
+        assert environment is harness.environment
+        assert materialized_case_indexes == [case_index]
+        assert case_index is materialized_case_indexes[0]
+        assert materialized_plans == [plan]
+        assert plan is materialized_plans[0]
+        expected_case_index = materialize_case_index(
+            harness.captured_inputs,
+            harness.captured_inputs.resolved_manifest,
+        )
+        assert case_index == expected_case_index
+        expected_plan = materialize_plan(
+            verification.run_id,
+            harness.captured_inputs.resolved_manifest,
+            expected_case_index,
+            harness.captured_inputs.arms,
+        )
+        assert plan == expected_plan
+        summary_calls.append((manifest_projection, case_index, plan, environment, verification))
+        summary = summary_builder(
+            manifest_projection,
+            case_index=case_index,
+            plan=plan,
+            environment=environment,
+            verification=verification,
+        )
+        returned_summaries.append(summary)
+        return summary
+
+    monkeypatch.setattr(prepare_module, "materialize_case_index", materialize_case_index_once)
+    monkeypatch.setattr(prepare_module, "materialize_plan", materialize_plan_once)
+    monkeypatch.setattr(prepare_module, "_post_publish_verify", verify_once)
+    monkeypatch.setattr(prepare_module, "_make_prepared_plan_summary", build_summary_once)
+    with pytest.MonkeyPatch.context() as read_barrier:
+        read_barrier.setattr(Path, "open", forbid_post_publish_path_open)
+        read_barrier.setattr(Path, "read_bytes", forbid_post_publish_path_read_bytes)
+        read_barrier.setattr(Path, "read_text", forbid_post_publish_path_read_text)
+        read_barrier.setattr(prepare_module.os, "open", forbid_post_publish_prepare_open)
+        read_barrier.setattr(os, "open", forbid_post_publish_os_open)
+        read_barrier.setattr(os, "read", forbid_post_publish_os_read)
+        read_barrier.setattr(builtins, "open", forbid_post_publish_builtin_open)
+        read_barrier.setattr(io, "open", forbid_post_publish_io_open)
+        prepared = prepare_capsule(_request(manifest, results_root))
+
+    assert verifier_calls == 1
+    assert len(summary_calls) == 1
+    assert summary_calls[0][-1] is verification_results[0]
+    assert len(returned_summaries) == 1
+    assert prepared.summary is returned_summaries[0]
+    verify_index = harness.trace.index(("verify-summary", str(prepared.run_id)))
+    assert not any(operation == "open" for operation, _path in harness.trace[verify_index + 1 :])
+    assert prepared.summary.verification_warnings == (
+        "broader_permissions",
+        "producer_runtime_differs",
+    )
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize("seam_name", ["_make_prepared_plan_summary", "PreparedCapsule"])
+def test_post_publish_summary_or_result_failure_retains_recovery_path(
+    seam_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = _write_manifest(source)
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise OSError("TOP-SECRET post-publication summary failure")
+
+    monkeypatch.setattr(prepare_module, seam_name, fail)
+    with pytest.raises(PostPublishVerificationError) as caught:
+        prepare_capsule(_request(manifest, results_root))
+
+    assert caught.value.publication_path == results_root / caught.value.destination_name
+    assert caught.value.publication_path.is_absolute()
+    assert "TOP-SECRET" not in str(caught.value)
+    assert harness.posix is not None and harness.posix.published
     _assert_safety_barrier_untouched(harness)
 
 
@@ -1521,6 +2072,7 @@ def test_prepare_wires_every_optional_request_and_opened_filesystem_fact_exactly
     assert harness.project_filesystem_classes == [_HARNESS_FILESYSTEM_CLASS]
     assert harness.environment is not None
     assert harness.environment.container_image_digest == "9" * 64
+    assert prepared.summary.container_image_digest == "9" * 64
     assert prepared.path.joinpath("environment.json").read_bytes() == canonical_json(
         harness.environment.model_dump(mode="json")
     )
@@ -1888,7 +2440,7 @@ def test_persistent_lock_is_exclusive_through_durable_publish_and_verification_s
         results_root_fd: int,
         destination_name: str,
         persistent_lock_descriptor: int,
-    ) -> None:
+    ) -> VerifyResultV1:
         harness.trace.append(("verify", destination_name))
         assert harness.results_root_fd == results_root_fd
         assert harness.results_root_identity is not None
@@ -1925,6 +2477,7 @@ def test_persistent_lock_is_exclusive_through_durable_publish_and_verification_s
         assert persistent_lock_descriptor in harness.active_files
         assert stat.S_ISREG(os.fstat(persistent_lock_descriptor).st_mode)
         assert tuple(lock.events) == parent_lock_events
+        return _valid_prepared_verification(destination_name)
 
     monkeypatch.setattr(prepare_module, "_post_publish_verify", observe_visible_capsule)
     prepared = prepare_capsule(_request(manifest, results_root))
@@ -1962,9 +2515,11 @@ def test_persistent_lock_is_exclusive_through_durable_publish_and_verification_s
     _assert_safety_barrier_untouched(harness)
 
 
+@pytest.mark.parametrize("typed_failure", [False, True])
 def test_ordinary_verifier_failure_is_content_free_and_reports_published_capsule(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    typed_failure: bool,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -1988,6 +2543,8 @@ def test_ordinary_verifier_failure_is_content_free_and_reports_published_capsule
         nonlocal observed_destination
         del results_root_fd, persistent_lock_descriptor
         observed_destination = destination_name
+        if typed_failure:
+            raise PostPublishVerificationError(destination_name)
         raise AssertionError("credential=TOP-SECRET host=/private/verifier")
 
     monkeypatch.setattr(prepare_module, "_post_publish_verify", failed_verifier)
@@ -1998,6 +2555,8 @@ def test_ordinary_verifier_failure_is_content_free_and_reports_published_capsule
     assert observed_destination is not None
     assert caught.value.published is True
     assert caught.value.destination_name == observed_destination
+    assert caught.value.publication_path == results_root / observed_destination
+    assert caught.value.publication_path.is_absolute()
     assert caught.value.code == "post_publish_verification_failed"
     assert str(caught.value) == "capsule publication failed"
     assert "TOP-SECRET" not in str(caught.value)
@@ -2057,6 +2616,8 @@ def test_persistent_lock_path_replacement_at_verifier_is_reported_as_published_f
     assert observed_destination is not None
     assert caught.value.published is True
     assert caught.value.destination_name == observed_destination
+    assert caught.value.publication_path == results_root / observed_destination
+    assert caught.value.publication_path.is_absolute()
     visible = results_root / observed_destination
     assert CapsuleV1.model_validate_json(visible.joinpath("capsule.json").read_bytes())
     assert visible.joinpath(".laconian.lock").read_bytes() == replacement
@@ -2258,6 +2819,8 @@ def test_persistent_lock_teardown_consumes_descriptor_and_preserves_primary_prec
     if active_primary:
         assert isinstance(caught.value, PostPublishVerificationError)
         assert caught.value.published is True
+        assert caught.value.publication_path == results_root / caught.value.destination_name
+        assert caught.value.publication_path.is_absolute()
         assert "TOP-SECRET" not in str(caught.value)
     lock = _generation(harness, ".laconian.lock")
     assert lock.events.count("close") == 1
@@ -2430,6 +2993,7 @@ def test_post_rename_results_root_fsync_failure_preserves_and_reports_visible_ca
     )
     results_root = tmp_path / "results"
     results_root.mkdir()
+    monkeypatch.chdir(tmp_path)
     harness = _install_harness(
         monkeypatch,
         results_root,
@@ -2438,10 +3002,12 @@ def test_post_rename_results_root_fsync_failure_preserves_and_reports_visible_ca
     )
 
     with pytest.raises(PostPublishSyncError) as caught:
-        prepare_capsule(_request(manifest, results_root))
+        prepare_capsule(_request(manifest, Path("results")))
 
     visible = results_root / caught.value.destination_name
     assert caught.value.published is True
+    assert caught.value.publication_path == visible
+    assert caught.value.publication_path.is_absolute()
     assert str(caught.value) == "capsule publication failed"
     assert "TOP-SECRET" not in str(caught.value)
     assert "TOP-SECRET" not in " ".join(getattr(caught.value, "__notes__", ()))
@@ -2619,6 +3185,9 @@ def test_results_root_path_swap_at_verification_seam_cannot_return_wrong_path(
     assert caught.value.published is True
     assert published_name is not None
     assert caught.value.destination_name == published_name
+    assert caught.value.publication_path == results_root / published_name
+    assert caught.value.publication_path.is_absolute()
+    assert caught.value.publication_path != displaced / published_name
     assert str(caught.value) == "capsule publication failed"
     assert "TOP-SECRET" not in " ".join(getattr(caught.value, "__notes__", ()))
     assert list(results_root.iterdir()) == []

@@ -264,7 +264,9 @@ def _verify_input_root(path: Path) -> None:
     os.close(descriptor)
 
 
-def _parse_source_manifest(data: bytes) -> _SourceManifest:
+def parse_source_manifest_bytes(data: bytes) -> _SourceManifest:
+    """Strictly validate source-manifest bytes without resolving referenced inputs."""
+
     try:
         loaded = safe_load_unique_bytes(
             data,
@@ -308,7 +310,7 @@ def load_source_manifest_capture(
         limit=RESOURCE_LIMITS_V1.source_manifest_bytes,
         code="source_manifest_limit",
     )
-    source_manifest = _parse_source_manifest(source_bytes)
+    source_manifest = parse_source_manifest_bytes(source_bytes)
     if isinstance(source_manifest, V1UpgradeProjection):
         if input_root is not None:
             raise CaptureError("v1_input_root_forbidden", "v1 forbids an input root")
