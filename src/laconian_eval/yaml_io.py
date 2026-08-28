@@ -25,12 +25,22 @@ from laconian_eval.capsule.limits import (
 
 _MERGE_TAG = "tag:yaml.org,2002:merge"
 _INT_TAG = "tag:yaml.org,2002:int"
+_FLOAT_TAG = "tag:yaml.org,2002:float"
 _NON_SEXAGESIMAL_INT = re.compile(
     r"""^(?:
         [-+]?0b[0-1_]+
         |[-+]?0[0-7_]+
         |[-+]?(?:0|[1-9][0-9_]*)
         |[-+]?0x[0-9a-fA-F_]+
+    )$""",
+    re.VERBOSE,
+)
+_NON_SEXAGESIMAL_FLOAT = re.compile(
+    r"""^(?:
+        [-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+        |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
+        |[-+]?\.(?:inf|Inf|INF)
+        |\.(?:nan|NaN|NAN)
     )$""",
     re.VERBOSE,
 )
@@ -105,7 +115,7 @@ class _UniqueKeySafeLoader(yaml.SafeLoader):
 
 
 class _StrictUniqueKeySafeLoader(_UniqueKeySafeLoader):
-    """Case-source loader without YAML 1.1 sexagesimal integer resolution."""
+    """Case-source loader without YAML 1.1 sexagesimal number resolution."""
 
     def construct_yaml_int(self, node: ScalarNode) -> int:
         if ":" in self.construct_scalar(node):
@@ -117,17 +127,37 @@ class _StrictUniqueKeySafeLoader(_UniqueKeySafeLoader):
             )
         return super().construct_yaml_int(node)
 
+    def construct_yaml_float(self, node: ScalarNode) -> float:
+        if ":" in self.construct_scalar(node):
+            raise ConstructorError(
+                "while constructing a float",
+                node.start_mark,
+                "sexagesimal floats are forbidden",
+                node.start_mark,
+            )
+        return super().construct_yaml_float(node)
+
+
+def _strict_scalar_resolver(tag: str, resolver: re.Pattern[str]) -> re.Pattern[str]:
+    if tag == _INT_TAG:
+        return _NON_SEXAGESIMAL_INT
+    if tag == _FLOAT_TAG:
+        return _NON_SEXAGESIMAL_FLOAT
+    return resolver
+
 
 _StrictUniqueKeySafeLoader.yaml_implicit_resolvers = {
-    initial: [
-        (tag, _NON_SEXAGESIMAL_INT if tag == _INT_TAG else resolver) for tag, resolver in resolvers
-    ]
+    initial: [(tag, _strict_scalar_resolver(tag, resolver)) for tag, resolver in resolvers]
     for initial, resolvers in _UniqueKeySafeLoader.yaml_implicit_resolvers.items()
 }
 _StrictUniqueKeySafeLoader.yaml_constructors = dict(_UniqueKeySafeLoader.yaml_constructors)
 _StrictUniqueKeySafeLoader.add_constructor(
     _INT_TAG,
     _StrictUniqueKeySafeLoader.construct_yaml_int,
+)
+_StrictUniqueKeySafeLoader.add_constructor(
+    _FLOAT_TAG,
+    _StrictUniqueKeySafeLoader.construct_yaml_float,
 )
 
 
@@ -147,8 +177,8 @@ def _reject_reference_tokens(text: str) -> None:
         raise StrictYamlError("invalid_yaml", "invalid YAML") from None
 
 
-def _is_explicit_sexagesimal_integer(event: ScalarEvent) -> bool:
-    return event.tag == _INT_TAG and ":" in event.value
+def _is_explicit_sexagesimal_number(event: ScalarEvent) -> bool:
+    return event.tag in {_INT_TAG, _FLOAT_TAG} and ":" in event.value
 
 
 def _preflight_yaml_events(
@@ -194,7 +224,7 @@ def _preflight_yaml_events(
             new_code = collection_code
             if isinstance(event, AliasEvent):
                 raise StrictYamlError("yaml_alias", "YAML aliases are forbidden")
-            if isinstance(event, ScalarEvent) and _is_explicit_sexagesimal_integer(event):
+            if isinstance(event, ScalarEvent) and _is_explicit_sexagesimal_number(event):
                 raise StrictYamlError(
                     "yaml_sexagesimal_number",
                     "YAML sexagesimal numbers are forbidden",

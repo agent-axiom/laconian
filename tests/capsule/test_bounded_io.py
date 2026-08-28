@@ -516,6 +516,24 @@ def test_strict_yaml_bytes_does_not_construct_implicit_sexagesimal_integer(
     assert safe_load_unique_bytes(b"value: " + value + b"\n") == {"value": value.decode()}
 
 
+def test_strict_yaml_bytes_does_not_construct_implicit_sexagesimal_float(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_float_constructor(*args: object, **kwargs: object) -> object:
+        raise AssertionError("implicit sexagesimal must not reach the float constructor")
+
+    monkeypatch.setitem(
+        yaml_io._StrictUniqueKeySafeLoader.yaml_constructors,
+        "tag:yaml.org,2002:float",
+        forbidden_float_constructor,
+    )
+    value = b"1:" * 64_000 + b"1.0"
+
+    assert safe_load_unique_bytes(b"value: " + value + b"\n") == {"value": value.decode()}
+
+
 @pytest.mark.parametrize("tail", [b"1", b"99"])
 def test_strict_yaml_bytes_rejects_explicit_sexagesimal_integer_before_compose(
     tail: bytes,
@@ -540,19 +558,46 @@ def test_strict_yaml_bytes_rejects_explicit_sexagesimal_integer_before_compose(
     assert "1:1" not in str(caught.value)
 
 
+@pytest.mark.parametrize("tail", [b"1.0", b"59.5"])
+def test_strict_yaml_bytes_rejects_explicit_sexagesimal_float_before_compose(
+    tail: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_compose(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sexagesimal scalar must fail before compose")
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("sexagesimal scalar must fail before construction")
+
+    monkeypatch.setattr(yaml_io.yaml, "compose", forbidden_compose)
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+    document = b"value: !!float " + b"1:" * 64_000 + tail + b"\n"
+
+    with pytest.raises(StrictYamlError) as caught:
+        safe_load_unique_bytes(document)
+
+    assert caught.value.code == "yaml_sexagesimal_number"
+    assert "1:1" not in str(caught.value)
+
+
 def test_strict_yaml_bytes_retains_ordinary_implicit_scalars() -> None:
     assert safe_load_unique_bytes(
-        b"decimal: 123\nnegative: -42\nfloat: 1.5\n"
+        b"decimal: 123\nnegative: -42\nfloat: 1.5\nexponent: 1.0e+3\n"
         b"truth: true\nfalsehood: false\nnothing: null\n"
-        b"plain_sexagesimal: 1:1\nquoted: '1:1'\nexplicit: !!str 1:1\n"
+        b"plain_sexagesimal: 1:1\nplain_sexagesimal_float: 1:1.0\n"
+        b"quoted: '1:1'\nexplicit: !!str 1:1\n"
     ) == {
         "decimal": 123,
         "negative": -42,
         "float": 1.5,
+        "exponent": 1000.0,
         "truth": True,
         "falsehood": False,
         "nothing": None,
         "plain_sexagesimal": "1:1",
+        "plain_sexagesimal_float": "1:1.0",
         "quoted": "1:1",
         "explicit": "1:1",
     }
