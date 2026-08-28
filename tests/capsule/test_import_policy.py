@@ -11,7 +11,7 @@ import zipimport
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -59,6 +59,39 @@ from laconian_eval.capsule.record_models import (
 from laconian_eval.capsule.schema import CONSOLE_LAUNCHER_TEMPLATE_SHA256 as SCHEMA_DIGEST
 
 ROOT = Path(__file__).parents[2]
+
+
+class _NamedLookupOnlyEnvironment:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+        self.lookups: list[str] = []
+
+    def __getitem__(self, key: str) -> str:
+        self.lookups.append(key)
+        if key not in {"PYTHONPATH", "PYTHONHOME"}:
+            raise AssertionError(f"unexpected environment lookup: {key}")
+        return self._values[key]
+
+    def __iter__(self) -> Any:
+        raise AssertionError("environment iteration is forbidden")
+
+    def __len__(self) -> int:
+        raise AssertionError("environment length inspection is forbidden")
+
+    def copy(self) -> Any:
+        raise AssertionError("environment copying is forbidden")
+
+    def get(self, key: str, default: object = None) -> Any:
+        raise AssertionError("environment get is forbidden")
+
+    def items(self) -> Any:
+        raise AssertionError("environment items are forbidden")
+
+    def keys(self) -> Any:
+        raise AssertionError("environment keys are forbidden")
+
+    def values(self) -> Any:
+        raise AssertionError("environment values are forbidden")
 
 
 def _installed_provenance(*, provider_kind: str = "fake") -> InstalledProvenance:
@@ -559,6 +592,92 @@ def test_distinct_active_platstdlib_is_rejected(
         "active_distinct_platstdlib",
         lambda: build_import_policy(provenance, runtime_state=changed),
     )
+
+
+def test_runtime_state_capture_projects_only_named_import_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.capsule import import_policy
+
+    environment = _NamedLookupOnlyEnvironment(
+        {
+            "PYTHONPATH": "",
+            "PYTHONHOME": "",
+            "UNRELATED_CREDENTIAL": "must-not-be-read",
+        }
+    )
+    user_site_calls: list[str] = []
+
+    def observed_getusersitepackages() -> str:
+        user_site_calls.append("called")
+        return "/computed/from/environment"
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(import_policy.os, "environ", environment)
+        patcher.setattr(import_policy.site, "USER_SITE", "/already/initialized/user-site")
+        patcher.setattr(
+            import_policy.site,
+            "getusersitepackages",
+            observed_getusersitepackages,
+        )
+        state = capture_runtime_import_state()
+
+    assert environment.lookups == ["PYTHONPATH", "PYTHONHOME"]
+    assert dict(state.environ) == {"PYTHONPATH": "", "PYTHONHOME": ""}
+    assert type(state.environ) is type(MappingProxyType({}))
+    assert state.user_site == Path("/already/initialized/user-site")
+    assert user_site_calls == []
+    with pytest.raises(TypeError):
+        state.environ["PYTHONPATH"] = "changed"  # type: ignore[index]
+
+
+def test_runtime_state_capture_rejects_unexpected_initialized_user_site_without_resolving_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.capsule import import_policy
+
+    user_site_calls: list[str] = []
+
+    def observed_getusersitepackages() -> str:
+        user_site_calls.append("called")
+        return "/computed/from/environment"
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            import_policy.os,
+            "environ",
+            {"PYTHONPATH": "", "PYTHONHOME": ""},
+        )
+        patcher.setattr(import_policy.site, "USER_SITE", object())
+        patcher.setattr(
+            import_policy.site,
+            "getusersitepackages",
+            observed_getusersitepackages,
+        )
+        _assert_error("runtime_state_capture_failed", capture_runtime_import_state)
+    assert user_site_calls == []
+
+
+def test_injected_runtime_environment_uses_exact_named_lookups_and_drops_unrelated_values(
+    provenance: InstalledProvenance,
+) -> None:
+    environment = _NamedLookupOnlyEnvironment(
+        {
+            "PYTHONPATH": "",
+            "PYTHONHOME": "",
+            "UNRELATED_CREDENTIAL": "must-not-be-read",
+        }
+    )
+    state = replace(
+        _module_runtime(provenance),
+        environ=cast(Any, environment),
+    )
+
+    built = build_import_policy(provenance, runtime_state=state)
+
+    assert environment.lookups == ["PYTHONPATH", "PYTHONHOME"]
+    assert dict(built.initial_state.environ) == {"PYTHONPATH": "", "PYTHONHOME": ""}
+    assert built.runtime_state.environ is built.initial_state.environ
 
 
 @pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONHOME"])

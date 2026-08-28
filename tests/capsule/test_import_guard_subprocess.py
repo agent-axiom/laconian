@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -65,14 +64,11 @@ policy = build_import_policy(provenance)
 
 
 def _run_child(body: str, *, provider_kind: str = "fake") -> subprocess.CompletedProcess[str]:
-    environment = {
-        key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}
-    }
     setup = _PROVENANCE_SETUP.replace("__PROVIDER_KIND__", provider_kind)
     return subprocess.run(
         [sys.executable, "-c", setup + body],
         cwd=ROOT,
-        env=environment,
+        env={},
         text=True,
         capture_output=True,
         timeout=30,

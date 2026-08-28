@@ -335,19 +335,43 @@ def _captured_identity_tuple(value: FileIdentity) -> tuple[int, int, int, int, i
     return (value.device, value.inode, value.mode, value.size, value.mtime_ns, value.ctime_ns)
 
 
+def _project_import_environment(value: object, *, code: str) -> Mapping[str, str]:
+    try:
+        python_path = cast(Any, value)["PYTHONPATH"]
+    except KeyError:
+        python_path = ""
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise ImportPolicyError(code) from None
+    try:
+        python_home = cast(Any, value)["PYTHONHOME"]
+    except KeyError:
+        python_home = ""
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise ImportPolicyError(code) from None
+    if type(python_path) is not str or type(python_home) is not str:
+        raise ImportPolicyError(code)
+    return MappingProxyType({"PYTHONPATH": python_path, "PYTHONHOME": python_home})
+
+
 def capture_runtime_import_state() -> RuntimeImportState:
     """Capture import-relevant process state without changing it."""
 
     try:
-        raw_user_site = site.getusersitepackages()
-        user_site = Path(raw_user_site) if type(raw_user_site) is str and raw_user_site else None
+        environ = _project_import_environment(os.environ, code="runtime_state_capture_failed")
+        raw_user_site = site.USER_SITE
+        if raw_user_site is None or (type(raw_user_site) is str and not raw_user_site):
+            user_site = None
+        elif type(raw_user_site) is str:
+            user_site = Path(raw_user_site)
+        else:
+            raise ImportPolicyError("runtime_state_capture_failed")
         return RuntimeImportState(
             sys_path=tuple(sys.path),
             meta_path=tuple(sys.meta_path),
             path_hooks=tuple(sys.path_hooks),
             importer_cache=MappingProxyType(dict(sys.path_importer_cache)),
             modules=MappingProxyType(dict(sys.modules)),
-            environ=MappingProxyType(dict(os.environ)),
+            environ=environ,
             executable=sys.executable,
             argv0=sys.argv[0],
             cwd=Path(os.getcwd()),
@@ -714,8 +738,7 @@ def _copy_runtime_state(value: RuntimeImportState) -> RuntimeImportState:
         or value.user_site_enabled not in (True, False, None)
     ):
         raise ImportPolicyError("invalid_runtime_state")
-    if any(type(key) is not str or type(item) is not str for key, item in value.environ.items()):
-        raise ImportPolicyError("invalid_runtime_state")
+    environ = _project_import_environment(value.environ, code="invalid_runtime_state")
     if any(type(key) is not str for key in value.importer_cache):
         raise ImportPolicyError("invalid_runtime_state")
     if any(type(key) is not str for key in value.modules):
@@ -726,7 +749,7 @@ def _copy_runtime_state(value: RuntimeImportState) -> RuntimeImportState:
         path_hooks=tuple(value.path_hooks),
         importer_cache=MappingProxyType(dict(value.importer_cache)),
         modules=MappingProxyType(dict(value.modules)),
-        environ=MappingProxyType(dict(value.environ)),
+        environ=environ,
         executable=value.executable,
         argv0=value.argv0,
         cwd=value.cwd,
@@ -1691,9 +1714,10 @@ def build_import_policy(
     state = _copy_runtime_state(
         capture_runtime_import_state() if runtime_state is None else runtime_state
     )
-    for variable in ("PYTHONPATH", "PYTHONHOME"):
-        if state.environ.get(variable, ""):
-            raise ImportPolicyError(f"nonempty_{variable.lower()}")
+    if state.environ["PYTHONPATH"]:
+        raise ImportPolicyError("nonempty_pythonpath")
+    if state.environ["PYTHONHOME"]:
+        raise ImportPolicyError("nonempty_pythonhome")
     if state.user_site_enabled is True:
         raise ImportPolicyError("user_site_enabled")
     layout = _discover_interpreter_layout()
