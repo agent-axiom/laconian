@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,7 @@ from laconian_eval.capsule.bounded_io import (
     write_owned_file,
 )
 from laconian_eval.capsule.limits import ResourceLimitError
-from laconian_eval.yaml_io import safe_load_unique_bytes
+from laconian_eval.yaml_io import StrictYamlError, safe_load_unique_bytes
 
 
 @pytest.mark.parametrize(
@@ -93,6 +95,108 @@ def test_open_directory_no_follow_fails_closed_without_required_flag(
 
     with pytest.raises(RuntimeError, match="no-follow"):
         open_directory_no_follow(tmp_path)
+
+
+def test_open_directory_no_follow_never_retries_an_ambiguous_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from laconian_eval.capsule import bounded_io
+
+    target = tmp_path / "nested"
+    target.mkdir()
+    real_close = os.close
+    real_open = os.open
+    opened_by_subject: list[int] = []
+    replacement_fd: int | None = None
+    injected = False
+
+    def tracking_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened_by_subject.append(descriptor)
+        return descriptor
+
+    def close_then_reuse_and_raise(descriptor: int) -> None:
+        nonlocal injected, replacement_fd
+        if not injected:
+            injected = True
+            real_close(descriptor)
+            replacement_fd = real_open("/dev/null", os.O_RDONLY)
+            assert replacement_fd == descriptor
+            raise OSError(errno.EIO, "injected ambiguous close")
+        real_close(descriptor)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(bounded_io.os, "open", tracking_open)
+            patch.setattr(bounded_io.os, "close", close_then_reuse_and_raise)
+            with pytest.raises(OSError) as caught:
+                open_directory_no_follow(target)
+        assert caught.value.errno == errno.EIO
+        assert replacement_fd is not None
+        os.fstat(replacement_fd)
+    finally:
+        for descriptor in {*opened_by_subject, replacement_fd} - {None}:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            real_close(descriptor)
+
+
+def test_parent_walk_never_retries_an_ambiguous_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from laconian_eval.capsule import bounded_io
+
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "payload.bin").write_bytes(b"payload")
+    root_fd = open_directory_no_follow(tmp_path)
+    real_close = os.close
+    real_open = os.open
+    opened_by_subject: list[int] = []
+    replacement_fd: int | None = None
+    injected = False
+
+    def tracking_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened_by_subject.append(descriptor)
+        return descriptor
+
+    def close_then_reuse_and_raise(descriptor: int) -> None:
+        nonlocal injected, replacement_fd
+        if not injected:
+            injected = True
+            real_close(descriptor)
+            replacement_fd = real_open("/dev/null", os.O_RDONLY)
+            assert replacement_fd == descriptor
+            raise OSError(errno.EIO, "injected ambiguous close")
+        real_close(descriptor)
+
+    try:
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(bounded_io.os, "open", tracking_open)
+                patch.setattr(bounded_io.os, "close", close_then_reuse_and_raise)
+                with pytest.raises(OSError) as caught:
+                    read_regular_file_once(
+                        root_fd,
+                        "nested/payload.bin",
+                        limit=100,
+                        code="test_file_limit",
+                    )
+            assert caught.value.errno == errno.EIO
+            assert replacement_fd is not None
+            os.fstat(replacement_fd)
+        finally:
+            real_close(root_fd)
+    finally:
+        for descriptor in {*opened_by_subject, replacement_fd} - {None}:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            real_close(descriptor)
 
 
 def test_read_regular_file_once_uses_no_follow_nonblocking_single_descriptor(
@@ -392,3 +496,155 @@ def test_strict_yaml_bytes_contains_constructor_exceptions(document: bytes) -> N
     with pytest.raises(ValueError, match="invalid YAML") as caught:
         safe_load_unique_bytes(document)
     assert document.decode().strip() not in str(caught.value)
+
+
+def test_strict_yaml_bytes_does_not_construct_implicit_sexagesimal_integer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_integer_constructor(*args: object, **kwargs: object) -> object:
+        raise AssertionError("implicit sexagesimal must not reach the integer constructor")
+
+    monkeypatch.setitem(
+        yaml_io._StrictUniqueKeySafeLoader.yaml_constructors,
+        "tag:yaml.org,2002:int",
+        forbidden_integer_constructor,
+    )
+    value = b"1:" * 64_000 + b"1"
+
+    assert safe_load_unique_bytes(b"value: " + value + b"\n") == {"value": value.decode()}
+
+
+@pytest.mark.parametrize("tail", [b"1", b"99"])
+def test_strict_yaml_bytes_rejects_explicit_sexagesimal_integer_before_compose(
+    tail: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_compose(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sexagesimal scalar must fail before compose")
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("sexagesimal scalar must fail before construction")
+
+    monkeypatch.setattr(yaml_io.yaml, "compose", forbidden_compose)
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+    document = b"value: !!int " + b"1:" * 64_000 + tail + b"\n"
+
+    with pytest.raises(StrictYamlError) as caught:
+        safe_load_unique_bytes(document)
+
+    assert caught.value.code == "yaml_sexagesimal_number"
+    assert "1:1" not in str(caught.value)
+
+
+def test_strict_yaml_bytes_retains_ordinary_implicit_scalars() -> None:
+    assert safe_load_unique_bytes(
+        b"decimal: 123\nnegative: -42\nfloat: 1.5\n"
+        b"truth: true\nfalsehood: false\nnothing: null\n"
+        b"plain_sexagesimal: 1:1\nquoted: '1:1'\nexplicit: !!str 1:1\n"
+    ) == {
+        "decimal": 123,
+        "negative": -42,
+        "float": 1.5,
+        "truth": True,
+        "falsehood": False,
+        "nothing": None,
+        "plain_sexagesimal": "1:1",
+        "quoted": "1:1",
+        "explicit": "1:1",
+    }
+
+
+def test_strict_yaml_bytes_rejects_cumulative_nodes_before_compose_or_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_compose(*args: object, **kwargs: object) -> object:
+        raise AssertionError("cumulative node limit must fail before compose")
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("cumulative node limit must fail before construction")
+
+    monkeypatch.setattr(yaml_io.yaml, "compose", forbidden_compose)
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+    row = b"  - [" + b",".join(b"0" for _ in range(100)) + b"]\n"
+    document = b"values:\n" + row * 100
+
+    with pytest.raises(ResourceLimitError) as caught:
+        safe_load_unique_bytes(
+            document,
+            collection_limit=100,
+            collection_code="test_collection_limit",
+        )
+
+    assert caught.value.code == "yaml_nodes_limit"
+
+
+def test_strict_yaml_bytes_counts_collection_nodes_in_cumulative_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_compose(*args: object, **kwargs: object) -> object:
+        raise AssertionError("cumulative node limit must fail before compose")
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("cumulative node limit must fail before construction")
+
+    monkeypatch.setattr(yaml_io.yaml, "compose", forbidden_compose)
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+    row = b"  - [" + b",".join(b"{}" for _ in range(10)) + b"]\n"
+    document = b"values:\n" + row * 10
+
+    with pytest.raises(ResourceLimitError) as caught:
+        safe_load_unique_bytes(
+            document,
+            collection_limit=10,
+            collection_code="test_collection_limit",
+            node_limit=111,
+        )
+
+    assert caught.value.code == "yaml_nodes_limit"
+
+
+def test_strict_yaml_bytes_applies_node_budget_when_collection_limit_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import yaml_io
+
+    def forbidden_compose(*args: object, **kwargs: object) -> object:
+        raise AssertionError("default cumulative node limit must fail before compose")
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("default cumulative node limit must fail before construction")
+
+    monkeypatch.setattr(
+        yaml_io,
+        "RESOURCE_LIMITS_V1",
+        replace(yaml_io.RESOURCE_LIMITS_V1, case_records=2),
+    )
+    monkeypatch.setattr(yaml_io.yaml, "compose", forbidden_compose)
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+    document = b"values: [" + b",".join(b"{}" for _ in range(126)) + b"]\n"
+
+    with pytest.raises(ResourceLimitError) as caught:
+        safe_load_unique_bytes(document)
+
+    assert caught.value.code == "yaml_nodes_limit"
+
+
+def test_strict_yaml_cumulative_budget_allows_exact_collection_limit() -> None:
+    document = b"values: [" + b",".join(b"{}" for _ in range(10_000)) + b"]\n"
+
+    loaded = safe_load_unique_bytes(
+        document,
+        collection_limit=10_000,
+        collection_code="test_collection_limit",
+    )
+
+    assert isinstance(loaded, dict)
+    assert len(loaded["values"]) == 10_000

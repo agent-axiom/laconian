@@ -106,8 +106,9 @@ def open_directory_no_follow(path: os.PathLike[str] | str) -> int:
             except BaseException:
                 os.close(next_descriptor)
                 raise
-            os.close(descriptor)
+            previous_descriptor = descriptor
             descriptor = next_descriptor
+            os.close(previous_descriptor)
     except BaseException:
         os.close(descriptor)
         raise
@@ -139,8 +140,9 @@ def _parent_directory(
             except BaseException:
                 os.close(next_fd)
                 raise
-            os.close(current_fd)
+            previous_fd = current_fd
             current_fd = next_fd
+            os.close(previous_fd)
         yield current_fd, components[-1]
     finally:
         os.close(current_fd)

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 
@@ -23,6 +24,16 @@ from laconian_eval.capsule.limits import (
 )
 
 _MERGE_TAG = "tag:yaml.org,2002:merge"
+_INT_TAG = "tag:yaml.org,2002:int"
+_NON_SEXAGESIMAL_INT = re.compile(
+    r"""^(?:
+        [-+]?0b[0-1_]+
+        |[-+]?0[0-7_]+
+        |[-+]?(?:0|[1-9][0-9_]*)
+        |[-+]?0x[0-9a-fA-F_]+
+    )$""",
+    re.VERBOSE,
+)
 
 
 class StrictYamlError(ValueError):
@@ -93,6 +104,33 @@ class _UniqueKeySafeLoader(yaml.SafeLoader):
         return mapping
 
 
+class _StrictUniqueKeySafeLoader(_UniqueKeySafeLoader):
+    """Case-source loader without YAML 1.1 sexagesimal integer resolution."""
+
+    def construct_yaml_int(self, node: ScalarNode) -> int:
+        if ":" in self.construct_scalar(node):
+            raise ConstructorError(
+                "while constructing an integer",
+                node.start_mark,
+                "sexagesimal integers are forbidden",
+                node.start_mark,
+            )
+        return super().construct_yaml_int(node)
+
+
+_StrictUniqueKeySafeLoader.yaml_implicit_resolvers = {
+    initial: [
+        (tag, _NON_SEXAGESIMAL_INT if tag == _INT_TAG else resolver) for tag, resolver in resolvers
+    ]
+    for initial, resolvers in _UniqueKeySafeLoader.yaml_implicit_resolvers.items()
+}
+_StrictUniqueKeySafeLoader.yaml_constructors = dict(_UniqueKeySafeLoader.yaml_constructors)
+_StrictUniqueKeySafeLoader.add_constructor(
+    _INT_TAG,
+    _StrictUniqueKeySafeLoader.construct_yaml_int,
+)
+
+
 def safe_load_unique(text: str) -> object:
     loaded: object = yaml.load(text, Loader=_UniqueKeySafeLoader)
     return loaded
@@ -109,21 +147,34 @@ def _reject_reference_tokens(text: str) -> None:
         raise StrictYamlError("invalid_yaml", "invalid YAML") from None
 
 
+def _is_explicit_sexagesimal_integer(event: ScalarEvent) -> bool:
+    return event.tag == _INT_TAG and ":" in event.value
+
+
 def _preflight_yaml_events(
     text: str,
     *,
     depth_limit: int,
     collection_limit: int | None,
     collection_code: str,
+    node_limit: int | None,
+    node_code: str,
     top_level_sequence_limits: Mapping[str, tuple[int, str]] | None,
 ) -> None:
     check_collection_count(0, limit=depth_limit, code="nesting_depth_limit")
     if collection_limit is not None:
         check_collection_count(0, limit=collection_limit, code=collection_code)
+    if node_limit is None:
+        node_limit = (
+            collection_limit if collection_limit is not None else RESOURCE_LIMITS_V1.case_records
+        ) * depth_limit
+    if node_limit is not None:
+        check_collection_count(0, limit=node_limit, code=node_code)
     if top_level_sequence_limits is not None:
         for limit, code in top_level_sequence_limits.values():
             check_collection_count(0, limit=limit, code=code)
     stack: list[_CollectionFrame] = []
+    node_count = 0
 
     try:
         for event in yaml.parse(text, Loader=yaml.SafeLoader):
@@ -133,12 +184,21 @@ def _preflight_yaml_events(
             if not isinstance(event, NodeEvent):
                 continue
 
+            node_count += 1
+            if node_limit is not None:
+                check_collection_count(node_count, limit=node_limit, code=node_code)
+
             parent = stack[-1] if stack else None
             is_mapping_key = parent is not None and parent.next_child_is_mapping_key
             new_limit = collection_limit
             new_code = collection_code
             if isinstance(event, AliasEvent):
                 raise StrictYamlError("yaml_alias", "YAML aliases are forbidden")
+            if isinstance(event, ScalarEvent) and _is_explicit_sexagesimal_integer(event):
+                raise StrictYamlError(
+                    "yaml_sexagesimal_number",
+                    "YAML sexagesimal numbers are forbidden",
+                )
             if (
                 isinstance(event, ScalarEvent)
                 and is_mapping_key
@@ -182,7 +242,7 @@ def _preflight_yaml_events(
 
 def _preflight_mapping_keys(text: str) -> None:
     try:
-        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        root = yaml.compose(text, Loader=_StrictUniqueKeySafeLoader)
         pending: list[Node] = [] if root is None else [root]
         while pending:
             node = pending.pop()
@@ -213,7 +273,7 @@ def _preflight_mapping_keys(text: str) -> None:
 
 def _construct_strict_yaml(text: str) -> object:
     try:
-        loaded: object = yaml.load(text, Loader=_UniqueKeySafeLoader)
+        loaded: object = yaml.load(text, Loader=_StrictUniqueKeySafeLoader)
     except ConstructorError as exc:
         problem = exc.problem or ""
         if "duplicate mapping key" in problem:
@@ -237,6 +297,8 @@ def safe_load_unique_bytes(
     depth_limit: int = RESOURCE_LIMITS_V1.nesting_depth,
     collection_limit: int | None = None,
     collection_code: str = "collection_limit",
+    node_limit: int | None = None,
+    node_code: str = "yaml_nodes_limit",
     top_level_sequence_limits: Mapping[str, tuple[int, str]] | None = None,
 ) -> object:
     """Decode and load one strict, preflight-bounded YAML byte buffer."""
@@ -254,6 +316,8 @@ def safe_load_unique_bytes(
         depth_limit=depth_limit,
         collection_limit=collection_limit,
         collection_code=collection_code,
+        node_limit=node_limit,
+        node_code=node_code,
         top_level_sequence_limits=top_level_sequence_limits,
     )
     _preflight_mapping_keys(text)
