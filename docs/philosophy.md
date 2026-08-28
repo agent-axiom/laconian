@@ -52,4 +52,12 @@ The project keeps examples, adapters, history, and benchmark machinery outside t
 framework. More files or dependencies require evidence that their benefit exceeds their context
 and portability cost.
 
+## Related fidelity method
+
+The decision rule was informed by the `KEEP` / `REMOVE` / `FLAG` model in
+[`lossless-doc-compress`](https://github.com/ML-SystemDesign/MLSystemDesign/tree/8dd0d88852fe7445e9d2627c59124f0f161040c1/skills/lossless-doc-compress),
+by Valerii Babushkin and Arseny Kravchenko. Laconian adapts that model to answer editing: uncertain
+content remains in the answer, no editorial log is emitted, and the project does not claim that
+model editing is lossless.
+
 This document is licensed under [CC BY 4.0](../LICENSES/CC-BY-4.0.txt).
