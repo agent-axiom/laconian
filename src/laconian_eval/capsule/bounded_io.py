@@ -7,6 +7,7 @@ import re
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from laconian_eval.capsule.limits import (
     RESOURCE_LIMITS_V1,
@@ -25,6 +26,26 @@ class BoundedIOError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class RegularFileIdentity:
+    """Identity captured from the same descriptor as a file's exact bytes."""
+
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class RegularFileSnapshot:
+    """Bounded bytes and their same-descriptor identity."""
+
+    data: bytes
+    identity: RegularFileIdentity
 
 
 def normalize_source_path(value: str) -> str:
@@ -148,14 +169,14 @@ def _parent_directory(
         os.close(current_fd)
 
 
-def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
+def _identity(metadata: os.stat_result) -> RegularFileIdentity:
+    return RegularFileIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        size=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
     )
 
 
@@ -177,14 +198,14 @@ def _read_to_eof_bounded(descriptor: int, *, limit: int, code: str) -> bytes:
     raise ResourceLimitError(code)
 
 
-def read_regular_file_once(
+def read_regular_file_snapshot(
     directory_fd: int,
     path: str,
     *,
     limit: int,
     code: str = "file_size_limit",
-) -> bytes:
-    """Return one bounded descriptor snapshot of a regular file below a directory."""
+) -> RegularFileSnapshot:
+    """Return bounded bytes and identity from one regular-file descriptor."""
 
     normalized = normalize_source_path(path)
     check_collection_count(0, limit=limit, code=code)
@@ -201,9 +222,26 @@ def read_regular_file_once(
                 raise BoundedIOError("source_mutated", "source mutated during capture")
             if _identity(before) != _identity(after) or len(captured) != before.st_size:
                 raise BoundedIOError("source_mutated", "source mutated during capture")
-            return captured
+            return RegularFileSnapshot(data=captured, identity=_identity(after))
         finally:
             os.close(descriptor)
+
+
+def read_regular_file_once(
+    directory_fd: int,
+    path: str,
+    *,
+    limit: int,
+    code: str = "file_size_limit",
+) -> bytes:
+    """Return one bounded descriptor snapshot of a regular file below a directory."""
+
+    return read_regular_file_snapshot(
+        directory_fd,
+        path,
+        limit=limit,
+        code=code,
+    ).data
 
 
 def _write_all(descriptor: int, data: bytes) -> None:

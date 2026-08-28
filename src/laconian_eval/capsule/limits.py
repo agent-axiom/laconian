@@ -34,6 +34,13 @@ class ResourceLimitsV1:
     all_protocol_files_bytes: int = 64 * _MIB
     runner_source_file_bytes: int = 2 * _MIB
     all_runner_source_files_bytes: int = 32 * _MIB
+    dependency_file_bytes: int = 64 * _MIB
+    all_dependency_files_bytes: int = 512 * _MIB
+    dependency_files: int = 100_000
+    dependency_requirements: int = 100_000
+    dependency_marker_contexts: int = 100_000
+    dependency_requirement_evaluations: int = 100_000
+    dependency_distributions: int = 1_000
     captured_input_total_bytes: int = 512 * _MIB
     case_records: int = 10_000
     plan_rows: int = 100_000

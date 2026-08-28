@@ -33,6 +33,13 @@ def test_resource_limits_v1_contains_every_section_five_limit() -> None:
     assert limits.all_protocol_files_bytes == 64 * MIB
     assert limits.runner_source_file_bytes == 2 * MIB
     assert limits.all_runner_source_files_bytes == 32 * MIB
+    assert limits.dependency_file_bytes == 64 * MIB
+    assert limits.all_dependency_files_bytes == 512 * MIB
+    assert limits.dependency_files == 100_000
+    assert limits.dependency_requirements == 100_000
+    assert limits.dependency_marker_contexts == 100_000
+    assert limits.dependency_requirement_evaluations == 100_000
+    assert limits.dependency_distributions == 1_000
     assert limits.captured_input_total_bytes == 512 * MIB
     assert limits.case_records == 10_000
     assert limits.plan_rows == 100_000

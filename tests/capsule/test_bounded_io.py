@@ -12,6 +12,7 @@ from laconian_eval.capsule.bounded_io import (
     normalize_source_path,
     open_directory_no_follow,
     read_regular_file_once,
+    read_regular_file_snapshot,
     write_owned_file,
 )
 from laconian_eval.capsule.limits import ResourceLimitError
@@ -236,6 +237,32 @@ def test_read_regular_file_once_uses_no_follow_nonblocking_single_descriptor(
     assert len(final_opens) == 1
     assert final_opens[0] & os.O_NOFOLLOW
     assert final_opens[0] & os.O_NONBLOCK
+
+
+def test_read_regular_file_snapshot_returns_bytes_and_same_descriptor_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"abc")
+    root_fd = open_directory_no_follow(tmp_path)
+    try:
+        snapshot = read_regular_file_snapshot(
+            root_fd,
+            "payload.bin",
+            limit=3,
+            code="test_file_limit",
+        )
+    finally:
+        os.close(root_fd)
+
+    current = path.stat()
+    assert snapshot.data == b"abc"
+    assert snapshot.identity.device == current.st_dev
+    assert snapshot.identity.inode == current.st_ino
+    assert snapshot.identity.mode == current.st_mode
+    assert snapshot.identity.size == current.st_size == len(snapshot.data)
+    assert snapshot.identity.mtime_ns == current.st_mtime_ns
+    assert snapshot.identity.ctime_ns == current.st_ctime_ns
 
 
 def test_read_regular_file_once_rejects_intermediate_symlink(tmp_path: Path) -> None:
