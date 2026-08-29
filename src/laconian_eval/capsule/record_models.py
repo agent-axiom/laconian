@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Literal, Self
+from datetime import datetime
+from typing import Annotated, Literal, Self, TypeAlias
+from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from laconian_eval.capsule.schema import (
     CONSOLE_LAUNCHER_TEMPLATE_SHA256,
@@ -45,6 +47,31 @@ from laconian_eval.capsule.schema import (
     require_utf8_sorted_unique,
     validate_relative_posix_path,
 )
+
+
+def _exact_event_uuid(value: object) -> object:
+    if type(value) not in (UUID, str):
+        raise ValueError("event UUID must use an exact boundary type")
+    return value
+
+
+def _exact_event_datetime(value: object) -> object:
+    if type(value) not in (datetime, str):
+        raise ValueError("event timestamp must use an exact boundary type")
+    return value
+
+
+def _control_free_event_text(value: object) -> object:
+    if type(value) is not str:
+        raise ValueError("event text must be a string")
+    if any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value):
+        raise ValueError("event text must be control-free")
+    return value
+
+
+EventUUID4: TypeAlias = Annotated[UUID4, BeforeValidator(_exact_event_uuid)]
+EventTimestamp: TypeAlias = Annotated[CanonicalTimestamp, BeforeValidator(_exact_event_datetime)]
+EventText: TypeAlias = Annotated[BoundedNonBlankString, BeforeValidator(_control_free_event_text)]
 
 _ARM_LOCATOR_PATTERN = re.compile(r"^arm\[(baseline|concise|caveman|if)\]/(.+)$")
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -444,18 +471,18 @@ class EnvironmentV1(CapsuleModel):
 
 class SessionEnvironmentV1(CapsuleModel):
     schema_version: Literal["1"]
-    package_version: BoundedNonBlankString
+    package_version: EventText
     runner_source_sha256: Sha256
     runtime_fingerprint_sha256: Sha256
-    python_implementation: BoundedNonBlankString
-    python_version: BoundedNonBlankString
-    os_family: BoundedNonBlankString
-    os_release: BoundedNonBlankString
-    architecture: BoundedNonBlankString
+    python_implementation: EventText
+    python_version: EventText
+    os_family: EventText
+    os_release: EventText
+    architecture: EventText
     filesystem_class: FilesystemClass
     adapter_source_sha256: Sha256
     sdk_distribution: Literal["openai"] | None
-    sdk_version: BoundedNonBlankString | None
+    sdk_version: EventText | None
 
     @model_validator(mode="after")
     def validate_sdk_pair(self) -> Self:
@@ -477,10 +504,10 @@ class PreparedEventV1(CapsuleModel):
     schema_version: Literal["1"]
     sequence: StrictNonNegativeInt
     event_id: Sha256
-    run_id: UUID4
-    occurred_at: CanonicalTimestamp
+    run_id: EventUUID4
+    occurred_at: EventTimestamp
     kind: Literal["prepared"]
-    operation_id: UUID4
+    operation_id: EventUUID4
     execution_session_id: None
     payload: PreparedPayloadV1
 
@@ -490,9 +517,6 @@ class PreparedEventV1(CapsuleModel):
         if value != 0:
             raise ValueError("prepared event sequence must be zero")
         return value
-
-
-EventV1 = PreparedEventV1
 
 
 class VerifyErrorV1(CapsuleModel):

@@ -16,10 +16,10 @@ import platform
 import re
 import stat
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -32,6 +32,10 @@ from laconian_eval.arms import (
 )
 from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
 from laconian_eval.capsule.canonical import canonical_json, sha256_bytes, stable_digest
+from laconian_eval.capsule.events import (
+    RequestStartedEventV1,
+    SealRequestedEventV1,
+)
 from laconian_eval.capsule.filesystem import (
     FilesystemPosixOps,
     LockHandle,
@@ -40,6 +44,17 @@ from laconian_eval.capsule.filesystem import (
     classify_filesystem,
     try_acquire_shared_lock,
 )
+from laconian_eval.capsule.history import (
+    AttemptCommitV1,
+    HistoryContextV1,
+    HistoryError,
+    LifecycleProjectionV1,
+    RawCommitProjectionV1,
+    RecoveryRequirementV1,
+    ValidatedHistoryV1,
+    derive_lifecycle_v1,
+)
+from laconian_eval.capsule.journal import JournalError, snapshot_journal_pair
 from laconian_eval.capsule.limits import (
     RESOURCE_LIMITS_V1,
     ResourceLimitError,
@@ -65,6 +80,7 @@ from laconian_eval.capsule.record_models import (
     VerifyResultV1,
 )
 from laconian_eval.cases import parse_response_case_bytes
+from laconian_eval.models import ResponseCase
 
 
 class VerificationMode(StrEnum):
@@ -95,6 +111,42 @@ class _Inventory:
     root_identity: _Identity
     directories: dict[str, _Identity]
     files: dict[str, _Identity]
+
+
+def _strict_inventory(value: object) -> _Inventory:
+    if type(value) is not _Inventory:
+        raise _Failure("invalid_model", None)
+
+    def strict_identity(identity: object) -> _Identity:
+        if type(identity) is not _Identity:
+            raise _Failure("invalid_model", None)
+        fields = (
+            identity.device,
+            identity.inode,
+            identity.mode,
+            identity.size,
+            identity.mtime_ns,
+            identity.ctime_ns,
+        )
+        if any(type(item) is not int or item < 0 for item in fields):
+            raise _Failure("invalid_model", None)
+        return _Identity(*fields)
+
+    def strict_entries(entries: object) -> dict[str, _Identity]:
+        if type(entries) is not dict:
+            raise _Failure("invalid_model", None)
+        checked: dict[str, _Identity] = {}
+        for path, identity in dict.items(entries):
+            if type(path) is not str:
+                raise _Failure("invalid_model", None)
+            checked[path] = strict_identity(identity)
+        return checked
+
+    return _Inventory(
+        strict_identity(value.root_identity),
+        strict_entries(value.directories),
+        strict_entries(value.files),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +184,500 @@ class _CapturedProjection:
     @property
     def records(self) -> tuple[InputFileRecordV1, ...]:
         return tuple(item.record for item in self.files)
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+_SHA256_TEXT = re.compile(r"^[0-9a-f]{64}$")
+_TERMINAL_REASONS = frozenset(
+    {
+        "success",
+        "retry_exhausted",
+        "provider_rejected",
+        "authentication_stopped",
+        "ambiguous_delivery",
+    }
+)
+_RECOVERY_KINDS = (
+    "request_finished",
+    "authentication_stopped",
+    "delivery_ambiguous",
+    "generation_completed",
+)
+_LIFECYCLE_STATES = frozenset(
+    {
+        "PREPARED",
+        "INTERRUPTED",
+        "AMBIGUOUS_INFLIGHT",
+        "AUTHENTICATION_STOPPED",
+        "GENERATION_COMPLETE",
+        "SEALING_INTERRUPTED",
+        "SEALED_COMPLETE",
+        "SEALED_BLOCKED",
+    }
+)
+_OPERATIONAL_BLOCKERS = frozenset(
+    {"never_started", "interrupted", "ambiguous_inflight", "authentication_stopped"}
+)
+
+
+def _strict_model_copy(model_type: type[_ModelT], value: object) -> _ModelT:
+    if type(value) is not model_type:
+        raise TypeError
+    payload = model_type.model_dump(value, mode="python", round_trip=True, warnings=False)
+    return model_type.model_validate(payload)
+
+
+def _strict_sha256(value: object) -> str:
+    if type(value) is not str or _SHA256_TEXT.fullmatch(value) is None:
+        raise TypeError
+    return value
+
+
+def _strict_nonnegative_int(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise TypeError
+    return value
+
+
+def _strict_provider_text(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value.strip()
+        or len(value.encode("utf-8", errors="strict")) > RESOURCE_LIMITS_V1.bounded_string_bytes
+        or any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+    ):
+        raise TypeError
+    return value
+
+
+def _strict_captured_projection(
+    value: object,
+    *,
+    capsule: CapsuleV1,
+    manifest: ResolvedManifestV2,
+    input_index: InputIndexV1,
+) -> tuple[_CapturedProjection, tuple[Arm, ...]]:
+    if type(value) is not _CapturedProjection:
+        raise TypeError
+    if (
+        type(value.resolved_manifest_bytes) is not bytes
+        or type(value.files) is not tuple
+        or type(value.case_files) is not tuple
+        or type(value.arms) is not tuple
+    ):
+        raise TypeError
+    source_commitment = _strict_sha256(value.source_manifest_commitment_sha256)
+    manifest_sha256 = _strict_sha256(value.manifest_sha256)
+    resolved_manifest = _strict_model_copy(ResolvedManifestV2, value.resolved_manifest)
+    resolved_manifest_bytes = bytes(value.resolved_manifest_bytes)
+    if (
+        source_commitment != capsule.source_manifest_commitment_sha256
+        or resolved_manifest != manifest
+        or manifest_sha256 != capsule.manifest_sha256
+        or sha256_bytes(resolved_manifest_bytes) != manifest_sha256
+        or canonical_json(resolved_manifest.model_dump(mode="json", round_trip=True))
+        != resolved_manifest_bytes
+    ):
+        raise TypeError
+
+    files: list[_CapturedInput] = []
+    for item in value.files:
+        if type(item) is not _CapturedInput or type(item.data) is not bytes:
+            raise TypeError
+        record = _strict_model_copy(InputFileRecordV1, item.record)
+        data = bytes(item.data)
+        if record.byte_length != len(data) or record.sha256 != sha256_bytes(data):
+            raise TypeError
+        files.append(_CapturedInput(record, data))
+    checked_files = tuple(files)
+    if tuple(item.record for item in checked_files) != input_index.files:
+        raise TypeError
+
+    case_files: list[_CapturedCase] = []
+    for captured_case in value.case_files:
+        if (
+            type(captured_case) is not _CapturedCase
+            or type(captured_case.source_ordinal) is not int
+            or captured_case.source_ordinal < 0
+            or type(captured_case.dataset_id) is not str
+            or not captured_case.dataset_id
+            or type(captured_case.cases) is not tuple
+        ):
+            raise TypeError
+        if (
+            type(captured_case.input_file) is not _CapturedInput
+            or type(captured_case.input_file.data) is not bytes
+        ):
+            raise TypeError
+        input_record = _strict_model_copy(InputFileRecordV1, captured_case.input_file.record)
+        input_data = bytes(captured_case.input_file.data)
+        cases = tuple(_strict_model_copy(ResponseCase, case) for case in captured_case.cases)
+        case_files.append(
+            _CapturedCase(
+                captured_case.source_ordinal,
+                captured_case.dataset_id,
+                _CapturedInput(input_record, input_data),
+                cases,
+            )
+        )
+
+    arms: list[Arm] = []
+    for arm in value.arms:
+        if (
+            type(arm) is not Arm
+            or type(arm.name) is not str
+            or (arm.instruction is not None and type(arm.instruction) is not str)
+        ):
+            raise TypeError
+        arms.append(Arm(arm.name, arm.instruction, _strict_sha256(arm.sha256)))
+    supplied = _CapturedProjection(
+        source_commitment,
+        resolved_manifest,
+        resolved_manifest_bytes,
+        manifest_sha256,
+        checked_files,
+        tuple(case_files),
+        tuple(arms),
+    )
+    artifacts = {item.record.capsule_path: item.data for item in checked_files}
+    rebuilt, rebuilt_arms = _build_captured_projection(
+        capsule,
+        manifest,
+        resolved_manifest_bytes,
+        input_index,
+        artifacts,
+        frozenset(artifacts),
+    )
+    if supplied != rebuilt:
+        raise TypeError
+    return rebuilt, rebuilt_arms
+
+
+def _strict_raw_projection(value: object) -> RawCommitProjectionV1:
+    if type(value) is not RawCommitProjectionV1:
+        raise TypeError
+    call_sequence = _strict_nonnegative_int(value.call_sequence)
+    plan_item_id = _strict_sha256(value.plan_item_id)
+    attempt_id = _strict_sha256(value.attempt_id)
+    attempt = _strict_nonnegative_int(value.attempt)
+    if not 1 <= attempt <= 6 or type(value.terminal) is not bool:
+        raise TypeError
+    terminal_reason = value.terminal_reason
+    if terminal_reason is not None and (
+        type(terminal_reason) is not str or terminal_reason not in _TERMINAL_REASONS
+    ):
+        raise TypeError
+    backoff_ms = value.backoff_ms
+    if backoff_ms is not None:
+        backoff_ms = _strict_nonnegative_int(backoff_ms)
+    if value.terminal:
+        if terminal_reason is None or backoff_ms is not None:
+            raise TypeError
+    elif terminal_reason is not None or backoff_ms != 100 * 2 ** (attempt - 1):
+        raise TypeError
+    raw_hash = _strict_sha256(value.raw_record_sha256)
+    response_model = (
+        None if value.response_model is None else _strict_provider_text(value.response_model)
+    )
+    if (terminal_reason == "success") != (response_model is not None):
+        raise TypeError
+    return RawCommitProjectionV1(
+        call_sequence,
+        plan_item_id,
+        attempt_id,
+        attempt,
+        value.terminal,
+        terminal_reason,
+        backoff_ms,
+        raw_hash,
+        response_model,
+    )
+
+
+def _strict_open_attempt(value: object) -> AttemptCommitV1:
+    if type(value) is not AttemptCommitV1 or value.finish is not None:
+        raise TypeError
+    start = _strict_model_copy(RequestStartedEventV1, value.start)
+    raw = None if value.raw is None else _strict_raw_projection(value.raw)
+    if raw is not None and (
+        raw.call_sequence != start.payload.call_sequence
+        or raw.plan_item_id != start.payload.plan_item_id
+        or raw.attempt_id != start.payload.attempt_id
+        or raw.attempt != start.payload.attempt
+    ):
+        raise TypeError
+    return AttemptCommitV1(start, raw, None)
+
+
+def _strict_recovery_requirement(value: object) -> RecoveryRequirementV1:
+    if type(value) is not RecoveryRequirementV1 or type(value.kind) is not str:
+        raise TypeError
+    kind = value.kind
+    if kind not in _RECOVERY_KINDS:
+        raise TypeError
+    call_sequence = _strict_nonnegative_int(value.call_sequence)
+
+    def optional_sha(candidate: object) -> str | None:
+        return None if candidate is None else _strict_sha256(candidate)
+
+    plan_item_id = optional_sha(value.plan_item_id)
+    attempt_id = optional_sha(value.attempt_id)
+    origin_start = optional_sha(value.origin_request_started_event_id)
+    raw_hash = optional_sha(value.raw_record_sha256)
+    origin_finish = optional_sha(value.origin_request_finished_event_id)
+    if kind == "request_finished":
+        if None in (plan_item_id, attempt_id, origin_start, raw_hash) or origin_finish is not None:
+            raise TypeError
+    elif kind in {"authentication_stopped", "delivery_ambiguous"}:
+        if (
+            None in (plan_item_id, attempt_id, origin_start)
+            or raw_hash is not None
+            or origin_finish is not None
+        ):
+            raise TypeError
+    elif any(item is not None for item in (plan_item_id, attempt_id, origin_start, raw_hash)):
+        raise TypeError
+    return RecoveryRequirementV1(
+        kind,
+        call_sequence,
+        plan_item_id,
+        attempt_id,
+        origin_start,
+        raw_hash,
+        origin_finish,
+    )
+
+
+def _strict_string_tuple(value: object, *, sha256: bool) -> tuple[str, ...]:
+    if type(value) is not tuple:
+        raise TypeError
+    checked = tuple(
+        _strict_sha256(item) if sha256 else _strict_provider_text(item) for item in value
+    )
+    if len(checked) != len(set(checked)):
+        raise TypeError
+    return checked
+
+
+def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> ValidatedHistoryV1:
+    if type(value) is not ValidatedHistoryV1 or type(value.recovery_requirements) is not tuple:
+        raise TypeError
+    resolved = _strict_string_tuple(value.resolved_plan_item_ids, sha256=True)
+    missing = _strict_string_tuple(value.missing_plan_item_ids, sha256=True)
+    returned = _strict_string_tuple(value.returned_models, sha256=False)
+    plan_ids = tuple(row.plan_item_id for row in plan)
+    if (
+        resolved != plan_ids[: len(resolved)]
+        or missing
+        != tuple(sorted(plan_ids[len(resolved) :], key=lambda item: item.encode("utf-8")))
+        or returned != tuple(sorted(returned, key=lambda item: item.encode("utf-8")))
+        or len(returned) > 2
+    ):
+        raise TypeError
+    next_ordinal = value.next_unresolved_plan_ordinal
+    expected_ordinal = None if not missing else len(resolved)
+    if next_ordinal != expected_ordinal or (
+        next_ordinal is not None and type(next_ordinal) is not int
+    ):
+        raise TypeError
+    next_call = _strict_nonnegative_int(value.next_call_sequence)
+    open_attempt = None if value.open_attempt is None else _strict_open_attempt(value.open_attempt)
+    requirements = tuple(
+        _strict_recovery_requirement(requirement) for requirement in value.recovery_requirements
+    )
+    if len(requirements) > 3:
+        raise TypeError
+    order = tuple(_RECOVERY_KINDS.index(requirement.kind) for requirement in requirements)
+    if order != tuple(sorted(order)) or len(order) != len(set(order)):
+        raise TypeError
+    bool_values = (
+        value.request_history_present,
+        value.execution_history_present,
+        value.latest_no_call_blocked,
+        value.has_ambiguous_delivery,
+        value.has_authentication_stop,
+    )
+    if any(type(item) is not bool for item in bool_values):
+        raise TypeError
+    if (
+        value.request_history_present != (next_call > 0)
+        or (value.request_history_present and not value.execution_history_present)
+        or (value.request_history_present and value.latest_no_call_blocked)
+        or (value.has_ambiguous_delivery and value.has_authentication_stop)
+        or (not missing and (value.has_ambiguous_delivery or value.has_authentication_stop))
+        or len(resolved) > next_call
+    ):
+        raise TypeError
+    if open_attempt is not None:
+        if next_call == 0 or open_attempt.start.payload.call_sequence != next_call - 1:
+            raise TypeError
+        raw = open_attempt.raw
+        target_id = open_attempt.start.payload.plan_item_id
+        if raw is None:
+            if not missing or target_id != plan[expected_ordinal].plan_item_id:  # type: ignore[index]
+                raise TypeError
+            if not value.has_ambiguous_delivery or requirements:
+                raise TypeError
+        else:
+            if not requirements or requirements[0].kind != "request_finished":
+                raise TypeError
+            first = requirements[0]
+            if (
+                first.call_sequence != raw.call_sequence
+                or first.plan_item_id != raw.plan_item_id
+                or first.attempt_id != raw.attempt_id
+                or first.origin_request_started_event_id != open_attempt.start.event_id
+                or first.raw_record_sha256 != raw.raw_record_sha256
+            ):
+                raise TypeError
+            if raw.terminal_reason in {"success", "retry_exhausted", "provider_rejected"}:
+                if not resolved or target_id != resolved[-1]:
+                    raise TypeError
+            elif not missing or target_id != plan[expected_ordinal].plan_item_id:  # type: ignore[index]
+                raise TypeError
+            if (
+                raw.terminal_reason == "authentication_stopped"
+                and not value.has_authentication_stop
+            ):
+                raise TypeError
+            if raw.terminal_reason == "ambiguous_delivery" and not value.has_ambiguous_delivery:
+                raise TypeError
+    seal = None
+    if value.seal_requested is not None:
+        seal = _strict_model_copy(SealRequestedEventV1, value.seal_requested)
+        if requirements:
+            raise TypeError
+    return ValidatedHistoryV1(
+        resolved,
+        missing,
+        returned,
+        expected_ordinal,
+        next_call,
+        open_attempt,
+        requirements,
+        *bool_values,
+        seal,
+    )
+
+
+def _history_commitment(history: ValidatedHistoryV1) -> str:
+    open_attempt: dict[str, object] | None = None
+    if history.open_attempt is not None:
+        raw = history.open_attempt.raw
+        open_attempt = {
+            "start": history.open_attempt.start.model_dump(mode="json", round_trip=True),
+            "raw": None
+            if raw is None
+            else {
+                "call_sequence": raw.call_sequence,
+                "plan_item_id": raw.plan_item_id,
+                "attempt_id": raw.attempt_id,
+                "attempt": raw.attempt,
+                "terminal": raw.terminal,
+                "terminal_reason": raw.terminal_reason,
+                "backoff_ms": raw.backoff_ms,
+                "raw_record_sha256": raw.raw_record_sha256,
+                "response_model": raw.response_model,
+            },
+        }
+    return stable_digest(
+        "laconian-validated-history-context-v1",
+        {
+            "resolved_plan_item_ids": history.resolved_plan_item_ids,
+            "missing_plan_item_ids": history.missing_plan_item_ids,
+            "returned_models": history.returned_models,
+            "next_unresolved_plan_ordinal": history.next_unresolved_plan_ordinal,
+            "next_call_sequence": history.next_call_sequence,
+            "open_attempt": open_attempt,
+            "recovery_requirements": [
+                {
+                    "kind": item.kind,
+                    "call_sequence": item.call_sequence,
+                    "plan_item_id": item.plan_item_id,
+                    "attempt_id": item.attempt_id,
+                    "origin_request_started_event_id": item.origin_request_started_event_id,
+                    "raw_record_sha256": item.raw_record_sha256,
+                    "origin_request_finished_event_id": item.origin_request_finished_event_id,
+                }
+                for item in history.recovery_requirements
+            ],
+            "request_history_present": history.request_history_present,
+            "execution_history_present": history.execution_history_present,
+            "latest_no_call_blocked": history.latest_no_call_blocked,
+            "has_ambiguous_delivery": history.has_ambiguous_delivery,
+            "has_authentication_stop": history.has_authentication_stop,
+            "seal_requested": None
+            if history.seal_requested is None
+            else history.seal_requested.model_dump(mode="json", round_trip=True),
+        },
+    )
+
+
+def _strict_lifecycle_copy(value: object) -> LifecycleProjectionV1:
+    if (
+        type(value) is not LifecycleProjectionV1
+        or type(value.state) is not str
+        or value.state not in _LIFECYCLE_STATES
+        or type(value.missing_plan_item_ids) is not tuple
+        or type(value.operational_blocker_codes) is not tuple
+    ):
+        raise TypeError
+    missing = tuple(_strict_sha256(item) for item in value.missing_plan_item_ids)
+    blockers = tuple(value.operational_blocker_codes)
+    if any(type(item) is not str or item not in _OPERATIONAL_BLOCKERS for item in blockers):
+        raise TypeError
+    return LifecycleProjectionV1(value.state, missing, blockers)
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedCapsuleContext:
+    capsule: CapsuleV1
+    manifest: ResolvedManifestV2
+    environment: EnvironmentV1
+    input_index: InputIndexV1
+    captured: _CapturedProjection
+    case_index: tuple[CaseIndexRowV1, ...]
+    plan: tuple[PlanRowV1, ...]
+    history: ValidatedHistoryV1
+    lifecycle: LifecycleProjectionV1
+    _history_sha256: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        try:
+            capsule = _strict_model_copy(CapsuleV1, self.capsule)
+            manifest = _strict_model_copy(ResolvedManifestV2, self.manifest)
+            environment = _strict_model_copy(EnvironmentV1, self.environment)
+            input_index = _strict_model_copy(InputIndexV1, self.input_index)
+            if type(self.case_index) is not tuple or type(self.plan) is not tuple:
+                raise TypeError
+            case_index = tuple(_strict_model_copy(CaseIndexRowV1, row) for row in self.case_index)
+            plan = tuple(_strict_model_copy(PlanRowV1, row) for row in self.plan)
+            captured, arms = _strict_captured_projection(
+                self.captured,
+                capsule=capsule,
+                manifest=manifest,
+                input_index=input_index,
+            )
+            validate_case_index(case_index, captured, manifest)  # type: ignore[arg-type]
+            validate_plan(plan, capsule.run_id, manifest, case_index, arms)
+            history = _strict_history_copy(self.history, plan)
+            if _strict_sha256(self._history_sha256) != _history_commitment(history):
+                raise TypeError
+            lifecycle = _strict_lifecycle_copy(self.lifecycle)
+            derived_lifecycle = derive_lifecycle_v1(history)
+            if lifecycle != derived_lifecycle:
+                raise TypeError
+            object.__setattr__(self, "capsule", capsule)
+            object.__setattr__(self, "manifest", manifest)
+            object.__setattr__(self, "environment", environment)
+            object.__setattr__(self, "input_index", input_index)
+            object.__setattr__(self, "captured", captured)
+            object.__setattr__(self, "case_index", case_index)
+            object.__setattr__(self, "plan", plan)
+            object.__setattr__(self, "history", history)
+            object.__setattr__(self, "lifecycle", derived_lifecycle)
+        except Exception:
+            raise _Failure("invalid_model", None) from None
 
 
 _FIXED_FILES = frozenset(
@@ -1711,11 +2257,12 @@ def _verify_prepared_event_file(
 
 
 def _valid_result(
-    capsule: CapsuleV1,
-    plan: tuple[PlanRowV1, ...],
+    context: _VerifiedCapsuleContext,
     inventory: _Inventory,
-    environment: EnvironmentV1,
 ) -> VerifyResultV1:
+    capsule = context.capsule
+    environment = context.environment
+    lifecycle = context.lifecycle
     warnings: list[str] = []
     if (
         stat.S_IMODE(inventory.root_identity.mode) & ~0o700
@@ -1732,20 +2279,22 @@ def _valid_result(
             "schema_version": "1",
             "status": "valid",
             "run_id": capsule.run_id,
-            "state": "PREPARED",
+            "state": lifecycle.state,
             "capsule_sha256": None,
-            "missing_plan_item_ids": sorted(
-                (row.plan_item_id for row in plan),
-                key=lambda item: item.encode("utf-8"),
-            ),
-            "operational_blocker_codes": ["never_started"],
+            "missing_plan_item_ids": lifecycle.missing_plan_item_ids,
+            "operational_blocker_codes": lifecycle.operational_blocker_codes,
             "warnings": warnings,
             "first_error": None,
         }
     )
 
 
-def _verify_semantics(root_fd: int, inventory: _Inventory) -> VerifyResultV1:
+def _verify_capsule_context_descriptors(
+    root_fd: int, inventory: _Inventory
+) -> _VerifiedCapsuleContext:
+    """Validate one already-owned descriptor snapshot without acquiring any lock."""
+
+    inventory = _strict_inventory(inventory)
     teardown_errors: list[_Failure] = []
     artifacts: dict[str, bytes] = {}
 
@@ -1949,19 +2498,70 @@ def _verify_semantics(root_fd: int, inventory: _Inventory) -> VerifyResultV1:
     except (PlanningError, TypeError, ValueError):
         raise _Failure("plan_mismatch", "plan.jsonl") from None
 
-    _verify_prepared_event_file(
-        root_fd,
-        inventory.files["events.jsonl"],
-        inventory,
-        teardown_errors,
-        capsule,
-    )
-    if inventory.files["raw.jsonl"].size:
-        raise _Failure("history_mismatch", "raw.jsonl", 0)
-    load("raw.jsonl")
+    try:
+        journals = snapshot_journal_pair(
+            root_fd,
+            history_context=HistoryContextV1(capsule, manifest, environment, plan),
+            tail_policy="reject",
+        )
+    except JournalError as error:
+        raise _Failure(
+            error.code,
+            f"{error.ledger}.jsonl",
+            error.row_index,
+        ) from None
+    except HistoryError as error:
+        raise _Failure(
+            error.code,
+            None if error.code == "io_error" else f"{error.ledger}.jsonl",
+            None if error.code == "io_error" else error.row_index,
+        ) from None
+    event_expected = inventory.files["events.jsonl"]
+    raw_expected = inventory.files["raw.jsonl"]
+    if (
+        journals.events.device,
+        journals.events.inode,
+        journals.events.mode,
+        journals.events.byte_length,
+        journals.events.mtime_ns,
+        journals.events.ctime_ns,
+    ) != (
+        event_expected.device,
+        event_expected.inode,
+        event_expected.mode,
+        event_expected.size,
+        event_expected.mtime_ns,
+        event_expected.ctime_ns,
+    ) or (
+        journals.raw.device,
+        journals.raw.inode,
+        journals.raw.mode,
+        journals.raw.byte_length,
+        journals.raw.mtime_ns,
+        journals.raw.ctime_ns,
+    ) != (
+        raw_expected.device,
+        raw_expected.inode,
+        raw_expected.mode,
+        raw_expected.size,
+        raw_expected.mtime_ns,
+        raw_expected.ctime_ns,
+    ):
+        raise _Failure("unstable_snapshot", "events.jsonl")
     if teardown_errors:
         raise teardown_errors[0]
-    return _valid_result(capsule, plan, inventory, environment)
+    return _VerifiedCapsuleContext(
+        capsule,
+        manifest,
+        environment,
+        input_index,
+        captured,
+        case_index,
+        plan,
+        journals.history,
+        journals.lifecycle,
+        _history_commitment(journals.history),
+    )
 
 
 def _check_lock_identity(root_fd: int, descriptor: int) -> None:
@@ -2024,7 +2624,8 @@ def _verify_core(root_fd: int) -> VerifyResultV1:
     """Verify one complete descriptor-bound prepared snapshot."""
 
     inventory = _scan_inventory(root_fd)
-    return _verify_semantics(root_fd, inventory)
+    context = _verify_capsule_context_descriptors(root_fd, inventory)
+    return _valid_result(context, inventory)
 
 
 def _verify_prepared_capsule_descriptors(

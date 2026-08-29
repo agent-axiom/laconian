@@ -13,18 +13,26 @@ import socket
 import stat
 from collections.abc import Iterator, Mapping
 from contextlib import suppress
-from dataclasses import replace
-from datetime import timedelta
+from dataclasses import FrozenInstanceError, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 import yaml
 
+import laconian_eval.capsule.history as history_module
 import laconian_eval.capsule.prepare as prepare_module
 import laconian_eval.capsule.verify as verify_module
 from laconian_eval import __version__
+from laconian_eval.capsule.attempts import (
+    RawAttemptV2,
+    derive_attempt_id,
+    raw_attempt_jsonl,
+    raw_record_sha256,
+)
 from laconian_eval.capsule.bounded_io import open_directory_no_follow
 from laconian_eval.capsule.canonical import (
     canonical_json,
@@ -32,13 +40,15 @@ from laconian_eval.capsule.canonical import (
     sha256_bytes,
     stable_digest,
 )
-from laconian_eval.capsule.events import event_jsonl, make_prepared_event
+from laconian_eval.capsule.events import event_jsonl, make_event, make_prepared_event
 from laconian_eval.capsule.filesystem import (
     UnsupportedFilesystemError,
 )
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
 from laconian_eval.capsule.record_models import (
     CapsuleV1,
+    EnvironmentV1,
+    PlanRowV1,
     PreparedEventV1,
     VerifyResultV1,
 )
@@ -1028,9 +1038,13 @@ def test_artifact_traversal_is_descriptor_relative_and_scandir_receives_only_des
         dir_fd: int | None = None,
     ) -> int:
         raw = os.fspath(path)
+        if type(raw) is bytes:
+            assert raw.startswith(b".laconian-verify-")
+            assert dir_fd is not None
+            return real_open(path, flags, mode, dir_fd=dir_fd)
         assert type(raw) is str
         if dir_fd is None:
-            if raw not in {"/", "."}:
+            if raw not in {"/", ".", "/var/tmp", "/private/tmp", "/tmp"}:
                 absolute = Path(raw)
                 assert absolute.is_absolute()
                 with pytest.raises(ValueError):
@@ -2168,6 +2182,7 @@ def test_prepared_history_is_exactly_one_bound_sequence_zero_event(
     root, fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
     path = root / "events.jsonl"
     event = PreparedEventV1.model_validate_json(path.read_bytes().removesuffix(b"\n"))
+    expected_code = "history_mismatch"
     if mutation == "second-event":
         payload = event.model_dump(mode="json")
         payload["sequence"] = 1
@@ -2181,6 +2196,7 @@ def test_prepared_history_is_exactly_one_bound_sequence_zero_event(
         payload["event_id"] = _OTHER_DIGEST
         path.write_bytes(canonical_json(payload) + b"\n")
         expected_sequence = 0
+        expected_code = "hash_mismatch"
     else:
         changed = make_prepared_event(
             run_id=event.run_id,
@@ -2203,12 +2219,16 @@ def test_prepared_history_is_exactly_one_bound_sequence_zero_event(
         )
         path.write_bytes(event_jsonl(changed))
         expected_sequence = 0
+        if mutation == "payload":
+            expected_code = "hash_mismatch"
+        elif mutation in {"timestamp", "same-operation"}:
+            expected_code = "identity_mismatch"
 
     result = verify_capsule(root, mode=VerificationMode.PREPARED)
 
     _assert_invalid(
         result,
-        code="history_mismatch",
+        code=expected_code,
         path="events.jsonl",
         sequence=expected_sequence,
     )
@@ -2247,7 +2267,7 @@ def test_prepared_raw_ledger_must_be_exactly_empty_and_is_never_repaired(
 
     result = verify_capsule(root, mode=VerificationMode.PREPARED)
 
-    _assert_invalid(result, code="history_mismatch", path="raw.jsonl", sequence=0)
+    _assert_invalid(result, code="invalid_model", path="raw.jsonl", sequence=0)
     assert _snapshot(root) == before
     assert b"TOP-SECRET-RAW" not in canonical_json(result.model_dump(mode="json"))
 
@@ -2680,23 +2700,500 @@ def test_jsonl_second_pass_rechecks_snapshot_size_before_allocating_growth(
     assert second_pass_bytes[0] <= original_size + 2 * 64 * 1024
 
 
-def test_nonempty_prepared_raw_is_rejected_from_metadata_without_reading_content(
+def test_nonempty_prepared_raw_is_read_and_rejected_by_framing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
     (root / "raw.jsonl").write_bytes(b"TOP-SECRET-RAW")
-    real_read = os.read
-
-    def raw_read_bomb(descriptor: int, size: int) -> bytes:
-        if _descriptor_path(descriptor) == (root / "raw.jsonl").resolve():
-            raise AssertionError("prepared raw content was read despite nonzero metadata")
-        return real_read(descriptor, size)
-
-    monkeypatch.setattr(verify_module.os, "read", raw_read_bomb)
+    before = _snapshot(root)
     result = verify_capsule(root, mode=VerificationMode.PREPARED)
 
-    _assert_invalid(result, code="history_mismatch", path="raw.jsonl", sequence=0)
+    _assert_invalid(result, code="noncanonical_json", path="raw.jsonl", sequence=0)
+    assert _snapshot(root) == before
+
+
+def test_descriptor_context_entry_never_acquires_shared_lock_and_is_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        inventory = verify_module._scan_inventory(root_fd)
+
+        def shared_lock_bomb(*args: object, **kwargs: object) -> object:
+            raise AssertionError("descriptor context attempted recursive shared locking")
+
+        monkeypatch.setattr(verify_module, "try_acquire_shared_lock", shared_lock_bomb)
+        context = verify_module._verify_capsule_context_descriptors(root_fd, inventory)
+    finally:
+        os.close(root_fd)
+
+    assert context.capsule.run_id == fixture.prepared.run_id
+    assert context.manifest.runner_version == context.capsule.runner_version
+    assert context.environment.runner_source_sha256 == context.capsule.runner_source_sha256
+    assert tuple(item.record for item in context.captured.files) == context.input_index.files
+    assert context.case_index
+    assert all(row.source_ordinal < len(context.captured.case_files) for row in context.case_index)
+    assert context.plan
+    assert context.history.next_call_sequence == 0
+    assert context.lifecycle.state == "PREPARED"
+    with pytest.raises(FrozenInstanceError):
+        context.lifecycle = context.lifecycle  # type: ignore[misc]
+
+
+def test_descriptor_context_rejects_hostile_inventory_before_artifact_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        inventory = verify_module._scan_inventory(root_fd)
+        forged_root = verify_module._Identity(
+            True,
+            inventory.root_identity.inode,
+            inventory.root_identity.mode,
+            inventory.root_identity.size,
+            inventory.root_identity.mtime_ns,
+            inventory.root_identity.ctime_ns,
+        )
+        forged = verify_module._Inventory(forged_root, inventory.directories, inventory.files)
+        with pytest.raises(verify_module._Failure) as caught:
+            verify_module._verify_capsule_context_descriptors(root_fd, forged)
+    finally:
+        os.close(root_fd)
+    assert caught.value.code == "invalid_model"
+    assert caught.value.path is None
+
+
+def test_descriptor_context_revalidates_model_construct_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    inventory = verify_module._scan_inventory(root_fd)
+    real_json_model = verify_module._json_model
+
+    def forge_capsule(data: bytes, path: str, model_type: type[Any]) -> Any:
+        value = real_json_model(data, path, model_type)
+        if path != "capsule.json":
+            return value
+        payload = value.model_dump(mode="python")
+        payload["runner_version"] = object()
+        return type(value).model_construct(**payload)
+
+    monkeypatch.setattr(verify_module, "_json_model", forge_capsule)
+    try:
+        with pytest.raises(verify_module._Failure) as caught:
+            verify_module._verify_capsule_context_descriptors(root_fd, inventory)
+    finally:
+        os.close(root_fd)
+    assert caught.value.code in {"invalid_model", "identity_mismatch"}
+    assert "TOP-SECRET" not in repr(caught.value)
+
+
+def test_descriptor_context_rejects_a_contradictory_lifecycle_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged = history_module.LifecycleProjectionV1("GENERATION_COMPLETE", (), ())
+
+    with pytest.raises(verify_module._Failure) as caught:
+        replace(context, lifecycle=forged)
+
+    assert (caught.value.code, caught.value.path) == ("invalid_model", None)
+
+
+def test_descriptor_context_rejects_a_coherently_forged_history_and_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged_history = replace(
+        context.history,
+        resolved_plan_item_ids=tuple(row.plan_item_id for row in context.plan),
+        missing_plan_item_ids=(),
+        next_unresolved_plan_ordinal=None,
+    )
+    forged_lifecycle = history_module.LifecycleProjectionV1("GENERATION_COMPLETE", (), ())
+
+    with pytest.raises(verify_module._Failure) as caught:
+        replace(
+            context,
+            history=forged_history,
+            lifecycle=forged_lifecycle,
+        )
+
+    assert (caught.value.code, caught.value.path) == ("invalid_model", None)
+
+
+@pytest.mark.parametrize("forgery", ["record", "bytes"])
+def test_descriptor_context_rejects_forged_nested_captured_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forgery: str,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    original = context.captured.files[0]
+    if forgery == "record":
+        payload = original.record.model_dump(mode="python")
+        payload["sha256"] = "0" * 64
+        forged_input = replace(
+            original,
+            record=type(original.record).model_construct(**payload),
+        )
+    else:
+        forged_input = replace(original, data=b"TOP-SECRET-CAPTURED-CANARY")
+    forged_captured = replace(
+        context.captured,
+        files=(forged_input, *context.captured.files[1:]),
+    )
+
+    with pytest.raises(verify_module._Failure) as caught:
+        replace(context, captured=forged_captured)
+
+    assert (caught.value.code, caught.value.path) == ("invalid_model", None)
+    assert "TOP-SECRET" not in repr(caught.value)
+
+
+_DYNAMIC_OPERATION = UUID("72345678-1234-4abc-8def-1234567890ab")
+_DYNAMIC_SESSION = UUID("82345678-1234-4abc-8def-1234567890ab")
+_DYNAMIC_RUN_ID = UUID("62345678-1234-4abc-8def-1234567890ab")
+_DYNAMIC_SEAL_OPERATION = UUID("92345678-1234-4abc-8def-1234567890ab")
+_DYNAMIC_SEAL_TRANSACTION = UUID("a2345678-1234-4abc-8def-1234567890ab")
+_DYNAMIC_AT = datetime(2026, 8, 29, 15, 0, 0, tzinfo=UTC)
+
+
+def _dynamic_models(root: Path) -> tuple[CapsuleV1, EnvironmentV1, tuple[PlanRowV1, ...]]:
+    capsule = CapsuleV1.model_validate_json((root / "capsule.json").read_bytes())
+    environment = EnvironmentV1.model_validate_json((root / "environment.json").read_bytes())
+    plan = tuple(
+        PlanRowV1.model_validate_json(line)
+        for line in (root / "plan.jsonl").read_bytes().splitlines()
+    )
+    return capsule, environment, plan
+
+
+def _dynamic_started(environment: EnvironmentV1, *, sequence: int = 1) -> Any:
+    runtime = environment.runtime
+    provider = environment.provider
+    return make_event(
+        sequence=sequence,
+        run_id=_DYNAMIC_RUN_ID,
+        occurred_at=_DYNAMIC_AT,
+        kind="execution_started",
+        operation_id=_DYNAMIC_OPERATION,
+        execution_session_id=_DYNAMIC_SESSION,
+        payload={
+            "resume_from_plan_ordinal": 0,
+            "session_environment": {
+                "schema_version": "1",
+                "package_version": environment.package_version,
+                "runner_source_sha256": environment.runner_source_sha256,
+                "runtime_fingerprint_sha256": runtime.runtime_fingerprint_sha256,
+                "python_implementation": runtime.python_implementation,
+                "python_version": runtime.python_version,
+                "os_family": runtime.os_family,
+                "os_release": runtime.os_release,
+                "architecture": runtime.architecture,
+                "filesystem_class": runtime.filesystem_class,
+                "adapter_source_sha256": provider.adapter_source_sha256,
+                "sdk_distribution": provider.sdk_distribution,
+                "sdk_version": provider.sdk_version,
+            },
+        },
+    )
+
+
+def _dynamic_attempt(
+    capsule: CapsuleV1, plan: PlanRowV1, call_sequence: int, *, authentication: bool = False
+) -> RawAttemptV2:
+    attempt_id = derive_attempt_id(capsule.run_id, plan.plan_item_id, 1)
+    output = None if authentication else "Done."
+    output_sha = None if output is None else sha256_bytes(output.encode())
+    response_id = (
+        None
+        if output_sha is None
+        else stable_digest(
+            "laconian-response-v1",
+            {
+                "run_id": capsule.run_id,
+                "plan_item_id": plan.plan_item_id,
+                "attempt_id": attempt_id,
+                "case_uid": plan.case_uid,
+                "instruction_sha256": plan.instruction_sha256,
+                "output_sha256": output_sha,
+            },
+        )
+    )
+    return RawAttemptV2.model_validate(
+        {
+            "schema_version": "2",
+            "runner_version": capsule.runner_version,
+            "run_id": capsule.run_id,
+            "manifest_sha256": capsule.manifest_sha256,
+            "plan_item_id": plan.plan_item_id,
+            "attempt_id": attempt_id,
+            "scenario_uid": plan.scenario_uid,
+            "case_uid": plan.case_uid,
+            "case_id": plan.case_id,
+            "locale": plan.locale,
+            "case_definition_sha256": plan.case_definition_sha256,
+            "arm": plan.arm,
+            "repetition": plan.repetition,
+            "attempt": 1,
+            "terminal": True,
+            "call_sequence": call_sequence,
+            "retry_of_attempt": None,
+            "backoff_ms": None,
+            "delivery_certainty": "response_received",
+            "prompt_sha256": plan.prompt_sha256,
+            "instruction_sha256": plan.instruction_sha256,
+            "request_config_sha256": plan.request_config_sha256,
+            "provider": "fake",
+            "model": "fixture-v1",
+            "response_model": None if authentication else "fixture-v1",
+            "started_at": _DYNAMIC_AT,
+            "elapsed_ms": 1,
+            "output_text": output,
+            "output_sha256": output_sha,
+            "response_id": response_id,
+            "output_was_redacted": False,
+            "output_redaction_count": 0,
+            "discarded_output_byte_length": None,
+            "discarded_output_sha256": None,
+            "usage": {
+                "input_tokens": None,
+                "output_tokens": None,
+                "total_tokens": None,
+                "cached_input_tokens": None,
+                "availability": "unavailable",
+                "source": "provider",
+                "cache_accounting": "not_reported",
+            },
+            "request_id": None,
+            "finish_reason": None if authentication else "stop",
+            "error": (
+                {
+                    "kind": "authentication",
+                    "message": "authentication stopped",
+                    "retryable": False,
+                    "request_id": None,
+                }
+                if authentication
+                else None
+            ),
+            "terminal_reason": "authentication_stopped" if authentication else "success",
+        }
+    )
+
+
+def _dynamic_start(capsule: CapsuleV1, plan: PlanRowV1, sequence: int, call: int) -> Any:
+    return make_event(
+        sequence=sequence,
+        run_id=capsule.run_id,
+        occurred_at=_DYNAMIC_AT,
+        kind="request_started",
+        operation_id=_DYNAMIC_OPERATION,
+        execution_session_id=_DYNAMIC_SESSION,
+        payload={
+            "call_sequence": call,
+            "plan_item_id": plan.plan_item_id,
+            "attempt_id": derive_attempt_id(capsule.run_id, plan.plan_item_id, 1),
+            "attempt": 1,
+            "retry_of_attempt": None,
+            "request_config_sha256": plan.request_config_sha256,
+            "prompt_sha256": plan.prompt_sha256,
+            "case_definition_sha256": plan.case_definition_sha256,
+            "instruction_sha256": plan.instruction_sha256,
+            "provider": "fake",
+            "model": "fixture-v1",
+        },
+    )
+
+
+def _dynamic_finish(capsule: CapsuleV1, start: Any, raw: RawAttemptV2, sequence: int) -> Any:
+    return make_event(
+        sequence=sequence,
+        run_id=capsule.run_id,
+        occurred_at=_DYNAMIC_AT,
+        kind="request_finished",
+        operation_id=_DYNAMIC_OPERATION,
+        execution_session_id=_DYNAMIC_SESSION,
+        payload={
+            "call_sequence": raw.call_sequence,
+            "plan_item_id": raw.plan_item_id,
+            "attempt_id": raw.attempt_id,
+            "request_started_event_id": start.event_id,
+            "raw_record_sha256": raw_record_sha256(raw),
+            "recovered": False,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "target_state",
+    [
+        "PREPARED",
+        "INTERRUPTED",
+        "AMBIGUOUS_INFLIGHT",
+        "AUTHENTICATION_STOPPED",
+        "GENERATION_COMPLETE",
+        "SEALING_INTERRUPTED",
+    ],
+)
+def test_dynamic_capsule_verify_results_are_exact_and_read_only(
+    target_state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    capsule, environment, plan = _dynamic_models(root)
+    global _DYNAMIC_RUN_ID
+    _DYNAMIC_RUN_ID = capsule.run_id
+    prepared_bytes = (root / "events.jsonl").read_bytes()
+    events: list[Any] = []
+    raw_rows: list[RawAttemptV2] = []
+    if target_state in {
+        "INTERRUPTED",
+        "AMBIGUOUS_INFLIGHT",
+        "AUTHENTICATION_STOPPED",
+        "GENERATION_COMPLETE",
+    }:
+        events.append(_dynamic_started(environment))
+    if target_state == "AMBIGUOUS_INFLIGHT":
+        events.append(_dynamic_start(capsule, plan[0], 2, 0))
+    elif target_state == "AUTHENTICATION_STOPPED":
+        start = _dynamic_start(capsule, plan[0], 2, 0)
+        raw = _dynamic_attempt(capsule, plan[0], 0, authentication=True)
+        finish = _dynamic_finish(capsule, start, raw, 3)
+        events.extend(
+            [
+                start,
+                finish,
+                make_event(
+                    sequence=4,
+                    run_id=capsule.run_id,
+                    occurred_at=_DYNAMIC_AT,
+                    kind="authentication_stopped",
+                    operation_id=_DYNAMIC_OPERATION,
+                    execution_session_id=_DYNAMIC_SESSION,
+                    payload={
+                        "plan_item_id": raw.plan_item_id,
+                        "attempt_id": raw.attempt_id,
+                        "origin_request_started_event_id": start.event_id,
+                        "recovered": False,
+                    },
+                ),
+            ]
+        )
+        raw_rows.append(raw)
+    elif target_state == "GENERATION_COMPLETE":
+        sequence = 2
+        last_finish = None
+        for call, row in enumerate(plan):
+            start = _dynamic_start(capsule, row, sequence, call)
+            raw = _dynamic_attempt(capsule, row, call)
+            finish = _dynamic_finish(capsule, start, raw, sequence + 1)
+            events.extend((start, finish))
+            raw_rows.append(raw)
+            last_finish = finish
+            sequence += 2
+        assert last_finish is not None
+        events.append(
+            make_event(
+                sequence=sequence,
+                run_id=capsule.run_id,
+                occurred_at=_DYNAMIC_AT,
+                kind="generation_completed",
+                operation_id=_DYNAMIC_OPERATION,
+                execution_session_id=_DYNAMIC_SESSION,
+                payload={
+                    "terminal_plan_item_count": len(plan),
+                    "final_plan_ordinal": len(plan) - 1,
+                    "origin_request_finished_event_id": last_finish.event_id,
+                    "recovered": False,
+                },
+            )
+        )
+    elif target_state == "SEALING_INTERRUPTED":
+        events.append(
+            make_event(
+                sequence=1,
+                run_id=capsule.run_id,
+                occurred_at=_DYNAMIC_AT,
+                kind="seal_requested",
+                operation_id=_DYNAMIC_SEAL_OPERATION,
+                execution_session_id=None,
+                payload={
+                    "seal_transaction_id": _DYNAMIC_SEAL_TRANSACTION,
+                    "expected_generation_status": "incomplete",
+                    "prior_event_sequence": 0,
+                },
+            )
+        )
+    (root / "events.jsonl").write_bytes(prepared_bytes + b"".join(event_jsonl(e) for e in events))
+    (root / "raw.jsonl").write_bytes(b"".join(raw_attempt_jsonl(row) for row in raw_rows))
+    before = _snapshot(root)
+    result = verify_capsule(root, mode=VerificationMode.PREPARED)
+    missing = (
+        ()
+        if target_state == "GENERATION_COMPLETE"
+        else tuple(sorted((row.plan_item_id for row in plan), key=lambda value: value.encode()))
+    )
+    blocker = {
+        "PREPARED": ("never_started",),
+        "INTERRUPTED": ("interrupted",),
+        "AMBIGUOUS_INFLIGHT": ("ambiguous_inflight",),
+        "AUTHENTICATION_STOPPED": ("authentication_stopped",),
+        "GENERATION_COMPLETE": (),
+        "SEALING_INTERRUPTED": ("never_started",),
+    }[target_state]
+    assert result.status == "valid"
+    assert result.run_id == capsule.run_id
+    assert result.state == target_state
+    assert result.missing_plan_item_ids == missing
+    assert result.operational_blocker_codes == blocker
+    assert result.first_error is None
+    assert _snapshot(root) == before
+
+
+def test_verification_scratch_failure_has_null_public_path_and_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+
+    class FailedScratch:
+        def __init__(self, **_kwargs: object) -> None:
+            raise history_module.ScratchError()
+
+    monkeypatch.setattr(history_module, "ExactIdentityRegistry", FailedScratch)
+    result = verify_capsule(root, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="io_error", path=None, sequence=None)
 
 
 @pytest.mark.parametrize(
