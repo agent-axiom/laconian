@@ -1,0 +1,28 @@
+{
+  "name": "laconian",
+  "version": "0.1.0-alpha.1",
+  "description": "Produce the shortest complete answer while preserving correctness and required information.",
+  "author": {
+    "name": "Laconian contributors",
+    "url": "https://github.com/agent-axiom"
+  },
+  "homepage": "https://github.com/agent-axiom/laconian",
+  "repository": "https://github.com/agent-axiom/laconian",
+  "license": "Apache-2.0",
+  "keywords": ["concise", "brevity", "writing", "editing", "agent-skill"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Laconian",
+    "shortDescription": "Shortest complete answers without lost substance",
+    "longDescription": "Use the if workflow to remove filler, restatement, repetition, and decoration while preserving correctness, safety, required detail, exact values, and material uncertainty.",
+    "developerName": "Laconian contributors",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "websiteURL": "https://github.com/agent-axiom/laconian",
+    "defaultPrompt": [
+      "$laconian:if Answer this as briefly as possible without losing required detail.",
+      "$laconian:if Shorten this draft while preserving every material fact and warning.",
+      "$laconian:if Remove filler and repetition from this answer."
+    ]
+  }
+}
