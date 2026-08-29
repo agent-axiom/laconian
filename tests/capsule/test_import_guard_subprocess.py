@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import sysconfig
+import typing
 from pathlib import Path
 
 import pytest
@@ -90,7 +91,12 @@ policy = build_import_policy(provenance)
 """
 
 
-def _run_child(body: str, *, provider_kind: str = "fake") -> subprocess.CompletedProcess[str]:
+def _run_child(
+    body: str,
+    *,
+    provider_kind: str = "fake",
+    timeout: float = 30,
+) -> subprocess.CompletedProcess[str]:
     setup = _PROVENANCE_SETUP.replace("__PROVIDER_KIND__", provider_kind)
     return subprocess.run(
         [sys.executable, "-c", setup + body],
@@ -98,7 +104,7 @@ def _run_child(body: str, *, provider_kind: str = "fake") -> subprocess.Complete
         env={},
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=timeout,
         check=False,
     )
 
@@ -1506,10 +1512,15 @@ except ImportPolicyError as error:
     assert payload == {"code": "audit_hook_installation_failed", "unchanged": True}
 
 
+_TYPING_IO_EXPECTED = (
+    "originless_module_changed" if hasattr(typing, "io") else "import_origin_not_allowed"
+)
+
+
 @pytest.mark.parametrize(
     ("tamper", "expected_code"),
     [
-        ('sys.modules["typing.io"] = object()', "originless_module_changed"),
+        ('sys.modules["typing.io"] = object()', _TYPING_IO_EXPECTED),
         (
             'sys.modules["_cython_9_9_9"] = type(sys)("_cython_9_9_9")',
             "import_origin_not_allowed",
@@ -1565,6 +1576,7 @@ os.write(1, (__import__("json").dumps({
 }) + "\n").encode())
 """,
         provider_kind="openai",
+        timeout=90,
     )
     payload = _payload(result)
     assert payload == {

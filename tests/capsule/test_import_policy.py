@@ -8,6 +8,7 @@ import stat
 import sys
 import sysconfig
 import zipimport
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
@@ -152,6 +153,9 @@ def provenance() -> InstalledProvenance:
 
 
 def _module_runtime(provenance: InstalledProvenance) -> RuntimeImportState:
+    import _collections_abc
+    import collections.abc
+
     state = capture_runtime_import_state()
     main_origin = provenance.runner_source.origins["cli.py"].path
     main = SimpleNamespace(
@@ -195,11 +199,15 @@ def _module_runtime(provenance: InstalledProvenance) -> RuntimeImportState:
         *site_roots,
         os.fspath(provenance.runner_source._package_parent),
     )
+    modules: dict[str, object] = {"__main__": main, "sys": sys}
+    if collections.abc is _collections_abc:
+        modules["collections.abc"] = _collections_abc
+        modules["_collections_abc"] = _collections_abc
     return replace(
         state,
         sys_path=exact_sys_path,
         meta_path=exact_meta_path,
-        modules=MappingProxyType({"__main__": main, "sys": sys}),
+        modules=MappingProxyType(modules),
         importer_cache=MappingProxyType({}),
         environ=MappingProxyType({}),
         argv0=os.fspath(main_origin),
@@ -217,6 +225,19 @@ def _assert_error(code: str, operation: Any) -> None:
     assert caught.value.code == code
     assert str(caught.value) == "import policy failed"
     assert code not in str(caught.value)
+
+
+def _partial_module_map(
+    policy: ImportPolicy,
+    modules: Mapping[str, object],
+) -> Mapping[str, object]:
+    selected = dict(modules)
+    for alias, module in policy.fixed_alias_modules.items():
+        target = getattr(getattr(module, "__spec__", None), "name", None)
+        assert type(target) is str
+        selected[alias] = module
+        selected[target] = module
+    return MappingProxyType(selected)
 
 
 def test_console_template_is_exact_and_schema_bound() -> None:
@@ -1699,6 +1720,23 @@ def test_console_multiprocessing_main_alias_is_identity_bound(
     )
 
 
+def test_collections_abc_identity_alias_is_pinned_when_runtime_uses_it(
+    policy: ImportPolicy,
+) -> None:
+    import _collections_abc
+    import collections.abc
+
+    if collections.abc is not _collections_abc:
+        pytest.skip("runtime uses distinct collections.abc and _collections_abc modules")
+    assert policy.fixed_alias_modules["collections.abc"] is _collections_abc
+    forged = dict(sys.modules)
+    forged["collections.abc"] = ModuleType("collections.abc")
+    _assert_error(
+        "fixed_module_alias_changed",
+        lambda: revalidate_loaded_modules(policy, modules=MappingProxyType(forged)),
+    )
+
+
 def test_console_main_revalidation_rechecks_exact_launcher_bytes_in_place(
     provenance: InstalledProvenance,
     tmp_path: Path,
@@ -1830,8 +1868,8 @@ def test_loaded_module_revalidation_allows_owned_stdlib_builtin_and_frozen(
     )
     revalidate_loaded_modules(
         policy,
-        modules=MappingProxyType(
-            {"sys": sys, "stdlib_json": stdlib_json, runner_name: runner, "abc": abc}
+        modules=_partial_module_map(
+            policy, {"sys": sys, "stdlib_json": stdlib_json, runner_name: runner, "abc": abc}
         ),
     )
 
@@ -1871,7 +1909,7 @@ def test_loaded_owned_module_requires_exact_spec_name_and_module_key(
         "import_origin_wrong_distribution",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({module_key: module}),
+            modules=_partial_module_map(policy, {module_key: module}),
         ),
     )
 
@@ -1893,7 +1931,7 @@ def test_loaded_stdlib_origin_revalidates_descriptor_bound_root_identity(
         "import_root_identity_drift",
         lambda: revalidate_loaded_modules(
             forged,
-            modules=MappingProxyType({"json": stdlib_json}),
+            modules=_partial_module_map(forged, {"json": stdlib_json}),
         ),
     )
 
@@ -1915,7 +1953,7 @@ def test_loaded_module_revalidation_rejects_namespace_unowned_and_out_of_root(
     _assert_error(
         "namespace_import_unsupported",
         lambda: revalidate_loaded_modules(
-            policy, modules=MappingProxyType({"namespace": namespace})
+            policy, modules=_partial_module_map(policy, {"namespace": namespace})
         ),
     )
     unowned = SimpleNamespace(
@@ -1928,7 +1966,10 @@ def test_loaded_module_revalidation_rejects_namespace_unowned_and_out_of_root(
     )
     _assert_error(
         "import_origin_not_allowed",
-        lambda: revalidate_loaded_modules(policy, modules=MappingProxyType({"unowned": unowned})),
+        lambda: revalidate_loaded_modules(
+            policy,
+            modules=_partial_module_map(policy, {"unowned": unowned}),
+        ),
     )
 
 
@@ -1943,7 +1984,7 @@ def test_unowned_origin_inside_allowed_site_root_is_rejected(policy: ImportPolic
         "unowned_import_origin",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"pytest_inside_allowed_site": pytest}),
+            modules=_partial_module_map(policy, {"pytest_inside_allowed_site": pytest}),
         ),
     )
 
@@ -1952,8 +1993,11 @@ def test_captured_pyc_and_sourceless_loader_are_rejected_even_inside_runner_root
     policy: ImportPolicy,
     provenance: InstalledProvenance,
 ) -> None:
+    import py_compile
+
     source = provenance.runner_source.origins["cli.py"].path
     pyc = Path(importlib.util.cache_from_source(os.fspath(source)))
+    py_compile.compile(os.fspath(source), doraise=True)
     assert pyc.is_file()
     sourceless = SimpleNamespace(
         __file__=os.fspath(pyc),
@@ -1967,7 +2011,7 @@ def test_captured_pyc_and_sourceless_loader_are_rejected_even_inside_runner_root
         "captured_bytecode_unsupported",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"poison": sourceless}),
+            modules=_partial_module_map(policy, {"poison": sourceless}),
         ),
     )
 
@@ -1990,7 +2034,7 @@ def test_module_spec_origin_and_file_must_identify_the_same_owned_file(
         "module_origin_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"laconian_eval": disagreement}),
+            modules=_partial_module_map(policy, {"laconian_eval": disagreement}),
         ),
     )
 
@@ -2006,8 +2050,8 @@ def test_loaded_dependency_source_and_destshared_extension_are_allowed(
     assert extension_path.is_relative_to(policy.destshared_root.canonical_path)
     revalidate_loaded_modules(
         policy,
-        modules=MappingProxyType(
-            {"packaging.version": packaging.version, extension_name: extension_module}
+        modules=_partial_module_map(
+            policy, {"packaging.version": packaging.version, extension_name: extension_module}
         ),
     )
 
@@ -2091,7 +2135,7 @@ def test_loaded_builtin_and_frozen_claims_require_consistent_fixed_pairs(
         "builtin_frozen_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"forged_runtime_module": forged}),
+            modules=_partial_module_map(policy, {"forged_runtime_module": forged}),
         ),
     )
 
@@ -2120,7 +2164,7 @@ def test_consistent_looking_fixed_module_spec_must_resolve_through_fixed_finder(
         "builtin_frozen_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"forged_runtime_module": forged}),
+            modules=_partial_module_map(policy, {"forged_runtime_module": forged}),
         ),
     )
 

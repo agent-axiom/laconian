@@ -61,10 +61,17 @@ CONSOLE_LAUNCHER_TEMPLATE_SHA256 = _SCHEMA_CONSOLE_LAUNCHER_TEMPLATE_SHA256
 _VIRTUALENV_PTH = b"import _virtualenv"
 _RUNNER_PATH_PTH = "_editable_impl_laconian_eval.pth"
 _GUARD_MEMBER = "capsule/import_policy.py"
+_COLLECTIONS_ABC_ALIAS = (
+    {"collections.abc": "_collections_abc"}
+    if sys.modules.get("collections.abc") is not None
+    and sys.modules.get("collections.abc") is sys.modules.get("_collections_abc")
+    else {}
+)
 _FIXED_MODULE_ALIASES = {
     "os.path": "posixpath" if os.name == "posix" else "ntpath",
     "importlib._bootstrap": "_frozen_importlib",
     "importlib._bootstrap_external": "_frozen_importlib_external",
+    **_COLLECTIONS_ABC_ALIAS,
 }
 _IDENTITY_MODULE_ALIASES = {"__mp_main__": "__main__"}
 _MODULE_ALIAS_TARGETS = {**_FIXED_MODULE_ALIASES, **_IDENTITY_MODULE_ALIASES}
@@ -3192,28 +3199,32 @@ def _make_application_audit_hook(
 
     def root_identity_is_current(path: str, device: int, inode: int) -> bool:
         descriptor = -1
+        current = False
+        close_failed = False
         try:
-            descriptor = os_open("/", directory_flags)
-            for component in path.split("/"):
-                if component in ("", "."):
-                    continue
-                next_descriptor = os_open(component, directory_flags, dir_fd=descriptor)
-                os_close(descriptor)
-                descriptor = next_descriptor
-            metadata = os_fstat(descriptor)
-            return (
-                metadata.st_mode & 0o170000 == 0o040000
-                and metadata.st_dev == device
-                and metadata.st_ino == inode
-            )
-        except handled_os_errors:
-            return False
+            try:
+                descriptor = os_open("/", directory_flags)
+                for component in path.split("/"):
+                    if component in ("", "."):
+                        continue
+                    next_descriptor = os_open(component, directory_flags, dir_fd=descriptor)
+                    os_close(descriptor)
+                    descriptor = next_descriptor
+                metadata = os_fstat(descriptor)
+                current = (
+                    metadata.st_mode & 0o170000 == 0o040000
+                    and metadata.st_dev == device
+                    and metadata.st_ino == inode
+                )
+            except handled_os_errors:
+                current = False
         finally:
             if descriptor >= 0:
                 try:
                     os_close(descriptor)
                 except handled_os_errors:
-                    return False
+                    close_failed = True
+        return current and not close_failed
 
     def fixed_finders_are_current() -> bool:
         if (
