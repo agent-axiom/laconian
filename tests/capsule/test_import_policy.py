@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -1729,7 +1730,14 @@ def test_collections_abc_identity_alias_is_pinned_when_runtime_uses_it(
     if collections.abc is not _collections_abc:
         pytest.skip("runtime uses distinct collections.abc and _collections_abc modules")
     assert policy.fixed_alias_modules["collections.abc"] is _collections_abc
-    forged = dict(sys.modules)
+    modules = MappingProxyType(
+        {
+            "collections.abc": _collections_abc,
+            "_collections_abc": _collections_abc,
+        }
+    )
+    revalidate_loaded_modules(policy, modules=modules)
+    forged = dict(modules)
     forged["collections.abc"] = ModuleType("collections.abc")
     _assert_error(
         "fixed_module_alias_changed",
@@ -2182,6 +2190,60 @@ def test_guard_resolves_only_fixed_finders_and_rejects_namespace_specs(
         "namespace_import_unsupported",
         lambda: guard.find_spec("synthetic_namespace", None, None),
     )
+
+
+def test_audit_root_identity_transfers_descriptor_ownership_before_close(
+    policy: ImportPolicy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.capsule import import_policy
+
+    close_calls: list[int] = []
+
+    def fake_open(
+        path: str,
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        assert flags >= 0
+        if path == "/":
+            assert dir_fd is None
+            return 10
+        assert path == "component"
+        assert dir_fd == 10
+        return 11
+
+    def fake_close(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        if descriptor == 10:
+            raise OSError(errno.EIO, "close failed")
+
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        raise AssertionError(f"unexpected fstat for descriptor {descriptor}")
+
+    guard = _LaconianImportGuard(policy)
+    snapshot = guard._snapshot_for_install(policy.enforcement_token)
+    monkeypatch.setattr(import_policy.os, "open", fake_open)
+    monkeypatch.setattr(import_policy.os, "close", fake_close)
+    monkeypatch.setattr(import_policy.os, "fstat", fake_fstat)
+
+    audit_hook, _audit_state = import_policy._make_application_audit_hook(snapshot, guard)
+    assert audit_hook.__closure__ is not None
+    audit_cells = dict(zip(audit_hook.__code__.co_freevars, audit_hook.__closure__, strict=True))
+    hidden_validate = audit_cells["hidden_validate"].cell_contents
+    assert hidden_validate.__closure__ is not None
+    validate_cells = dict(
+        zip(
+            hidden_validate.__code__.co_freevars,
+            hidden_validate.__closure__,
+            strict=True,
+        )
+    )
+    root_identity_is_current = validate_cells["root_identity_is_current"].cell_contents
+
+    assert root_identity_is_current("/component", 1, 2) is False
+    assert close_calls == [10, 11]
 
 
 def test_uninstalled_guard_rejects_injected_outside_spec_before_loader_actions(

@@ -3207,9 +3207,13 @@ def _make_application_audit_hook(
                 for component in path.split("/"):
                     if component in ("", "."):
                         continue
-                    next_descriptor = os_open(component, directory_flags, dir_fd=descriptor)
-                    os_close(descriptor)
-                    descriptor = next_descriptor
+                    previous_descriptor = descriptor
+                    descriptor = os_open(
+                        component,
+                        directory_flags,
+                        dir_fd=previous_descriptor,
+                    )
+                    os_close(previous_descriptor)
                 metadata = os_fstat(descriptor)
                 current = (
                     metadata.st_mode & 0o170000 == 0o040000
