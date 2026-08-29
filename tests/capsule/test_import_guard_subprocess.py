@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.machinery
 import json
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,17 @@ import pytest
 from laconian_eval.capsule.import_policy import CONSOLE_LAUNCHER_TEMPLATE
 
 ROOT = Path(__file__).parents[2]
+
+
+def _destshared_extension_name(destshared: Path) -> str:
+    for path in sorted(destshared.iterdir(), key=lambda item: item.name):
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            if path.is_file() and path.name.endswith(suffix):
+                name = path.name[: -len(suffix)]
+                if name and name not in sys.modules:
+                    return name
+                break
+    raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
 
 
 _PROVENANCE_SETUP = r"""
@@ -1106,6 +1119,7 @@ def test_audit_seals_extension_loader_create_and_exec(
     method_name: str,
     mutation: str,
 ) -> None:
+    extension_probe = _destshared_extension_name(Path(sysconfig.get_config_var("DESTSHARED")))
     argument = "spec" if method_name == "create_module" else "module"
     if mutation == "replace":
         tamper = f"""
@@ -1148,7 +1162,7 @@ installation = install_import_guard(policy)
 owner = importlib.machinery.ExtensionFileLoader
 original = owner.__dict__[{method_name!r}]
 {tamper}
-probe_name = "_sha3"
+probe_name = {extension_probe!r}
 assert probe_name not in sys.modules
 try:
     __import__(probe_name)
@@ -1249,11 +1263,11 @@ os.write(1, (outcome + "\\n").encode())
 
 
 def test_guard_positive_lazy_captured_stdlib_source_and_extension_imports() -> None:
-    result = _run_child(
-        r"""
+    extension_probe = _destshared_extension_name(Path(sysconfig.get_config_var("DESTSHARED")))
+    body = r"""
 installation = install_import_guard(policy)
 loaded = []
-for probe_name in ("annotated_types.test_cases", "colorsys", "_sha3"):
+for probe_name in ("annotated_types.test_cases", "colorsys", "__EXTENSION_PROBE__"):
     assert probe_name not in sys.modules
     module = __import__(probe_name, fromlist=("*",))
     loaded.append((probe_name, type(module.__spec__.loader).__name__))
@@ -1261,12 +1275,12 @@ revalidate_import_state(policy)
 revalidate_loaded_modules(policy)
 os.write(1, (__import__("json").dumps(loaded) + "\n").encode())
 """
-    )
+    result = _run_child(body.replace("__EXTENSION_PROBE__", extension_probe))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
         ["annotated_types.test_cases", "_OriginValidatingLoader"],
         ["colorsys", "_OriginValidatingLoader"],
-        ["_sha3", "_OriginValidatingLoader"],
+        [extension_probe, "_OriginValidatingLoader"],
     ]
 
 

@@ -61,6 +61,17 @@ from laconian_eval.capsule.schema import CONSOLE_LAUNCHER_TEMPLATE_SHA256 as SCH
 ROOT = Path(__file__).parents[2]
 
 
+def _destshared_extension_name(destshared: Path) -> str:
+    for path in sorted(destshared.iterdir(), key=lambda item: item.name):
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            if path.is_file() and path.name.endswith(suffix):
+                name = path.name[: -len(suffix)]
+                if name and name not in sys.modules:
+                    return name
+                break
+    raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
+
+
 class _NamedLookupOnlyEnvironment:
     def __init__(self, values: dict[str, str]) -> None:
         self._values = values
@@ -1973,14 +1984,17 @@ def test_module_spec_origin_and_file_must_identify_the_same_owned_file(
 def test_loaded_dependency_source_and_destshared_extension_are_allowed(
     policy: ImportPolicy,
 ) -> None:
-    import _hashlib
-
     import packaging.version
 
-    assert Path(_hashlib.__file__).is_relative_to(policy.destshared_root.canonical_path)
+    extension_name = _destshared_extension_name(policy.destshared_root.canonical_path)
+    extension_module = importlib.import_module(extension_name)
+    extension_path = Path(extension_module.__file__).resolve()
+    assert extension_path.is_relative_to(policy.destshared_root.canonical_path)
     revalidate_loaded_modules(
         policy,
-        modules=MappingProxyType({"packaging.version": packaging.version, "_hashlib": _hashlib}),
+        modules=MappingProxyType(
+            {"packaging.version": packaging.version, extension_name: extension_module}
+        ),
     )
 
 
