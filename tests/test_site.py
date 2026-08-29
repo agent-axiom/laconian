@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-SITE = ROOT / "site"
+SITE = ROOT / "website"
 PAGE = SITE / "index.html"
 STYLES = SITE / "styles.css"
 WORKFLOW = ROOT / ".github" / "workflows" / "pages.yml"
@@ -23,6 +23,10 @@ class PageParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.tags.append(tag)
         self.attributes.append(dict(attrs))
+
+
+def test_static_directory_does_not_shadow_stdlib_site() -> None:
+    assert not (ROOT / "site").exists()
 
 
 def test_page_has_skill_first_content_and_metadata() -> None:

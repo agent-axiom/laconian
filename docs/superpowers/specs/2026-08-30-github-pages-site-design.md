@@ -43,12 +43,14 @@ to small transitions disabled by `prefers-reduced-motion`.
 
 ## Architecture
 
-Keep the site dependency-free under `site/`:
+Keep the site dependency-free under `website/`. The directory is deliberately not named `site`,
+because that name would shadow Python's standard-library `site` module and violate the repository's
+import policy:
 
 - `index.html` owns semantic structure, copy, metadata, and links.
 - `styles.css` owns the complete responsive visual system.
 - `favicon.svg`, `og.png`, `robots.txt`, and `sitemap.xml` provide browser and sharing metadata.
-- `.github/workflows/pages.yml` stages `site/`, copies the canonical
+- `.github/workflows/pages.yml` stages `website/`, copies the canonical
   `skills/if/SKILL.md` into the deployment artifact, and deploys that artifact through the
   official GitHub Pages actions.
 
@@ -62,4 +64,3 @@ social asset, and least-privilege Pages workflow. Existing Python tests, formatt
 type checks remain unchanged. A local static preview is checked at desktop and mobile widths before
 the branch is merged. GitHub Pages is configured to deploy from Actions, and the production URL is
 checked after the deployment succeeds.
-

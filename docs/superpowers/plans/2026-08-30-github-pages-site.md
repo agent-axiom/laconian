@@ -4,7 +4,7 @@
 
 **Goal:** Publish a dependency-free one-page site that presents `if` as a portable agent skill and makes its canonical Markdown file easy to download.
 
-**Architecture:** Semantic HTML and a single CSS file live in `site/`; there is no client-side JavaScript or framework. A least-privilege GitHub Actions workflow stages the site with the canonical `skills/if/SKILL.md`, uploads one Pages artifact, and deploys it from `main`.
+**Architecture:** Semantic HTML and a single CSS file live in `website/`; there is no client-side JavaScript or framework. The directory avoids the name `site`, which would shadow Python's standard-library module and violate the repository import policy. A least-privilege GitHub Actions workflow stages the site with the canonical `skills/if/SKILL.md`, uploads one Pages artifact, and deploys it from `main`.
 
 **Tech Stack:** HTML5, CSS, SVG, pytest, PyYAML, GitHub Actions, GitHub Pages
 
@@ -31,7 +31,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SITE = ROOT / "site"
+SITE = ROOT / "website"
 PAGE = SITE / "index.html"
 STYLES = SITE / "styles.css"
 WORKFLOW = ROOT / ".github" / "workflows" / "pages.yml"
@@ -43,9 +43,7 @@ class PageParser(HTMLParser):
         self.tags: list[str] = []
         self.attributes: list[dict[str, str | None]] = []
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.tags.append(tag)
         self.attributes.append(dict(attrs))
 
@@ -116,7 +114,7 @@ def test_pages_workflow_uses_split_least_privilege_jobs() -> None:
 
 Run: `uv run pytest tests/test_site.py -q`
 
-Expected: FAIL because `site/index.html` does not exist.
+Expected: FAIL because `website/index.html` does not exist.
 
 - [ ] **Step 3: Commit the failing contract**
 
@@ -128,12 +126,12 @@ git commit -m "test: define GitHub Pages site contract"
 ### Task 2: Build the dependency-free landing page
 
 **Files:**
-- Create: `site/index.html`
-- Create: `site/styles.css`
-- Create: `site/favicon.svg`
-- Create: `site/og.png`
-- Create: `site/robots.txt`
-- Create: `site/sitemap.xml`
+- Create: `website/index.html`
+- Create: `website/styles.css`
+- Create: `website/favicon.svg`
+- Create: `website/og.png`
+- Create: `website/robots.txt`
+- Create: `website/sitemap.xml`
 
 - [ ] **Step 1: Add the semantic page**
 
@@ -223,7 +221,7 @@ and a `prefers-reduced-motion: reduce` override. Do not load remote fonts or ima
 - [ ] **Step 3: Add metadata assets**
 
 Create a small `if` typographic SVG favicon, copy the reviewed 1200×630 social image to
-`site/og.png`, allow all crawlers in `robots.txt`, and put only the canonical home URL in
+`website/og.png`, allow all crawlers in `robots.txt`, and put only the canonical home URL in
 `sitemap.xml`.
 
 - [ ] **Step 4: Run the page tests and verify the page tests pass while workflow test remains RED**
@@ -236,7 +234,7 @@ does not exist yet.
 - [ ] **Step 5: Commit the page**
 
 ```bash
-git add site tests/test_site.py
+git add website tests/test_site.py
 git commit -m "feat: add Laconian landing page"
 ```
 
@@ -255,7 +253,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "site/**"
+      - "website/**"
       - "skills/if/SKILL.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -280,13 +278,13 @@ jobs:
       - name: Stage and validate static site
         shell: bash
         run: |
-          test -f site/index.html
-          if find site -type l -print -quit | grep -q .; then
-            echo "::error::site/ must not contain symbolic links"
+          test -f website/index.html
+          if find website -type l -print -quit | grep -q .; then
+            echo "::error::website/ must not contain symbolic links"
             exit 1
           fi
           mkdir _site
-          cp -R site/. _site/
+          cp -R website/. _site/
           cp skills/if/SKILL.md _site/SKILL.md
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
@@ -345,7 +343,7 @@ git commit -m "ci: deploy site to GitHub Pages"
 
 - [ ] **Step 1: Stage the exact deployment artifact locally**
 
-Create a temporary directory, copy `site/` into it, and copy `skills/if/SKILL.md` to its root as
+Create a temporary directory, copy `website/` into it, and copy `skills/if/SKILL.md` to its root as
 `SKILL.md`. Serve that directory with Python's static HTTP server.
 
 - [ ] **Step 2: Check the local site**
