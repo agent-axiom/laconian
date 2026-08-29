@@ -56,6 +56,10 @@ a:focus-visible {
   outline-offset: 4px;
 }
 
+.install-section a:focus-visible {
+  outline-color: var(--paper);
+}
+
 code,
 pre {
   font-family: var(--mono);
@@ -742,6 +746,17 @@ pre code {
   .install-facts,
   .section-index-light {
     color: #333;
+  }
+
+  pre {
+    border: 1px solid #999;
+    background: #fff;
+    color: #000;
+  }
+
+  .install-lede code,
+  .install-path code {
+    color: #000;
   }
 
   .section,

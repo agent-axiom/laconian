@@ -48,6 +48,7 @@ def test_page_has_skill_first_content_and_metadata() -> None:
     assert 'href="styles.css"' in html
     assert 'href="https://agent-axiom.github.io/laconian/"' in html
     assert 'content="https://agent-axiom.github.io/laconian/og.png"' in html
+    assert "CC BY 4.0 documentation" in html
 
 
 def test_page_avoids_unfounded_performance_claims() -> None:
@@ -64,6 +65,18 @@ def test_styles_include_accessible_responsive_states() -> None:
     assert "@import" not in css
     assert "http://" not in css
     assert "https://" not in css
+
+
+def test_dark_focus_and_print_code_remain_visible() -> None:
+    css = STYLES.read_text(encoding="utf-8")
+    print_rules = css[css.index("@media print") :]
+
+    assert ".install-section a:focus-visible" in css
+    assert "outline-color: var(--paper);" in css
+    assert ".install-lede code," in print_rules
+    assert ".install-path code" in print_rules
+    assert "background: #fff;" in print_rules
+    assert "color: #000;" in print_rules
 
 
 def test_social_preview_has_expected_png_dimensions() -> None:
