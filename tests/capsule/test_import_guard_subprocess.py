@@ -81,6 +81,217 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+_PUBLIC_RESUME_CHILD = r"""
+import json
+import os
+import sys
+from pathlib import Path
+
+from laconian_eval.capsule.execution import ProviderFactory, resume_capsule
+
+capsule = Path(sys.argv[1])
+action = sys.argv[2]
+launcher = Path(sys.executable).with_name("laconian").resolve()
+
+# A ``python -c`` subprocess gives the test a trace hook without changing the owned
+# production API.  Present the same verified console-launcher identity and import root
+# that the public ``laconian plan`` process captured.
+sys.argv[0] = os.fspath(launcher)
+sys.modules["__main__"].__file__ = os.fspath(launcher)
+sys.modules["__main__"].__spec__ = None
+sys.path[0] = os.fspath(launcher.parent)
+sys.path_importer_cache.pop(os.fspath(Path.cwd()), None)
+
+observed = {"triggered": 0, "lazy_loaded": None}
+cache_key = "/synthetic/laconian-import-guard-drift"
+assert cache_key not in sys.path_importer_cache
+
+def at_execution_checkpoint(frame, event, arg):
+    del arg
+    if (
+        event == "call"
+        and frame.f_code.co_name == "_complete_execution_checkpoint"
+        and frame.f_globals.get("__name__") == "laconian_eval.capsule.execution"
+        and observed["triggered"] == 0
+    ):
+        observed["triggered"] = 1
+        if action == "lazy_import":
+            lazy = __import__("annotated_types.test_cases", fromlist=("test_cases",))
+            observed["lazy_loaded"] = lazy.__name__
+        elif action == "sys_path":
+            sys.path.append("/synthetic/outside")
+        elif action == "meta_path":
+            sys.meta_path.append(object())
+        elif action == "path_hooks":
+            sys.path_hooks.append(lambda _value: None)
+        elif action == "importer_cache":
+            sys.path_importer_cache[cache_key] = None
+        else:
+            raise AssertionError(action)
+    return at_execution_checkpoint
+
+assert "annotated_types.test_cases" not in sys.modules
+sys.settrace(at_execution_checkpoint)
+try:
+    result = resume_capsule(capsule, provider_factory=ProviderFactory())
+finally:
+    sys.settrace(None)
+
+# Restore the deliberately drifted surface so the still-installed audit hook permits
+# the diagnostic serialization below.  The checkpoint already observed the drift.
+if observed["triggered"] and action == "sys_path":
+    assert sys.path.pop() == "/synthetic/outside"
+elif observed["triggered"] and action == "meta_path":
+    sys.meta_path.pop()
+elif observed["triggered"] and action == "path_hooks":
+    sys.path_hooks.pop()
+elif observed["triggered"] and action == "importer_cache":
+    del sys.path_importer_cache[cache_key]
+
+events = [json.loads(row)["kind"] for row in (capsule / "events.jsonl").read_bytes().splitlines()]
+raw_rows = (capsule / "raw.jsonl").read_bytes().splitlines()
+os.write(1, (json.dumps({
+    "result": result.model_dump(mode="json"),
+    "triggered": observed["triggered"],
+    "lazy_loaded": observed["lazy_loaded"],
+    "events": events,
+    "raw_rows": len(raw_rows),
+}) + "\n").encode())
+"""
+
+
+_PUBLIC_PLAN_CHILD = r"""
+import json
+import os
+import sys
+from pathlib import Path
+
+from laconian_eval.cli import main
+
+launcher = Path(sys.executable).with_name("laconian").resolve()
+sys.argv[0] = os.fspath(launcher)
+sys.modules["__main__"].__file__ = os.fspath(launcher)
+sys.modules["__main__"].__spec__ = None
+sys.path[0] = os.fspath(launcher.parent)
+sys.path_importer_cache.pop(os.fspath(Path.cwd()), None)
+raise SystemExit(main([
+    "plan",
+    sys.argv[1],
+    "--results-root",
+    sys.argv[2],
+    "--input-root",
+    sys.argv[3],
+    "--source-root",
+    sys.argv[4],
+]))
+"""
+
+
+@pytest.fixture(scope="module")
+def public_resume_inputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    workspace = tmp_path_factory.mktemp("public-import-guard-resume")
+    input_root = workspace / "inputs"
+    cases_root = input_root / "cases"
+    cases_root.mkdir(parents=True)
+    (cases_root / "response.yaml").write_text(
+        """schema_version: "1"
+kind: response
+cases:
+  - id: public-import-guard-en
+    scenario_id: public-import-guard
+    locale: en
+    category: direct
+    prompt: Answer briefly.
+  - id: public-import-guard-ru
+    scenario_id: public-import-guard
+    locale: ru
+    category: direct
+    prompt: Ответьте кратко.
+""",
+        encoding="utf-8",
+    )
+    manifest = input_root / "manifest.yaml"
+    manifest.write_text(
+        """schema_version: "2"
+runner_version: 0.1.0.dev0
+run_name: public-import-guard
+provider:
+  kind: fake
+  model: fixture-v1
+case_files:
+  - cases/response.yaml
+arms:
+  - baseline
+repetitions: 1
+arm_order_seed: 17
+instruction_placement: system_suffix
+generation:
+  max_output_tokens: 128
+  temperature: null
+retry:
+  max_transient_retries: 0
+  timeout_seconds: 5
+price_snapshot: null
+capsule:
+  run_purpose: integration_smoke
+  claim_intent: none
+  datasets:
+    - dataset_id: public-import-guard
+      dataset_version: fixture-v1
+      role: smoke
+      case_schema_version: "1"
+      case_file_ordinals:
+        - 0
+  comparisons: []
+  protocol_bindings: []
+""",
+        encoding="utf-8",
+    )
+    return manifest, input_root
+
+
+def _run_public_resume(
+    inputs: tuple[Path, Path],
+    tmp_path: Path,
+    action: str,
+) -> dict[str, object]:
+    manifest, input_root = inputs
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    planned = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _PUBLIC_PLAN_CHILD,
+            str(manifest),
+            str(results_root),
+            str(input_root),
+            str(ROOT),
+        ],
+        cwd=ROOT,
+        env={},
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+    assert planned.returncode == 0, planned.stderr
+    capsule = Path(planned.stdout.splitlines()[0])
+    assert capsule.is_absolute()
+    assert capsule.is_dir()
+    completed = subprocess.run(
+        [sys.executable, "-c", _PUBLIC_RESUME_CHILD, str(capsule), action],
+        cwd=ROOT,
+        env={},
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
 def test_guard_installation_self_test_proves_audit_observed_and_guard_blocked() -> None:
     result = _run_child(
         r"""
@@ -1341,3 +1552,55 @@ def test_console_launcher_real_wrapper_runs_under_exact_template() -> None:
     _, remainder = raw.split(b"\n", 1)
     normalized = b"#!<CURRENT_INTERPRETER>\n" + remainder
     assert normalized == CONSOLE_LAUNCHER_TEMPLATE
+
+
+def test_public_resume_checkpoint_allows_owned_lazy_import(
+    public_resume_inputs: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    payload = _run_public_resume(public_resume_inputs, tmp_path, "lazy_import")
+    result = payload["result"]
+
+    assert payload["triggered"] == 1, json.dumps(payload, sort_keys=True)
+    assert payload["lazy_loaded"] == "annotated_types.test_cases"
+    assert isinstance(result, dict)
+    assert result["status"] == "valid"
+    assert result["state"] == "GENERATION_COMPLETE"
+    assert payload["events"] == [
+        "prepared",
+        "execution_started",
+        "request_started",
+        "request_finished",
+        "request_started",
+        "request_finished",
+        "generation_completed",
+    ]
+    assert payload["raw_rows"] == 2
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["sys_path", "meta_path", "path_hooks", "importer_cache"],
+)
+def test_public_resume_checkpoint_blocks_import_state_drift_before_provider_call(
+    action: str,
+    public_resume_inputs: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    payload = _run_public_resume(public_resume_inputs, tmp_path, action)
+    result = payload["result"]
+
+    assert payload["triggered"] == 1, json.dumps(payload, sort_keys=True)
+    assert payload["lazy_loaded"] is None
+    assert isinstance(result, dict)
+    assert result["status"] == "valid"
+    assert result["state"] == "INTERRUPTED"
+    # ``request_started`` is durably appended before every provider call.  Its absence,
+    # together with an empty raw journal, proves that the drift checkpoint failed closed
+    # without either an adapter call or fabricated provider evidence.
+    assert payload["events"] == [
+        "prepared",
+        "execution_started",
+        "execution_interrupted",
+    ]
+    assert payload["raw_rows"] == 0

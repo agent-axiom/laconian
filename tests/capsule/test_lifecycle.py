@@ -297,6 +297,25 @@ def test_prepared_only_history_derives_exact_never_started_projection() -> None:
     assert lifecycle.operational_blocker_codes == ("never_started",)
     assert history.next_unresolved_plan_ordinal == 0
     assert history.next_call_sequence == 0
+    assert history.next_attempt_number == 1
+
+
+def test_clean_safe_retry_retains_compact_next_attempt_cursor() -> None:
+    capsule, _manifest, environment, plan = _context()
+    start = _start(plan[0])
+    attempt = _attempt(plan[0], "safe_retry")
+    finish = _finish(start, attempt)
+
+    history = _validate(
+        (_prepared(capsule), _execution_started(environment), start, finish),
+        (attempt,),
+    )
+
+    assert history.next_unresolved_plan_ordinal == 0
+    assert history.next_call_sequence == 1
+    assert history.next_attempt_number == 2
+    assert history.open_attempt is None
+    assert history.recovery_requirements == ()
 
 
 def test_unmatched_request_start_is_markerless_ambiguity() -> None:

@@ -17,7 +17,7 @@ import sysconfig
 import tomllib
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from email.parser import BytesParser
 from pathlib import Path
 from types import MappingProxyType
@@ -64,6 +64,7 @@ _VOLATILE_METADATA = frozenset({"RECORD", "INSTALLER", "REQUESTED", "direct_url.
 _CANONICAL_REPOSITORY_URL = "https://github.com/agent-axiom/laconian"
 _PACKAGE_NAME = "laconian-eval"
 _REQUIREMENT_NAME_PREFIX = re.compile(r"^[ \t]*[A-Za-z0-9][A-Za-z0-9._-]*[ \t]*")
+_AUTHORED_INPUT_ROLES = frozenset({"case", "arm", "replay", "protocol"})
 
 
 class ProvenanceError(ValueError):
@@ -1549,15 +1550,35 @@ def resolve_source_root(
 def _authored_byte_count(captured_inputs: CapturedInputs) -> int:
     total = 0
     for item in captured_inputs.files:
-        if type(item.data) is not bytes:
+        try:
+            role = item.record.role
+            data = item.data
+        except AttributeError:
+            raise ProvenanceError("invalid_captured_input") from None
+        if type(data) is not bytes:
             raise ProvenanceError("invalid_captured_input")
-        total += len(item.data)
+        if role == "runner_source":
+            continue
+        if role not in _AUTHORED_INPUT_ROLES:
+            raise ProvenanceError("invalid_captured_input")
+        total += len(data)
         check_collection_count(
             total,
             limit=RESOURCE_LIMITS_V1.captured_input_total_bytes,
             code="captured_input_total_limit",
         )
     return total
+
+
+def _validated_authored_input_byte_count(value: int) -> int:
+    if type(value) is not int or value < 0:
+        raise ResourceLimitError("invalid_count")
+    check_collection_count(
+        value,
+        limit=RESOURCE_LIMITS_V1.captured_input_total_bytes,
+        code="captured_input_total_limit",
+    )
+    return value
 
 
 def _adapter_digest(runner: CapturedRunnerSource, provider_kind: _ProviderKind) -> str:
@@ -1782,49 +1803,32 @@ def _capture_runner_distribution(*, scripts_root: _PathLike | None = None) -> Ru
     )
 
 
-def capture_installed_provenance(
-    captured_inputs: CapturedInputs,
-    *,
-    source_root: _PathLike | None,
-    container_image_digest: str | None,
-) -> InstalledProvenance:
-    """Capture all installed producer commitments without importing a provider SDK."""
-
+def _validated_resolved_manifest(value: object) -> ResolvedManifestV2:
     try:
-        manifest_payload = captured_inputs.resolved_manifest.model_dump(
+        manifest_payload = value.model_dump(  # type: ignore[attr-defined]
             mode="python",
             round_trip=True,
             warnings=False,
         )
-        manifest = ResolvedManifestV2.model_validate(manifest_payload)
+        return ResolvedManifestV2.model_validate(manifest_payload)
     except (AttributeError, TypeError, ValueError):
         raise ProvenanceError("invalid_resolved_manifest") from None
-    try:
-        manifest_bytes = canonical_json(
-            manifest.model_dump(mode="json", round_trip=True, warnings=False)
-        )
-    except (TypeError, ValueError, UnicodeEncodeError):
-        raise ProvenanceError("invalid_resolved_manifest") from None
-    if (
-        type(captured_inputs.resolved_manifest_bytes) is not bytes
-        or captured_inputs.resolved_manifest_bytes != manifest_bytes
-        or type(captured_inputs.manifest_sha256) is not str
-        or captured_inputs.manifest_sha256 != sha256_bytes(manifest_bytes)
-    ):
-        raise ProvenanceError("manifest_capture_mismatch")
+
+
+def _capture_live_installed_provenance(
+    manifest: ResolvedManifestV2,
+    *,
+    authored_input_byte_count: int,
+) -> InstalledProvenance:
+    authored_bytes = _validated_authored_input_byte_count(authored_input_byte_count)
     runner_distribution = _capture_runner_distribution()
     package_version = runner_distribution.package_version
     if manifest.runner_version != package_version:
         raise ProvenanceError("runner_version_mismatch")
     provider_kind = manifest.provider.kind
-    authored_bytes = _authored_byte_count(captured_inputs)
     runner = capture_runner_source(authored_input_bytes=authored_bytes)
     dependencies = capture_dependency_closure(provider_kind=provider_kind)
     adapter_digest = _adapter_digest(runner, provider_kind)
-    normalized_source_root = None if source_root is None else _absolute_path(source_root)
-    checkout_binding, git_state, git_commit, uv_lock = _source_binding(
-        normalized_source_root, runner
-    )
     if provider_kind == "openai":
         sdk_distribution: Literal["openai"] | None = "openai"
         sdk_inventory = next(
@@ -1838,27 +1842,87 @@ def capture_installed_provenance(
         sdk_distribution = None
         sdk_version = None
         transport_policy = "offline"
+    unavailable_lock = UvLockV1.model_validate({"availability": "unavailable", "sha256": None})
     return InstalledProvenance(
         runner_source=runner,
         runner_distribution=runner_distribution,
         dependencies=dependencies,
         package_version=package_version,
-        checkout_binding=checkout_binding,
-        git_commit=git_commit,
-        git_state=git_state,
-        uv_lock=uv_lock,
+        checkout_binding="unavailable",
+        git_commit=None,
+        git_state="unavailable",
+        uv_lock=unavailable_lock,
         provider_kind=provider_kind,
         requested_model=manifest.provider.model,
         adapter_source_sha256=adapter_digest,
         transport_policy=transport_policy,
         sdk_distribution=sdk_distribution,
         sdk_version=sdk_version,
-        container_image_digest=parse_container_image_digest(container_image_digest),
+        container_image_digest=None,
         python_implementation=platform.python_implementation(),
         python_version=sys.version,
         os_family=platform.system(),
         os_release=platform.release(),
         architecture=platform.machine(),
+    )
+
+
+def capture_resume_provenance(
+    resolved_manifest: ResolvedManifestV2,
+    *,
+    authored_input_byte_count: int,
+) -> InstalledProvenance:
+    """Resnapshot resume-blocking installed facts without source attribution."""
+
+    manifest = _validated_resolved_manifest(resolved_manifest)
+    return _capture_live_installed_provenance(
+        manifest,
+        authored_input_byte_count=authored_input_byte_count,
+    )
+
+
+def capture_installed_provenance(
+    captured_inputs: CapturedInputs,
+    *,
+    source_root: _PathLike | None,
+    container_image_digest: str | None,
+) -> InstalledProvenance:
+    """Capture all installed producer commitments without importing a provider SDK."""
+
+    try:
+        resolved_manifest = captured_inputs.resolved_manifest
+    except AttributeError:
+        raise ProvenanceError("invalid_resolved_manifest") from None
+    manifest = _validated_resolved_manifest(resolved_manifest)
+    try:
+        manifest_bytes = canonical_json(
+            manifest.model_dump(mode="json", round_trip=True, warnings=False)
+        )
+    except (TypeError, ValueError, UnicodeEncodeError):
+        raise ProvenanceError("invalid_resolved_manifest") from None
+    if (
+        type(captured_inputs.resolved_manifest_bytes) is not bytes
+        or captured_inputs.resolved_manifest_bytes != manifest_bytes
+        or type(captured_inputs.manifest_sha256) is not str
+        or captured_inputs.manifest_sha256 != sha256_bytes(manifest_bytes)
+    ):
+        raise ProvenanceError("manifest_capture_mismatch")
+    authored_bytes = _authored_byte_count(captured_inputs)
+    provenance = _capture_live_installed_provenance(
+        manifest,
+        authored_input_byte_count=authored_bytes,
+    )
+    normalized_source_root = None if source_root is None else _absolute_path(source_root)
+    checkout_binding, git_state, git_commit, uv_lock = _source_binding(
+        normalized_source_root, provenance.runner_source
+    )
+    return replace(
+        provenance,
+        checkout_binding=checkout_binding,
+        git_commit=git_commit,
+        git_state=git_state,
+        uv_lock=uv_lock,
+        container_image_digest=parse_container_image_digest(container_image_digest),
     )
 
 

@@ -1580,6 +1580,100 @@ def test_actual_uv_console_launcher_builds_and_purges_its_parent_cache(
     assert parent not in built.runtime_state.importer_cache
 
 
+def test_console_launcher_null_cache_exception_is_exact_and_none_only(
+    provenance: InstalledProvenance,
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "laconian"
+    launcher.write_bytes(_launcher_bytes())
+    launcher.chmod(0o755)
+    state = _module_runtime(provenance)
+    launcher_key = os.path.realpath(os.path.abspath(launcher))
+    console = replace(
+        state,
+        modules=MappingProxyType(
+            {"__main__": SimpleNamespace(__file__=os.fspath(launcher), __spec__=None)}
+        ),
+        argv0=os.fspath(launcher),
+        sys_path=(os.fspath(tmp_path), *state.sys_path[1:]),
+        importer_cache=MappingProxyType({launcher_key: None}),
+    )
+
+    built = build_import_policy(provenance, runtime_state=console)
+    assert built.import_environment.launcher_mode == "console_script"
+    assert launcher_key not in built.runtime_state.importer_cache
+
+    nearby = os.fspath(tmp_path / "not-the-launcher")
+    _assert_error(
+        "unknown_importer_cache_root",
+        lambda: build_import_policy(
+            provenance,
+            runtime_state=replace(
+                console,
+                importer_cache=MappingProxyType({nearby: None}),
+            ),
+        ),
+    )
+    _assert_error(
+        "unknown_importer_cache_finder",
+        lambda: build_import_policy(
+            provenance,
+            runtime_state=replace(
+                console,
+                importer_cache=MappingProxyType({launcher_key: object()}),
+            ),
+        ),
+    )
+
+
+def test_console_multiprocessing_main_alias_is_identity_bound(
+    provenance: InstalledProvenance,
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "laconian"
+    launcher.write_bytes(_launcher_bytes())
+    launcher.chmod(0o755)
+    state = _module_runtime(provenance)
+    main = SimpleNamespace(__file__=os.fspath(launcher), __spec__=None)
+    console_state = replace(
+        state,
+        modules=MappingProxyType(
+            {
+                "__main__": main,
+                "__mp_main__": main,
+                "sys": sys,
+            }
+        ),
+        argv0=os.fspath(launcher),
+        sys_path=(os.fspath(tmp_path), *state.sys_path[1:]),
+    )
+
+    policy = build_import_policy(provenance, runtime_state=console_state)
+    assert policy.import_environment.launcher_mode == "console_script"
+
+    _assert_error(
+        "fixed_module_alias_changed",
+        lambda: revalidate_loaded_modules(
+            policy,
+            modules={"__main__": main, "sys": sys},
+        ),
+    )
+    _assert_error(
+        "fixed_module_alias_changed",
+        lambda: revalidate_loaded_modules(
+            policy,
+            modules={
+                "__main__": main,
+                "__mp_main__": SimpleNamespace(
+                    __file__=os.fspath(launcher),
+                    __spec__=None,
+                ),
+                "sys": sys,
+            },
+        ),
+    )
+
+
 def test_console_main_revalidation_rechecks_exact_launcher_bytes_in_place(
     provenance: InstalledProvenance,
     tmp_path: Path,

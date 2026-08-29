@@ -487,6 +487,11 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
     ):
         raise TypeError
     next_call = _strict_nonnegative_int(value.next_call_sequence)
+    next_attempt = value.next_attempt_number
+    if (next_attempt is None) != (expected_ordinal is None) or (
+        next_attempt is not None and (type(next_attempt) is not int or not 1 <= next_attempt <= 6)
+    ):
+        raise TypeError
     open_attempt = None if value.open_attempt is None else _strict_open_attempt(value.open_attempt)
     requirements = tuple(
         _strict_recovery_requirement(requirement) for requirement in value.recovery_requirements
@@ -560,6 +565,7 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
         returned,
         expected_ordinal,
         next_call,
+        next_attempt,
         open_attempt,
         requirements,
         *bool_values,
@@ -595,6 +601,7 @@ def _history_commitment(history: ValidatedHistoryV1) -> str:
             "returned_models": history.returned_models,
             "next_unresolved_plan_ordinal": history.next_unresolved_plan_ordinal,
             "next_call_sequence": history.next_call_sequence,
+            "next_attempt_number": history.next_attempt_number,
             "open_attempt": open_attempt,
             "recovery_requirements": [
                 {
@@ -648,6 +655,7 @@ class _VerifiedCapsuleContext:
     plan: tuple[PlanRowV1, ...]
     history: ValidatedHistoryV1
     lifecycle: LifecycleProjectionV1
+    warnings: tuple[str, ...]
     _history_sha256: str = field(repr=False)
     _journal_pair: JournalPairSnapshotV1 = field(repr=False)
 
@@ -673,6 +681,30 @@ class _VerifiedCapsuleContext:
             if _strict_sha256(self._history_sha256) != _history_commitment(history):
                 raise TypeError
             lifecycle = _strict_lifecycle_copy(self.lifecycle)
+            if (
+                type(self.warnings) is not tuple
+                or any(
+                    type(warning) is not str
+                    or warning
+                    not in {
+                        "broader_permissions",
+                        "permission_representation_differs",
+                        "producer_runtime_differs",
+                    }
+                    for warning in self.warnings
+                )
+                or self.warnings
+                != tuple(
+                    warning
+                    for warning in (
+                        "broader_permissions",
+                        "permission_representation_differs",
+                        "producer_runtime_differs",
+                    )
+                    if warning in self.warnings
+                )
+            ):
+                raise TypeError
             derived_lifecycle = derive_lifecycle_v1(history)
             if lifecycle != derived_lifecycle:
                 raise TypeError
@@ -691,6 +723,7 @@ class _VerifiedCapsuleContext:
             object.__setattr__(self, "plan", plan)
             object.__setattr__(self, "history", history)
             object.__setattr__(self, "lifecycle", derived_lifecycle)
+            object.__setattr__(self, "warnings", tuple(self.warnings))
         except Exception:
             raise _Failure("invalid_model", None) from None
 
@@ -2348,13 +2381,11 @@ def _verify_prepared_event_file(
         raise primary
 
 
-def _valid_result(
-    context: _VerifiedCapsuleContext,
+def _verification_warnings(
+    capsule: CapsuleV1,
+    environment: EnvironmentV1,
     inventory: _Inventory,
-) -> VerifyResultV1:
-    capsule = context.capsule
-    environment = context.environment
-    lifecycle = context.lifecycle
+) -> tuple[str, ...]:
     warnings: list[str] = []
     if (
         stat.S_IMODE(inventory.root_identity.mode) & ~0o700
@@ -2366,6 +2397,16 @@ def _valid_result(
         warnings.append("permission_representation_differs")
     if capsule.runner_version != __version__:
         warnings.append("producer_runtime_differs")
+    return tuple(warnings)
+
+
+def _valid_result(
+    context: _VerifiedCapsuleContext,
+    inventory: _Inventory,
+) -> VerifyResultV1:
+    del inventory
+    capsule = context.capsule
+    lifecycle = context.lifecycle
     return VerifyResultV1.model_validate(
         {
             "schema_version": "1",
@@ -2375,7 +2416,7 @@ def _valid_result(
             "capsule_sha256": None,
             "missing_plan_item_ids": lifecycle.missing_plan_item_ids,
             "operational_blocker_codes": lifecycle.operational_blocker_codes,
-            "warnings": warnings,
+            "warnings": context.warnings,
             "first_error": None,
         }
     )
@@ -2657,6 +2698,7 @@ def _verify_capsule_context_descriptors_with_journal_policy(
         plan,
         journals.history,
         journals.lifecycle,
+        _verification_warnings(capsule, environment, inventory),
         _history_commitment(journals.history),
         journals,
     )

@@ -152,6 +152,7 @@ class ValidatedHistoryV1:
     returned_models: tuple[str, ...]
     next_unresolved_plan_ordinal: int | None
     next_call_sequence: int
+    next_attempt_number: int | None
     open_attempt: AttemptCommitV1 | None
     recovery_requirements: tuple[RecoveryRequirementV1, ...]
     request_history_present: bool
@@ -1182,6 +1183,7 @@ def _validate_history_v1(
         returned_models=tuple(sorted(returned_models, key=lambda value: value.encode("utf-8"))),
         next_unresolved_plan_ordinal=None if not missing else current_ordinal,
         next_call_sequence=expected_call,
+        next_attempt_number=None if not missing else expected_attempt,
         open_attempt=open_commit,
         recovery_requirements=tuple(requirements),
         request_history_present=request_history,

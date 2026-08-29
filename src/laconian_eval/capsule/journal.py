@@ -249,7 +249,7 @@ class JournalTransaction:
             try:
                 os.close(descriptor)
             except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                if not isinstance(error, Exception):
                     if fatal is None:
                         fatal = error
                 elif failure is None:
@@ -272,8 +272,10 @@ class JournalTransaction:
     ) -> None:
         try:
             self.close()
-        except BaseException:
-            if exception is None:
+        except BaseException as close_error:
+            if exception is None or (
+                isinstance(exception, Exception) and not isinstance(close_error, Exception)
+            ):
                 raise
 
 
@@ -476,7 +478,7 @@ def _snapshot_one(capsule_fd: int, ledger: Ledger, *, tail_policy: TailPolicy) -
         )
     except BaseException as error:
         primary = error
-        if isinstance(error, (JournalError, KeyboardInterrupt, SystemExit)):
+        if isinstance(error, JournalError) or not isinstance(error, Exception):
             raise
         raise JournalError("io_error", ledger) from None
     finally:
@@ -969,7 +971,7 @@ def _append_framed(
         transaction._posix.fsync(descriptor)
     except BaseException as error:
         transaction._poisoned = True
-        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        if not isinstance(error, Exception):
             raise
         raise JournalError("io_error", ledger) from None
     try:

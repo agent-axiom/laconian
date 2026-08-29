@@ -1564,6 +1564,37 @@ def test_transaction_adversarial_close_failure_does_not_mask_active_primary(
     assert len(set(closes)) == 2
 
 
+def test_transaction_fatal_close_failure_overrides_active_ordinary_exception(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CloseCrash(BaseException):
+        pass
+
+    _transaction_fixture(tmp_path)
+    descriptor = _root(tmp_path)
+    transaction = open_journal_transaction(
+        descriptor,
+        posix=cast(FilesystemPosixOps, _TransactionPosix()),
+    )
+    real_close = journal_module.os.close
+    closes: list[int] = []
+
+    def fatal_close(fd: int) -> None:
+        closes.append(fd)
+        real_close(fd)
+        raise CloseCrash
+
+    monkeypatch.setattr(journal_module.os, "close", fatal_close)
+    with pytest.raises(CloseCrash), transaction:
+        raise RuntimeError("ordinary primary")
+    transaction.close()
+    real_close(descriptor)
+
+    assert len(closes) == 2
+    assert len(set(closes)) == 2
+
+
 def test_reader_never_consumes_concurrent_growth_beyond_validated_size(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -66,6 +66,8 @@ _FIXED_MODULE_ALIASES = {
     "importlib._bootstrap": "_frozen_importlib",
     "importlib._bootstrap_external": "_frozen_importlib_external",
 }
+_IDENTITY_MODULE_ALIASES = {"__mp_main__": "__main__"}
+_MODULE_ALIAS_TARGETS = {**_FIXED_MODULE_ALIASES, **_IDENTITY_MODULE_ALIASES}
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _REGULAR_FLAGS = (
     os.O_RDONLY
@@ -1551,6 +1553,11 @@ def _validate_initial_cache(
     launcher_parent: DirectoryIdentity | None,
 ) -> None:
     cwd = directory_identity(state.cwd)
+    launcher_cache_key = (
+        Path(os.path.realpath(os.path.abspath(state.argv0)))
+        if launcher_mode == "console_script"
+        else None
+    )
     for key, finder in state.importer_cache.items():
         if isinstance(finder, zipimport.zipimporter):
             raise ImportPolicyError("zip_importer_unsupported")
@@ -1562,6 +1569,8 @@ def _validate_initial_cache(
             identity = directory_identity(key)
         except ImportPolicyError:
             canonical = Path(os.path.realpath(os.path.abspath(key)))
+            if finder is None and canonical == launcher_cache_key:
+                continue
             if finder is None and any(
                 _is_beneath(canonical, root.canonical_path) for root in roots
             ):
@@ -2096,6 +2105,13 @@ def _capture_fixed_alias_modules(
     modules: Mapping[str, object],
 ) -> Mapping[str, object]:
     captured: dict[str, object] = {}
+    for alias, target in _IDENTITY_MODULE_ALIASES.items():
+        if alias not in modules:
+            continue
+        module = modules[alias]
+        if module is None or modules.get(target) is not module:
+            raise ImportPolicyError("fixed_module_alias_changed")
+        captured[alias] = module
     for alias, target in _FIXED_MODULE_ALIASES.items():
         if alias not in modules:
             continue
@@ -2117,7 +2133,7 @@ def _revalidate_fixed_alias_modules(
     modules: Mapping[str, object],
 ) -> None:
     for alias, expected in policy.fixed_alias_modules.items():
-        target = _FIXED_MODULE_ALIASES[alias]
+        target = _MODULE_ALIAS_TARGETS[alias]
         if modules.get(alias) is not expected or modules.get(target) is not expected:
             raise ImportPolicyError("fixed_module_alias_changed")
 
@@ -2127,6 +2143,10 @@ def _validate_loaded_module(policy: ImportPolicy, name: str, module: object) -> 
     if originless is not None:
         if module is not originless:
             raise ImportPolicyError("originless_module_changed")
+        return
+    if name in _IDENTITY_MODULE_ALIASES:
+        if policy.fixed_alias_modules.get(name) is not module:
+            raise ImportPolicyError("fixed_module_alias_changed")
         return
     spec = getattr(module, "__spec__", None)
     spec_origin = getattr(spec, "origin", None)
@@ -2248,10 +2268,11 @@ def revalidate_import_state(
 ) -> None:
     """Revalidate exact ordered paths, finders, hooks, and importer-cache identities."""
 
+    preinstall_live_state = not require_guard and runtime_state is None
     state = _copy_runtime_state(
         capture_runtime_import_state() if runtime_state is None else runtime_state
     )
-    expected = policy.runtime_state
+    expected = policy.initial_state if preinstall_live_state else policy.runtime_state
     if state.sys_path != expected.sys_path:
         raise ImportPolicyError("sys_path_drift")
     expected_meta = expected.meta_path
@@ -2271,11 +2292,12 @@ def revalidate_import_state(
         raise ImportPolicyError("path_hooks_drift")
     if not _same_cache(state.importer_cache, expected.importer_cache):
         raise ImportPolicyError("importer_cache_drift")
-    _revalidate_cache_bindings(
-        policy.cache_bindings,
-        state.importer_cache,
-        code="importer_cache_drift",
-    )
+    if not preinstall_live_state:
+        _revalidate_cache_bindings(
+            policy.cache_bindings,
+            state.importer_cache,
+            code="importer_cache_drift",
+        )
     _revalidate_fixed_finder_descriptors(_build_enforcement_snapshot(policy))
 
 

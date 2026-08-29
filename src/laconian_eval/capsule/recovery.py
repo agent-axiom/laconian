@@ -9,6 +9,7 @@ import stat
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import FunctionType
 from typing import Literal, NoReturn, cast
 from uuid import RFC_4122, UUID
 
@@ -27,6 +28,7 @@ from laconian_eval.capsule.filesystem import (
     FilesystemPosixOps,
     LockHandle,
     OwnedStaging,
+    UnsupportedFilesystemError,
     classify_filesystem,
     cleanup_owned_staging,
     create_owned_staging,
@@ -49,6 +51,7 @@ from laconian_eval.capsule.journal import (
     JournalSnapshotV1,
     JournalTransaction,
     Ledger,
+    TailPolicy,
     _final_fstat,
     _joint_recheck_transaction_pair,
     _rehash_transaction_pair,
@@ -87,7 +90,32 @@ RecoveryDisposition = Literal[
 ]
 
 _GENERIC_RECOVERY_ERROR = "capsule recovery rejected"
+_MUTATOR_SESSION_AUTHORITY = object()
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_NATIVE_POSIX_MRO = PosixOps.__mro__
+_NATIVE_POSIX_NAMESPACE = tuple(
+    sorted(vars(PosixOps).items(), key=lambda item: item[0].encode("utf-8"))
+)
+_NATIVE_POSIX_FUNCTION_SEALS = tuple(
+    (
+        name,
+        function,
+        function.__code__,
+        None
+        if function.__defaults__ is None
+        else (id(function.__defaults__), tuple(id(item) for item in function.__defaults__)),
+        None
+        if function.__kwdefaults__ is None
+        else (
+            id(function.__kwdefaults__),
+            tuple(
+                (key, id(function.__kwdefaults__[key])) for key in sorted(function.__kwdefaults__)
+            ),
+        ),
+    )
+    for name, function in _NATIVE_POSIX_NAMESPACE
+    if type(function) is FunctionType
+)
 _RECOVERY_KINDS = (
     "request_finished",
     "authentication_stopped",
@@ -257,6 +285,11 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
     ):
         raise TypeError
     next_call = _nonnegative(value.next_call_sequence)
+    next_attempt = value.next_attempt_number
+    if (next_attempt is None) != (expected_ordinal is None) or (
+        next_attempt is not None and (type(next_attempt) is not int or not 1 <= next_attempt <= 6)
+    ):
+        raise TypeError
     open_attempt: AttemptCommitV1 | None = None
     if value.open_attempt is not None:
         if type(value.open_attempt) is not AttemptCommitV1 or value.open_attempt.finish is not None:
@@ -401,6 +434,7 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
         returned,
         expected_ordinal,
         next_call,
+        next_attempt,
         open_attempt,
         requirements,
         *booleans,
@@ -646,6 +680,7 @@ class _MutatorSessionV1:
     lock_handle: LockHandle
     parent_fd: int
     _initial_pair: JournalPairSnapshotV1
+    _authority: object = field(repr=False, compare=False)
 
     @property
     def history_context(self) -> HistoryContextV1:
@@ -655,6 +690,8 @@ class _MutatorSessionV1:
         try:
             if type(self.verified) is not _VerifiedRecoveryProofV1:
                 raise TypeError
+            if self._authority is not _MUTATOR_SESSION_AUTHORITY:
+                _fail("identity_mismatch")
             verified = _VerifiedRecoveryProofV1(
                 self.verified.history_context,
                 self.verified.journal_pair,
@@ -790,7 +827,7 @@ def _load_verified_recovery_context(
     *,
     parent_fd: int,
     destination_name: str,
-    reserved_operation_id: UUID,
+    reserved_operation_id: UUID | None,
 ) -> _VerifiedRecoveryProofV1:
     """Run the read-only verifier and compact its descriptor-bound result."""
 
@@ -805,7 +842,10 @@ def _load_verified_recovery_context(
             root_fd,
             parent_fd=parent_fd,
             destination_name=destination_name,
-            reserved_operation_id=reserved_operation_id,
+            # The verifier core already accepts ``None`` and forwards it to the
+            # optional history reservation; its private annotation remains
+            # narrower for the initial session-construction caller.
+            reserved_operation_id=cast(UUID, reserved_operation_id),
         )
     except _Failure as error:
         _fail(_recovery_code(error.code))
@@ -890,8 +930,41 @@ def _new_mutator_posix() -> PosixOps:
 
 
 def _is_native_mutator_posix(value: object) -> bool:
+    namespace = vars(PosixOps)
     return (
         type(value) is PosixOps
+        and PosixOps.__mro__ == _NATIVE_POSIX_MRO
+        and len(namespace) == len(_NATIVE_POSIX_NAMESPACE)
+        and all(
+            name in namespace and namespace[name] is expected
+            for name, expected in _NATIVE_POSIX_NAMESPACE
+        )
+        and all(
+            namespace.get(name) is function
+            and function.__code__ is code
+            and (
+                None
+                if function.__defaults__ is None
+                else (
+                    id(function.__defaults__),
+                    tuple(id(item) for item in function.__defaults__),
+                )
+            )
+            == defaults
+            and (
+                None
+                if function.__kwdefaults__ is None
+                else (
+                    id(function.__kwdefaults__),
+                    tuple(
+                        (key, id(function.__kwdefaults__[key]))
+                        for key in sorted(function.__kwdefaults__)
+                    ),
+                )
+            )
+            == kwdefaults
+            for name, function, code, defaults, kwdefaults in _NATIVE_POSIX_FUNCTION_SEALS
+        )
         and value._flock is fcntl.flock
         and value._fsync is os.fsync
         and value._mountinfo_open is os.open
@@ -1018,6 +1091,8 @@ def _run_mutator_filesystem_preflight(
     )
     staging: OwnedStaging | None = None
     failure: BaseException | None = None
+    fatal: BaseException | None = None
+    unsupported: UnsupportedFilesystemError | None = None
     try:
         capsule_identity = classify_filesystem(capsule_fd, posix=lock_handle._posix)
         staging = create_owned_staging(parent_fd, operation_id)
@@ -1029,17 +1104,27 @@ def _run_mutator_filesystem_preflight(
         if probed_identity != capsule_identity:
             raise ValueError
     except BaseException as error:
-        failure = error
+        if not isinstance(error, Exception):
+            fatal = error
+        elif isinstance(error, UnsupportedFilesystemError):
+            unsupported = error
+        else:
+            failure = error
     if staging is not None and staging.state == "owned":
         try:
             cleanup_owned_staging(staging, posix=lock_handle._posix)
         except BaseException as error:
-            if failure is None:
+            if not isinstance(error, Exception):
+                if fatal is None:
+                    fatal = error
+            elif failure is None:
                 failure = error
+    if fatal is not None:
+        raise fatal
     if failure is not None:
-        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
-            raise failure
         _fail("identity_mismatch")
+    if unsupported is not None:
+        raise unsupported
     _validate_lock_authority(capsule_fd, lock_handle)
     after = _preflight_identity(
         capsule_fd,
@@ -1114,10 +1199,13 @@ def _make_mutator_session_v1(
             lock_handle,
             parent_fd,
             initial_pair,
+            _MUTATOR_SESSION_AUTHORITY,
         )
         transaction = None
         return session
     except RecoveryError:
+        raise
+    except UnsupportedFilesystemError:
         raise
     except (JournalError, HistoryError) as error:
         _fail(_recovery_code(error.code))
@@ -1188,14 +1276,14 @@ def _truncate_session_tail(
         os.ftruncate(descriptor, truncation.truncate_to)
     except BaseException as error:
         transaction._poisoned = True
-        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        if not isinstance(error, Exception):
             raise
         raise JournalError("io_error", ledger) from None
     try:
         transaction._posix.fsync(descriptor)
     except BaseException as error:
         transaction._poisoned = True
-        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        if not isinstance(error, Exception):
             raise
         raise JournalError("io_error", ledger) from None
     try:
@@ -1472,98 +1560,196 @@ def plan_recovery_v1(
     )
 
 
-def _same_verified_evidence_after_preflight(
-    before: _VerifiedRecoveryProofV1,
-    after: _VerifiedRecoveryProofV1,
-) -> bool:
-    """Allow only the parent metadata drift caused by our cleaned probe sibling."""
-
-    return (
-        after.history_context == before.history_context
-        and after.journal_pair == before.journal_pair
-        and after.immutable_evidence_bytes == before.immutable_evidence_bytes
-        and after.root_identity == before.root_identity
-        and after.parent_identity[:3] == before.parent_identity[:3]
-        and after.destination_name == before.destination_name
-        and after.immutable_tree_sha256 == before.immutable_tree_sha256
-    )
+_PLAN_RECOVERY_V1_EXACT = plan_recovery_v1
 
 
-def _recover_journals_v1(session: _MutatorSessionV1) -> AppliedRecoveryV1:
-    """Plan and durably apply recovery using only one validated private session."""
+def _local_session_pair_v1(session: object) -> JournalPairSnapshotV1:
+    """Validate private in-memory authority without consulting the filesystem."""
 
-    if type(session) is not _MutatorSessionV1:
-        _fail("identity_mismatch")
     try:
-        session = _MutatorSessionV1(
-            session.transaction,
-            session.verified,
-            session.operation_id,
-            session.occurred_at,
-            session.lock_handle,
-            session.parent_fd,
-            session._initial_pair,
-        )
-        _run_mutator_filesystem_preflight(
-            session.transaction._capsule_fd,
-            parent_fd=session.parent_fd,
-            destination_name=session.verified.destination_name,
-            operation_id=session.operation_id,
-            lock_handle=session.lock_handle,
-        )
-        try:
-            refreshed_verified = _load_verified_recovery_context(
-                session.transaction._capsule_fd,
-                parent_fd=session.parent_fd,
-                destination_name=session.verified.destination_name,
-                reserved_operation_id=session.operation_id,
-            )
-        except (RecoveryError, JournalError, HistoryError):
-            _fail("unstable_snapshot")
-        if not _same_verified_evidence_after_preflight(
-            session.verified,
-            refreshed_verified,
-        ):
-            _fail("unstable_snapshot")
-        session = _MutatorSessionV1(
-            session.transaction,
-            refreshed_verified,
-            session.operation_id,
-            session.occurred_at,
-            session.lock_handle,
-            session.parent_fd,
-            session._initial_pair,
-        )
-        pair = _snapshot_transaction_pair(
-            session.transaction,
-            history_context=session.history_context,
-            tail_policy="report",
-            reserved_operation_id=session.operation_id,
-        )
-        if pair.reserved_operation_id != session.operation_id:
+        if type(session) is not _MutatorSessionV1:
             _fail("identity_mismatch")
-        if pair != session._initial_pair:
-            _fail("unstable_snapshot")
+        transaction = session.transaction
+        lock_handle = session.lock_handle
+        verified = session.verified
+        pair = session._initial_pair
+        if (
+            session._authority is not _MUTATOR_SESSION_AUTHORITY
+            or type(transaction) is not JournalTransaction
+            or transaction._closed
+            or transaction._poisoned
+            or type(lock_handle) is not LockHandle
+            or lock_handle._closed
+            or lock_handle._exclusive is not True
+            or lock_handle._posix is not transaction._posix
+            or not _is_native_mutator_posix(lock_handle._posix)
+            or type(verified) is not _VerifiedRecoveryProofV1
+            or type(pair) is not JournalPairSnapshotV1
+            or type(session.parent_fd) is not int
+            or session.parent_fd < 0
+            or transaction._immutable_evidence_bytes != verified.immutable_evidence_bytes
+        ):
+            _fail("identity_mismatch")
+        rebound = _VerifiedRecoveryProofV1(
+            verified.history_context,
+            verified.journal_pair,
+            verified.immutable_evidence_bytes,
+            verified.root_identity,
+            verified.parent_identity,
+            verified.destination_name,
+            verified.immutable_tree_sha256,
+            verified._source,
+        )
+        operation_id = _strict_operation_id(
+            session.operation_id,
+            rebound.history_context.capsule.run_id,
+        )
+        _strict_occurred_at(session.occurred_at)
+        if pair.reserved_operation_id != operation_id or pair != rebound.journal_pair:
+            _fail("identity_mismatch")
+        return pair
+    except RecoveryError:
+        raise
+    except Exception:
+        _fail("identity_mismatch")
+
+
+def _plan_mutator_session_v1(session: _MutatorSessionV1) -> RecoveryPlanV1:
+    """Purely derive one exact plan from the factory-retained initial pair."""
+
+    try:
+        pair = _local_session_pair_v1(session)
         context = _recovery_context_from_pair(session, pair)
-        plan = plan_recovery_v1(
+        return plan_recovery_v1(
             context=context,
             event_snapshot=pair.events,
             raw_snapshot=pair.raw,
             operation_id=session.operation_id,
             occurred_at=session.occurred_at,
         )
-        _joint_recheck_transaction_pair(session.transaction, pair)
-        try:
-            fresh_verified = _load_verified_recovery_context(
-                session.transaction._capsule_fd,
-                parent_fd=session.parent_fd,
-                destination_name=session.verified.destination_name,
-                reserved_operation_id=session.operation_id,
+    except RecoveryError:
+        raise
+    except (JournalError, HistoryError) as error:
+        _fail(_recovery_code(error.code))
+    except (OSError, RecursionError, TypeError, ValueError):
+        _fail("io_error")
+
+
+def _authorized_recovery_plan_v1(
+    session: _MutatorSessionV1,
+    pair: JournalPairSnapshotV1,
+    plan: object,
+) -> RecoveryPlanV1:
+    if type(plan) is not RecoveryPlanV1:
+        _fail("identity_mismatch")
+    context = _recovery_context_from_pair(session, pair)
+    expected = _PLAN_RECOVERY_V1_EXACT(
+        context=context,
+        event_snapshot=pair.events,
+        raw_snapshot=pair.raw,
+        operation_id=session.operation_id,
+        occurred_at=session.occurred_at,
+    )
+    if plan != expected:
+        _fail("identity_mismatch")
+    return plan
+
+
+def _same_immutable_recovery_proof_v1(
+    before: _VerifiedRecoveryProofV1,
+    after: _VerifiedRecoveryProofV1,
+) -> bool:
+    return (
+        after.history_context == before.history_context
+        and after.immutable_evidence_bytes == before.immutable_evidence_bytes
+        and after.root_identity == before.root_identity
+        and after.parent_identity == before.parent_identity
+        and after.destination_name == before.destination_name
+        and after.immutable_tree_sha256 == before.immutable_tree_sha256
+    )
+
+
+def _revalidate_mutator_session_v1(
+    session: _MutatorSessionV1,
+    *,
+    tail_policy: TailPolicy = "reject",
+    reserved_operation_id: UUID | None = None,
+) -> JournalPairSnapshotV1:
+    """Revalidate immutable evidence and the current retained journals without mutation."""
+
+    try:
+        _local_session_pair_v1(session)
+        if tail_policy not in ("report", "reject"):
+            _fail("invalid_model")
+        operation_id = (
+            None
+            if reserved_operation_id is None
+            else _strict_operation_id(
+                reserved_operation_id,
+                session.history_context.capsule.run_id,
             )
-        except (RecoveryError, JournalError, HistoryError):
+        )
+        _validate_mutator_authority(session.transaction, session.lock_handle)
+        _validate_verified_root_binding(
+            session.transaction._capsule_fd,
+            session.parent_fd,
+            session.verified,
+        )
+        fresh_verified = _load_verified_recovery_context(
+            session.transaction._capsule_fd,
+            parent_fd=session.parent_fd,
+            destination_name=session.verified.destination_name,
+            reserved_operation_id=operation_id,
+        )
+        if not _same_immutable_recovery_proof_v1(session.verified, fresh_verified):
             _fail("unstable_snapshot")
-        if fresh_verified != session.verified:
+        pair = _snapshot_transaction_pair(
+            session.transaction,
+            history_context=session.history_context,
+            tail_policy=tail_policy,
+            reserved_operation_id=operation_id,
+        )
+        if pair != fresh_verified.journal_pair:
             _fail("unstable_snapshot")
+        _validate_mutator_authority(session.transaction, session.lock_handle)
+        _validate_verified_root_binding(
+            session.transaction._capsule_fd,
+            session.parent_fd,
+            session.verified,
+        )
+        _joint_recheck_transaction_pair(session.transaction, pair)
+        return pair
+    except RecoveryError:
+        raise
+    except (JournalError, HistoryError) as error:
+        _fail(_recovery_code(error.code))
+    except (OSError, RecursionError, TypeError, ValueError):
+        _fail("io_error")
+
+
+def _apply_recovery_plan_v1(
+    session: _MutatorSessionV1,
+    plan: RecoveryPlanV1,
+) -> AppliedRecoveryV1:
+    """Recheck the factory snapshot, then durably apply exactly its authorized plan."""
+
+    try:
+        pair = _local_session_pair_v1(session)
+        plan = _authorized_recovery_plan_v1(session, pair, plan)
+        refreshed_pair = _revalidate_mutator_session_v1(
+            session,
+            tail_policy="report",
+            reserved_operation_id=session.operation_id,
+        )
+        if refreshed_pair != pair:
+            _fail("unstable_snapshot")
+        _validate_mutator_authority(session.transaction, session.lock_handle)
+        _validate_verified_root_binding(
+            session.transaction._capsule_fd,
+            session.parent_fd,
+            session.verified,
+        )
+        _joint_recheck_transaction_pair(session.transaction, pair)
         _validate_mutator_authority(session.transaction, session.lock_handle)
         _validate_verified_root_binding(
             session.transaction._capsule_fd,
@@ -1618,6 +1804,12 @@ def _recover_journals_v1(session: _MutatorSessionV1) -> AppliedRecoveryV1:
         _fail(_recovery_code(error.code))
     except (OSError, RecursionError, TypeError, ValueError):
         _fail("io_error")
+
+
+def _recover_journals_v1(session: _MutatorSessionV1) -> AppliedRecoveryV1:
+    """Compose pure planning and exact application for private recovery callers."""
+
+    return _apply_recovery_plan_v1(session, _plan_mutator_session_v1(session))
 
 
 __all__ = [

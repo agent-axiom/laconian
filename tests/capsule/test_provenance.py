@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.metadata as metadata
 import json
 import os
@@ -26,6 +27,7 @@ from laconian_eval.capsule.provenance import (
     capture_dependency_closure,
     capture_distribution_inventory,
     capture_installed_provenance,
+    capture_resume_provenance,
     capture_runner_source,
     parse_container_image_digest,
     project_environment,
@@ -2296,6 +2298,131 @@ def test_capture_rejects_manifest_semantics_mismatching_captured_bytes() -> None
     assert "forged-model" not in str(caught.value)
 
 
+def _resume_blocking_provenance_projection(value: Any) -> tuple[object, ...]:
+    return (
+        value.runner_source,
+        value.runner_distribution,
+        value.dependencies,
+        value.package_version,
+        value.provider_kind,
+        value.requested_model,
+        value.adapter_source_sha256,
+        value.transport_policy,
+        value.sdk_distribution,
+        value.sdk_version,
+        value.python_implementation,
+        value.python_version,
+        value.os_family,
+        value.os_release,
+        value.architecture,
+    )
+
+
+def test_resume_provenance_matches_preparation_blocking_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.capsule import provenance
+
+    captured = _captured_inputs(authored_data=b"authored-case-bytes")
+    prepared = capture_installed_provenance(
+        captured,
+        source_root=None,
+        container_image_digest=None,
+    )
+
+    def forbidden_source_binding(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("resume provenance must not inspect a source checkout")
+
+    def forbidden_container_parse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("resume provenance must not inspect container inputs")
+
+    monkeypatch.setattr(provenance, "_source_binding", forbidden_source_binding)
+    monkeypatch.setattr(provenance, "parse_container_image_digest", forbidden_container_parse)
+    resumed = provenance.capture_resume_provenance(
+        captured.resolved_manifest,
+        authored_input_byte_count=provenance._authored_byte_count(captured),
+    )
+
+    assert _resume_blocking_provenance_projection(resumed) == (
+        _resume_blocking_provenance_projection(prepared)
+    )
+    assert resumed.checkout_binding == "unavailable"
+    assert resumed.git_commit is None
+    assert resumed.git_state == "unavailable"
+    assert resumed.uv_lock.availability == "unavailable"
+    assert resumed.uv_lock.sha256 is None
+    assert resumed.container_image_digest is None
+
+
+def test_preparation_authored_byte_count_uses_exact_role_filter() -> None:
+    from laconian_eval.capsule import provenance
+
+    files = tuple(
+        SimpleNamespace(record=SimpleNamespace(role=role), data=data)
+        for role, data in (
+            ("case", b"case"),
+            ("arm", b"instruction"),
+            ("replay", b"replay"),
+            ("protocol", b"protocol"),
+            ("runner_source", b"copied-runner-must-not-count-twice"),
+        )
+    )
+    captured = SimpleNamespace(files=files)
+
+    assert provenance._authored_byte_count(captured) == sum(
+        len(item.data) for item in files if item.record.role != "runner_source"
+    )
+
+
+@pytest.mark.parametrize(
+    ("authored_input_byte_count", "expected_code"),
+    [
+        (True, "invalid_count"),
+        (-1, "invalid_count"),
+        (
+            RESOURCE_LIMITS_V1.captured_input_total_bytes + 1,
+            "captured_input_total_limit",
+        ),
+    ],
+)
+def test_resume_provenance_rejects_invalid_authored_byte_count_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    authored_input_byte_count: Any,
+    expected_code: str,
+) -> None:
+    from laconian_eval.capsule import provenance
+
+    monkeypatch.setattr(
+        provenance,
+        "_capture_runner_distribution",
+        lambda: pytest.fail("invalid byte count reached an installed snapshot"),
+    )
+    with pytest.raises(ResourceLimitError) as caught:
+        provenance.capture_resume_provenance(
+            _captured_inputs().resolved_manifest,
+            authored_input_byte_count=authored_input_byte_count,
+        )
+    assert caught.value.code == expected_code
+
+
+def test_provenance_does_not_import_import_policy() -> None:
+    from laconian_eval.capsule import provenance
+
+    module = ast.parse(Path(provenance.__file__).read_text(encoding="utf-8"))
+    imported_modules = {
+        node.module
+        for node in ast.walk(module)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    imported_modules.update(
+        alias.name
+        for node in ast.walk(module)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    assert "laconian_eval.capsule.import_policy" not in imported_modules
+
+
 def test_project_environment_computes_exact_runtime_fingerprint_and_provider_identity(
     offline_provenance: Any,
 ) -> None:
@@ -2392,15 +2519,21 @@ def test_openai_sdk_identity_is_metadata_only(monkeypatch: pytest.MonkeyPatch) -
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
+    captured = _captured_inputs(provider_kind="openai", requested_model="gpt-test")
     provenance = capture_installed_provenance(
-        _captured_inputs(provider_kind="openai", requested_model="gpt-test"),
+        captured,
         source_root=ROOT,
         container_image_digest=None,
     )
+    resumed = capture_resume_provenance(captured.resolved_manifest, authored_input_byte_count=0)
     assert imported == []
     assert provenance.sdk_distribution == "openai"
     assert provenance.sdk_version == metadata.version("openai")
     assert provenance.transport_policy == "openai-direct-v1"
+    assert resumed.sdk_distribution == provenance.sdk_distribution
+    assert resumed.sdk_version == provenance.sdk_version
+    assert resumed.transport_policy == provenance.transport_policy
+    assert resumed.dependencies == provenance.dependencies
 
 
 def test_generated_environment_omits_host_private_and_unrestricted_metadata(

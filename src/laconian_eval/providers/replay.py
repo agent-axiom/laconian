@@ -3,13 +3,14 @@ from pathlib import Path
 
 from yaml import YAMLError
 
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
 from laconian_eval.providers.base import (
     GenerationRequest,
     GenerationResult,
     ProviderError,
     TokenUsage,
 )
-from laconian_eval.yaml_io import safe_load_unique
+from laconian_eval.yaml_io import safe_load_unique, safe_load_unique_bytes
 
 _ENTRY_FIELDS = frozenset(
     {
@@ -27,12 +28,12 @@ _REQUIRED_USAGE_FIELDS = frozenset({"input_tokens", "output_tokens", "total_toke
 _USAGE_FIELDS = _REQUIRED_USAGE_FIELDS | {"cached_input_tokens"}
 
 
-def _entry_error(path: Path, key: str, message: str) -> ValueError:
-    return ValueError(f"{path}: replay entry {key!r} {message}")
+def _entry_error(source: Path | str, key: str, message: str) -> ValueError:
+    return ValueError(f"{source}: replay entry {key!r} {message}")
 
 
 def _optional_string(
-    path: Path,
+    path: Path | str,
     key: str,
     entry: Mapping[object, object],
     field: str,
@@ -44,7 +45,7 @@ def _optional_string(
 
 
 def _parse_usage(
-    path: Path,
+    path: Path | str,
     key: str,
     entry: Mapping[object, object],
 ) -> TokenUsage | None:
@@ -78,7 +79,7 @@ def _parse_usage(
     )
 
 
-def _parse_entry(path: Path, key: str, raw_entry: object) -> GenerationResult:
+def _parse_entry(path: Path | str, key: str, raw_entry: object) -> GenerationResult:
     if not isinstance(raw_entry, Mapping):
         raise _entry_error(path, key, "must be a mapping")
 
@@ -118,6 +119,28 @@ class ReplayProvider:
         self._source = source
 
     @classmethod
+    def _from_mapping(
+        cls,
+        raw: object,
+        *,
+        error_source: Path | str,
+        source: Path | None,
+    ) -> "ReplayProvider":
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{error_source}: replay YAML root must be a mapping")
+
+        entries: dict[str, GenerationResult] = {}
+        for raw_key, raw_entry in raw.items():
+            if raw_key == "description":
+                if not isinstance(raw_entry, str):
+                    raise ValueError(f"{error_source}: description must be a string")
+                continue
+            if not isinstance(raw_key, str):
+                raise ValueError(f"{error_source}: replay keys must be strings")
+            entries[raw_key] = _parse_entry(error_source, raw_key, raw_entry)
+        return cls(entries, source=source)
+
+    @classmethod
     def from_path(cls, path: Path) -> "ReplayProvider":
         try:
             content = path.read_text(encoding="utf-8")
@@ -130,19 +153,26 @@ class ReplayProvider:
             raw = safe_load_unique(content)
         except YAMLError as exc:
             raise ValueError(f"{path}: unable to read replay YAML: {exc}") from exc
-        if not isinstance(raw, Mapping):
-            raise ValueError(f"{path}: replay YAML root must be a mapping")
+        return cls._from_mapping(raw, error_source=path, source=path)
 
-        entries: dict[str, GenerationResult] = {}
-        for raw_key, raw_entry in raw.items():
-            if raw_key == "description":
-                if not isinstance(raw_entry, str):
-                    raise ValueError(f"{path}: description must be a string")
-                continue
-            if not isinstance(raw_key, str):
-                raise ValueError(f"{path}: replay keys must be strings")
-            entries[raw_key] = _parse_entry(path, raw_key, raw_entry)
-        return cls(entries, source=path)
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "ReplayProvider":
+        collection_limit = RESOURCE_LIMITS_V1.plan_rows + 1
+        raw = safe_load_unique_bytes(
+            data,
+            byte_limit=RESOURCE_LIMITS_V1.replay_fixture_bytes,
+            byte_code="replay_fixture_limit",
+            depth_limit=RESOURCE_LIMITS_V1.nesting_depth,
+            collection_limit=collection_limit,
+            collection_code="replay_collection_limit",
+            node_limit=collection_limit * RESOURCE_LIMITS_V1.nesting_depth,
+            node_code="replay_nodes_limit",
+        )
+        return cls._from_mapping(
+            raw,
+            error_source="captured replay",
+            source=None,
+        )
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         key = f"{request.case_id}:{request.arm}:{request.repetition}"

@@ -22,6 +22,7 @@ from laconian_eval.arms import load_arms
 from laconian_eval.capsule.bounded_io import open_directory_no_follow
 from laconian_eval.capsule.canonical import canonical_json
 from laconian_eval.capsule.capture import CaptureError, parse_source_manifest_bytes
+from laconian_eval.capsule.execution import ProviderFactory, _resume_capsule
 from laconian_eval.capsule.filesystem import (
     DestinationCollisionError,
     PostPublishSyncError,
@@ -97,6 +98,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("capsule", type=Path)
     verify.add_argument("--require", choices=("generation-complete", "sealed"))
+
+    resume = commands.add_parser(
+        "resume", help="resume a prepared generation capsule", allow_abbrev=False
+    )
+    resume.add_argument("capsule", type=Path)
 
     run = commands.add_parser("run", help="execute a benchmark manifest", allow_abbrev=False)
     run.add_argument("manifest", type=Path)
@@ -693,6 +699,26 @@ def _report(scored_path: Path, output: Path) -> None:
     print(output)
 
 
+def _resume(path: Path) -> int:
+    target = Path(os.path.abspath(os.fspath(path)))
+    announced = False
+
+    def announce(known: Path) -> None:
+        nonlocal announced
+        if announced:
+            return
+        announced = True
+        print(known, flush=True)
+
+    outcome = _resume_capsule(
+        target,
+        provider_factory=ProviderFactory(),
+        on_target_known=announce,
+        seams=None,
+    )
+    return outcome.exit_code
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     try:
@@ -717,6 +743,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cast(Path, args.capsule),
                 requirement=cast(str | None, args.require),
             )
+        elif command == "resume":
+            return _resume(cast(Path, args.capsule))
         elif command == "run":
             _run(cast(Path, args.manifest), cast(Path, args.results_root))
         elif command == "score":

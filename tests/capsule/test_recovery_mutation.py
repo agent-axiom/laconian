@@ -23,6 +23,7 @@ from laconian_eval.capsule.events import EventV1, event_jsonl
 from laconian_eval.capsule.filesystem import (
     PERSISTENT_LOCK_NAME,
     LockHandle,
+    UnsupportedFilesystemError,
     try_acquire_mutator_lock,
     try_acquire_shared_lock,
 )
@@ -90,7 +91,7 @@ def _fake_verified_proof(
     *,
     parent_fd: int,
     destination_name: str,
-    operation_id: UUID,
+    operation_id: UUID | None,
     history_context: HistoryContextV1,
     immutable_evidence_bytes: int,
 ) -> object:
@@ -567,6 +568,9 @@ def test_forged_public_plan_has_no_mutation_entrypoint_or_accepted_parameter(
         )
 
     make_session = recovery_module._make_mutator_session_v1
+    plan_session = recovery_module._plan_mutator_session_v1
+    apply_plan = recovery_module._apply_recovery_plan_v1
+    revalidate_session = recovery_module._revalidate_mutator_session_v1
     recover = recovery_module._recover_journals_v1
     assert tuple(inspect.signature(make_session).parameters) == (
         "capsule_fd",
@@ -576,7 +580,17 @@ def test_forged_public_plan_has_no_mutation_entrypoint_or_accepted_parameter(
         "occurred_at",
         "lock_handle",
     )
+    assert tuple(inspect.signature(plan_session).parameters) == ("session",)
+    assert tuple(inspect.signature(apply_plan).parameters) == ("session", "plan")
+    assert tuple(inspect.signature(revalidate_session).parameters) == (
+        "session",
+        "tail_policy",
+        "reserved_operation_id",
+    )
     assert tuple(inspect.signature(recover).parameters) == ("session",)
+    assert "_plan_mutator_session_v1" not in recovery_module.__all__
+    assert "_apply_recovery_plan_v1" not in recovery_module.__all__
+    assert "_revalidate_mutator_session_v1" not in recovery_module.__all__
     assert "_recover_journals_v1" not in recovery_module.__all__
     assert not hasattr(recovery_module, "recover_journals_v1")
     assert not hasattr(recovery_module, "apply_recovery_v1")
@@ -700,9 +714,52 @@ def test_session_factory_runs_fresh_probe_before_capsule_read_and_cleans_failure
         os.close(parent_fd)
 
 
-def test_direct_session_construction_cannot_bypass_fresh_recovery_probe(
+def test_session_factory_preserves_unsupported_probe_classification_after_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    _write_capsule(tmp_path, event_rows=(_prepared(capsule),))
+    original_events = (tmp_path / "events.jsonl").read_bytes()
+    original_raw = (tmp_path / "raw.jsonl").read_bytes()
+    root_fd = _root(tmp_path)
+    parent_fd = _root(tmp_path.parent)
+    lock = try_acquire_mutator_lock(root_fd, posix=PosixOps())
+    assert lock is not None
+
+    def reject_probe(*_args: object, **_kwargs: object) -> object:
+        raise UnsupportedFilesystemError("injected unsupported filesystem")
+
+    def capsule_read_bomb(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("capsule evidence read after unsupported filesystem probe")
+
+    monkeypatch.setattr(recovery_module, "run_filesystem_probes", reject_probe)
+    monkeypatch.setattr(
+        recovery_module,
+        "_load_verified_recovery_context",
+        capsule_read_bomb,
+    )
+    try:
+        with pytest.raises(UnsupportedFilesystemError):
+            recovery_module._make_mutator_session_v1(
+                root_fd,
+                parent_fd=parent_fd,
+                destination_name=tmp_path.name,
+                operation_id=RECOVERY_OPERATION,
+                occurred_at=RECOVERY_TIME,
+                lock_handle=lock,
+            )
+        assert not (tmp_path.parent / f".laconian-stage.{RECOVERY_OPERATION}").exists()
+        assert (tmp_path / "events.jsonl").read_bytes() == original_events
+        assert (tmp_path / "raw.jsonl").read_bytes() == original_raw
+    finally:
+        lock.close()
+        os.close(root_fd)
+        os.close(parent_fd)
+
+
+def test_direct_session_construction_cannot_forge_factory_authority(
+    tmp_path: Path,
 ) -> None:
     capsule, manifest, environment, plan = _context()
     tail = b'{"tail":"direct-session-forgery"}'
@@ -735,27 +792,18 @@ def test_direct_session_construction_cannot_bypass_fresh_recovery_probe(
             tail_policy="report",
             reserved_operation_id=RECOVERY_OPERATION,
         )
-        forged = recovery_module._MutatorSessionV1(
-            transaction,
-            proof,
-            RECOVERY_OPERATION,
-            RECOVERY_TIME,
-            lock,
-            parent_fd,
-            pair,
-        )
-        probe_calls = 0
-
-        def reject_probe(*_args: object, **_kwargs: object) -> object:
-            nonlocal probe_calls
-            probe_calls += 1
-            raise RuntimeError("forged session probe canary")
-
-        monkeypatch.setattr(recovery_module, "run_filesystem_probes", reject_probe)
         with pytest.raises(RecoveryError) as caught:
-            recovery_module._recover_journals_v1(forged)
+            recovery_module._MutatorSessionV1(
+                transaction,
+                proof,
+                RECOVERY_OPERATION,
+                RECOVERY_TIME,
+                lock,
+                parent_fd,
+                pair,
+                object(),
+            )
         assert caught.value.code == "identity_mismatch"
-        assert probe_calls == 1
         assert (tmp_path / "events.jsonl").read_bytes() == original_events
     finally:
         if transaction is not None:
@@ -807,8 +855,9 @@ def test_incomplete_capsule_is_rejected_before_any_writable_journal_open(
         os.close(parent_fd)
 
 
-def test_fake_factory_proof_cannot_bypass_fresh_production_preflight(
+def test_recovery_reuses_the_factory_preflight_and_verified_snapshot(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     capsule, manifest, environment, plan = _context()
     tail = b'{"torn":"fresh-static-preflight"}'
@@ -837,6 +886,15 @@ def test_fake_factory_proof_cannot_bypass_fresh_production_preflight(
             immutable_evidence_bytes=0,
         )
 
+    probe_calls = 0
+    real_probe = recovery_module.run_filesystem_probes
+
+    def observed_probe(*args: object, **kwargs: object) -> object:
+        nonlocal probe_calls
+        probe_calls += 1
+        return real_probe(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(recovery_module, "run_filesystem_probes", observed_probe)
     session: object | None = None
     try:
         with patch.object(
@@ -852,10 +910,11 @@ def test_fake_factory_proof_cannot_bypass_fresh_production_preflight(
                 occurred_at=RECOVERY_TIME,
                 lock_handle=lock,
             )
-        with pytest.raises(RecoveryError) as caught:
-            recovery_module._recover_journals_v1(session)  # type: ignore[arg-type]
-        assert caught.value.code == "unstable_snapshot"
-        assert (tmp_path / "events.jsonl").read_bytes() == original_events
+            applied = recovery_module._recover_journals_v1(session)  # type: ignore[arg-type]
+        assert applied.disposition == "provider_ready"
+        assert applied.appended_event_count == 1
+        assert probe_calls == 1
+        assert (tmp_path / "events.jsonl").read_bytes() != original_events
     finally:
         if session is not None:
             session.transaction.close()  # type: ignore[attr-defined]
@@ -908,7 +967,7 @@ def test_real_prepared_capsule_uses_descriptor_verified_recovery_context(
         assert applied.events.tail_byte_count == 0
         assert applied.raw.tail_byte_count == 0
         assert raw_path.read_bytes() == original_raw
-        assert probe_calls == [(root_fd, parent_fd), (root_fd, parent_fd)]
+        assert probe_calls == [(root_fd, parent_fd)]
         rows = tuple(json.loads(row) for row in event_path.read_bytes().splitlines())
         assert rows[-1]["kind"] == "tail_recovered"
         assert rows[-1]["payload"]["removed_sha256"] == hashlib.sha256(tail).hexdigest()
@@ -918,6 +977,113 @@ def test_real_prepared_capsule_uses_descriptor_verified_recovery_context(
         lock.close()
         os.close(root_fd)
         os.close(parent_fd)
+
+
+def test_private_recovery_planner_is_pure_over_the_retained_initial_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    tail = b'{"tail":"pure-plan"}'
+    _write_capsule(tmp_path, event_rows=(_prepared(capsule),), event_tail=tail)
+
+    with _opened_recovery(tmp_path) as opened:
+
+        def live_check_bomb(*_args: object, **_kwargs: object) -> object:
+            pytest.fail("pure recovery planning performed a live filesystem check")
+
+        with monkeypatch.context() as scoped:
+            for name in (
+                "_run_mutator_filesystem_preflight",
+                "_load_verified_recovery_context",
+                "_snapshot_transaction_pair",
+                "_joint_recheck_transaction_pair",
+                "_validate_mutator_authority",
+                "_validate_verified_root_binding",
+            ):
+                scoped.setattr(recovery_module, name, live_check_bomb)
+            local_plan = recovery_module._plan_mutator_session_v1(opened.session)
+
+        assert tuple(item.ledger for item in local_plan.truncations) == ("events",)
+        assert local_plan.truncations[0].removed_sha256 == hashlib.sha256(tail).hexdigest()
+        assert local_plan.append_events[0].kind == "tail_recovered"
+
+
+def test_exact_applier_rejects_a_structurally_valid_forged_plan_before_mutation(
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    tail = b'{"tail":"forged-plan"}'
+    _write_capsule(tmp_path, event_rows=(_prepared(capsule),), event_tail=tail)
+    original_events = (tmp_path / "events.jsonl").read_bytes()
+
+    with _opened_recovery(tmp_path) as opened:
+        local_plan = recovery_module._plan_mutator_session_v1(opened.session)
+        forged = recovery_module.RecoveryPlanV1(
+            local_plan.truncations,
+            (),
+            local_plan.disposition,
+            local_plan.post_mutable_bytes,
+            local_plan.seal_reservation_bytes,
+            local_plan.crash_reservation_bytes,
+        )
+        with pytest.raises(RecoveryError) as caught:
+            recovery_module._apply_recovery_plan_v1(opened.session, forged)
+        assert caught.value.code == "identity_mismatch"
+        assert opened.sync_actions == []
+        assert (tmp_path / "events.jsonl").read_bytes() == original_events
+
+
+def test_descriptor_checkpoint_allows_expected_recovery_growth(
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    _write_capsule(
+        tmp_path,
+        event_rows=(_prepared(capsule),),
+        event_tail=b'{"tail":"checkpoint-growth"}',
+    )
+
+    with _opened_recovery(tmp_path) as opened:
+        local_plan = recovery_module._plan_mutator_session_v1(opened.session)
+        applied = recovery_module._apply_recovery_plan_v1(opened.session, local_plan)
+        checkpoint = recovery_module._revalidate_mutator_session_v1(
+            opened.session,
+            tail_policy="reject",
+            reserved_operation_id=None,
+        )
+
+        assert checkpoint.events == applied.events
+        assert checkpoint.raw == applied.raw
+        assert checkpoint.history.recovery_requirements == ()
+        assert checkpoint.lifecycle.state == "PREPARED"
+
+
+def test_descriptor_checkpoint_rejects_in_place_journal_tamper(
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    _write_capsule(tmp_path, event_rows=(_prepared(capsule),))
+    event_path = tmp_path / "events.jsonl"
+
+    with _opened_recovery(tmp_path) as opened:
+        original = event_path.read_bytes()
+        before = event_path.stat()
+        changed = bytearray(original)
+        event_id_offset = original.index(b'"event_id":"') + len(b'"event_id":"')
+        changed[event_id_offset] = ord("0") if changed[event_id_offset] != ord("0") else ord("1")
+        event_path.write_bytes(changed)
+        os.utime(event_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        with pytest.raises(RecoveryError) as caught:
+            recovery_module._revalidate_mutator_session_v1(
+                opened.session,
+                tail_policy="reject",
+                reserved_operation_id=None,
+            )
+
+        assert caught.value.code in {"hash_mismatch", "history_mismatch", "unstable_snapshot"}
+        assert event_path.read_bytes() == bytes(changed)
 
 
 def test_factory_rebinds_forged_posix_adapter_to_native_lock_and_fsync(
@@ -965,6 +1131,17 @@ def test_factory_rebinds_forged_posix_adapter_to_native_lock_and_fsync(
         os.close(parent_fd)
 
 
+@pytest.mark.parametrize("method_name", ["acquire_lock", "fsync"])
+def test_native_posix_class_dispatch_tampering_is_rejected(
+    method_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = PosixOps()
+    monkeypatch.setattr(PosixOps, method_name, lambda *_args, **_kwargs: None)
+
+    assert recovery_module._is_native_mutator_posix(runtime) is False
+
+
 def test_nested_native_posix_tampering_is_rejected_before_recovery_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1004,7 +1181,7 @@ def test_nested_native_posix_tampering_is_rejected_before_recovery_mutation(
         os.close(parent_fd)
 
 
-def test_static_rewrite_after_local_plan_is_rejected_before_truncate(
+def test_apply_revalidates_same_size_static_evidence_after_local_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1029,22 +1206,12 @@ def test_static_rewrite_after_local_plan_is_rejected_before_truncate(
             lock_handle=lock,
         )
         manifest_path = capsule_path / "manifest.json"
-        real_planner = recovery_module.plan_recovery_v1
-
-        def rewrite_static_after_plan(**kwargs: object) -> object:
-            local_plan = real_planner(**kwargs)  # type: ignore[arg-type]
-            before = manifest_path.stat()
-            changed = bytearray(manifest_path.read_bytes())
-            changed[0] = ord("[")
-            manifest_path.write_bytes(changed)
-            os.utime(manifest_path, ns=(before.st_atime_ns, before.st_mtime_ns))
-            return local_plan
-
-        monkeypatch.setattr(
-            recovery_module,
-            "plan_recovery_v1",
-            rewrite_static_after_plan,
-        )
+        local_plan = recovery_module._plan_mutator_session_v1(session)  # type: ignore[arg-type]
+        before = manifest_path.stat()
+        changed = bytearray(manifest_path.read_bytes())
+        changed[0] = ord("[")
+        manifest_path.write_bytes(changed)
+        os.utime(manifest_path, ns=(before.st_atime_ns, before.st_mtime_ns))
         monkeypatch.setattr(
             recovery_module,
             "_truncate_session_tail",
@@ -1053,7 +1220,10 @@ def test_static_rewrite_after_local_plan_is_rejected_before_truncate(
             ),
         )
         with pytest.raises(RecoveryError) as caught:
-            recovery_module._recover_journals_v1(session)  # type: ignore[arg-type]
+            recovery_module._apply_recovery_plan_v1(
+                session,  # type: ignore[arg-type]
+                local_plan,
+            )
         assert caught.value.code in {
             "invalid_model",
             "noncanonical_json",
@@ -1068,7 +1238,7 @@ def test_static_rewrite_after_local_plan_is_rejected_before_truncate(
         os.close(parent_fd)
 
 
-def test_static_rewrite_after_joint_recheck_is_rejected_before_mutation(
+def test_journal_rewrite_after_joint_recheck_is_rejected_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1092,16 +1262,12 @@ def test_static_rewrite_after_joint_recheck_is_rejected_before_mutation(
             occurred_at=RECOVERY_TIME,
             lock_handle=lock,
         )
-        manifest_path = capsule_path / "manifest.json"
+        local_plan = recovery_module._plan_mutator_session_v1(session)  # type: ignore[arg-type]
         real_joint_recheck = recovery_module._joint_recheck_transaction_pair
 
         def rewrite_after_joint(*args: object, **kwargs: object) -> None:
             real_joint_recheck(*args, **kwargs)  # type: ignore[arg-type]
-            before = manifest_path.stat()
-            changed = bytearray(manifest_path.read_bytes())
-            changed[0] = ord("[")
-            manifest_path.write_bytes(changed)
-            os.utime(manifest_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            event_path.write_bytes(event_path.read_bytes() + b"x")
 
         monkeypatch.setattr(
             recovery_module,
@@ -1112,17 +1278,16 @@ def test_static_rewrite_after_joint_recheck_is_rejected_before_mutation(
             recovery_module,
             "_truncate_session_tail",
             lambda *_args, **_kwargs: pytest.fail(
-                "recovery truncated after post-joint static evidence changed"
+                "recovery truncated after post-joint journal evidence changed"
             ),
         )
         with pytest.raises(RecoveryError) as caught:
-            recovery_module._recover_journals_v1(session)  # type: ignore[arg-type]
-        assert caught.value.code in {
-            "invalid_model",
-            "noncanonical_json",
-            "unstable_snapshot",
-        }
-        assert event_path.read_bytes() == original_events
+            recovery_module._apply_recovery_plan_v1(
+                session,  # type: ignore[arg-type]
+                local_plan,
+            )
+        assert caught.value.code == "unstable_snapshot"
+        assert event_path.read_bytes() == original_events + b"x"
     finally:
         if session is not None:
             session.transaction.close()  # type: ignore[attr-defined]

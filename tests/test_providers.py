@@ -1,5 +1,5 @@
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
 from textwrap import dedent
@@ -7,6 +7,8 @@ from textwrap import dedent
 import pytest
 import yaml
 
+import laconian_eval.providers.replay as replay_module
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
 from laconian_eval.cases import load_response_cases
 from laconian_eval.providers import (
     FakeProvider,
@@ -17,6 +19,7 @@ from laconian_eval.providers import (
     ReplayProvider,
     TokenUsage,
 )
+from laconian_eval.yaml_io import StrictYamlError
 
 ROOT = Path(__file__).parents[1]
 REPLAY_FIXTURE = ROOT / "tests/fixtures/replay-responses.yaml"
@@ -161,6 +164,145 @@ def test_replay_missing_key_is_definitely_not_sent(tmp_path: Path) -> None:
         provider.generate(request(case_id="missing", arm="if", repetition=0))
 
     assert error.value.delivery_certainty == "definitely_not_sent"
+
+
+def test_replay_provider_constructs_from_captured_bytes_without_path_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_path_read(*args: object, **kwargs: object) -> str:
+        raise AssertionError("captured replay bytes must not reopen a pathname")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_path_read)
+    provider = ReplayProvider.from_bytes(
+        b"case:if:0:\n  output_text: Done.\n  response_model: returned-model\n"
+    )
+
+    assert provider.generate(request(case_id="case", arm="if", repetition=0)) == (
+        GenerationResult(output_text="Done.", response_model="returned-model")
+    )
+
+
+@pytest.mark.parametrize(
+    ("document", "code"),
+    [
+        (
+            (
+                b"case:if:0:\n"
+                b"  output_text: First.\n"
+                b"  response_model: returned-model\n"
+                b"case:if:0:\n"
+                b"  output_text: Second.\n"
+                b"  response_model: returned-model\n"
+            ),
+            "duplicate_mapping_key",
+        ),
+        (
+            (
+                b"case:if:0:\n"
+                b"  output_text: First.\n"
+                b"  output_text: Second.\n"
+                b"  response_model: returned-model\n"
+            ),
+            "duplicate_mapping_key",
+        ),
+        (
+            b"case:if:0:\n  <<: {}\n",
+            "yaml_merge_key",
+        ),
+    ],
+)
+def test_replay_provider_from_bytes_rejects_unsafe_yaml(
+    document: bytes,
+    code: str,
+) -> None:
+    with pytest.raises(StrictYamlError) as caught:
+        ReplayProvider.from_bytes(document)
+
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        b"- not\n- a\n- mapping\n",
+        b"case:if:0:\n  output_text: Missing model.\n",
+        (
+            b"case:if:0:\n"
+            b"  output_text: Done.\n"
+            b"  response_model: returned-model\n"
+            b"  unexpected: field\n"
+        ),
+    ],
+)
+def test_replay_provider_from_bytes_applies_exact_schema(document: bytes) -> None:
+    with pytest.raises(ValueError):
+        ReplayProvider.from_bytes(document)
+
+
+def test_replay_provider_from_bytes_enforces_captured_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        replay_module,
+        "RESOURCE_LIMITS_V1",
+        replace(RESOURCE_LIMITS_V1, replay_fixture_bytes=4),
+    )
+
+    with pytest.raises(ResourceLimitError) as caught:
+        ReplayProvider.from_bytes(b"value")
+
+    assert caught.value.code == "replay_fixture_limit"
+
+
+def test_replay_provider_from_bytes_enforces_yaml_depth_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        replay_module,
+        "RESOURCE_LIMITS_V1",
+        replace(RESOURCE_LIMITS_V1, nesting_depth=2),
+    )
+
+    with pytest.raises(ResourceLimitError) as caught:
+        ReplayProvider.from_bytes(b"[[[leaf]]]")
+
+    assert caught.value.code == "nesting_depth_limit"
+
+
+def test_replay_provider_from_bytes_enforces_yaml_collection_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        replay_module,
+        "RESOURCE_LIMITS_V1",
+        replace(RESOURCE_LIMITS_V1, plan_rows=1),
+    )
+    document = (
+        b"first: {output_text: First., response_model: returned-model}\n"
+        b"second: {output_text: Second., response_model: returned-model}\n"
+        b"third: {output_text: Third., response_model: returned-model}\n"
+    )
+
+    with pytest.raises(ResourceLimitError) as caught:
+        ReplayProvider.from_bytes(document)
+
+    assert caught.value.code == "replay_collection_limit"
+
+
+def test_replay_provider_from_bytes_enforces_yaml_node_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        replay_module,
+        "RESOURCE_LIMITS_V1",
+        replace(RESOURCE_LIMITS_V1, plan_rows=1, nesting_depth=2),
+    )
+    document = b"entry: {output_text: Done., response_model: returned-model}\n"
+
+    with pytest.raises(ResourceLimitError) as caught:
+        ReplayProvider.from_bytes(document)
+
+    assert caught.value.code == "replay_nodes_limit"
 
 
 @pytest.mark.parametrize(
@@ -583,6 +725,16 @@ def test_complete_replay_fixture_covers_every_case_arm_once_with_metadata() -> N
             assert result.request_id not in request_ids
             request_ids.add(result.request_id)
             assert result.finish_reason == "stop"
+
+
+def test_complete_replay_fixture_constructs_from_captured_bytes() -> None:
+    provider = ReplayProvider.from_bytes(REPLAY_FIXTURE.read_bytes())
+
+    result = provider.generate(request(case_id="structured-json-en", arm="if", repetition=0))
+
+    assert result.response_model == "replay-v1"
+    assert result.request_id
+    assert result.finish_reason == "stop"
 
 
 def test_complete_replay_fixture_has_valid_exact_structured_outputs() -> None:
