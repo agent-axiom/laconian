@@ -63,13 +63,27 @@ ROOT = Path(__file__).parents[2]
 
 def _destshared_extension_name(destshared: Path) -> str:
     for path in sorted(destshared.iterdir(), key=lambda item: item.name):
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        for suffix in sorted(
+            importlib.machinery.EXTENSION_SUFFIXES,
+            key=len,
+            reverse=True,
+        ):
             if path.is_file() and path.name.endswith(suffix):
                 name = path.name[: -len(suffix)]
                 if name and name not in sys.modules:
                     return name
                 break
     raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
+
+
+def test_destshared_extension_name_prefers_longest_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "_laconian_destshared_probe.abi3.so").touch()
+    monkeypatch.setattr(importlib.machinery, "EXTENSION_SUFFIXES", [".so", ".abi3.so"])
+
+    assert _destshared_extension_name(tmp_path) == "_laconian_destshared_probe"
 
 
 class _NamedLookupOnlyEnvironment:

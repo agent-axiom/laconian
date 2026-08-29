@@ -16,13 +16,27 @@ ROOT = Path(__file__).parents[2]
 
 def _destshared_extension_name(destshared: Path) -> str:
     for path in sorted(destshared.iterdir(), key=lambda item: item.name):
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        for suffix in sorted(
+            importlib.machinery.EXTENSION_SUFFIXES,
+            key=len,
+            reverse=True,
+        ):
             if path.is_file() and path.name.endswith(suffix):
                 name = path.name[: -len(suffix)]
                 if name and name not in sys.modules:
                     return name
                 break
     raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
+
+
+def test_destshared_extension_name_prefers_longest_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "_laconian_destshared_probe.abi3.so").touch()
+    monkeypatch.setattr(importlib.machinery, "EXTENSION_SUFFIXES", [".so", ".abi3.so"])
+
+    assert _destshared_extension_name(tmp_path) == "_laconian_destshared_probe"
 
 
 _PROVENANCE_SETUP = r"""
@@ -1267,7 +1281,7 @@ def test_guard_positive_lazy_captured_stdlib_source_and_extension_imports() -> N
     body = r"""
 installation = install_import_guard(policy)
 loaded = []
-for probe_name in ("annotated_types.test_cases", "colorsys", "__EXTENSION_PROBE__"):
+for probe_name in ("annotated_types.test_cases", "colorsys", __EXTENSION_PROBE__):
     assert probe_name not in sys.modules
     module = __import__(probe_name, fromlist=("*",))
     loaded.append((probe_name, type(module.__spec__.loader).__name__))
@@ -1275,7 +1289,7 @@ revalidate_import_state(policy)
 revalidate_loaded_modules(policy)
 os.write(1, (__import__("json").dumps(loaded) + "\n").encode())
 """
-    result = _run_child(body.replace("__EXTENSION_PROBE__", extension_probe))
+    result = _run_child(body.replace("__EXTENSION_PROBE__", repr(extension_probe)))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
         ["annotated_types.test_cases", "_OriginValidatingLoader"],
