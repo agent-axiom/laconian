@@ -39,6 +39,8 @@ def test_if_skill_has_discriminating_metadata() -> None:
 def test_if_skill_states_the_complete_answer_boundary() -> None:
     text = SKILL.read_text(encoding="utf-8")
     assert "shortest complete answer" in text.lower()
+    assert "Keep information. Remove only proven redundancy. Preserve uncertain content." in text
+    assert len(text.split()) <= 340
     correctness_index = text.find("1. Correctness and safety.")
     brevity_index = text.find("6. Brevity.")
     assert 0 <= correctness_index < brevity_index

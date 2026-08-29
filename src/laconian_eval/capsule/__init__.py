@@ -1,0 +1,1 @@
+"""Generation-capsule evidence primitives."""

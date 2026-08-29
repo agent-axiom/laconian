@@ -189,6 +189,13 @@ def test_core_public_document_files_exist() -> None:
     assert missing == []
 
 
+def test_philosophy_credits_fidelity_method_without_a_lossless_claim() -> None:
+    text = _read("docs/philosophy.md")
+    assert "lossless-doc-compress" in text
+    assert "8dd0d88852fe7445e9d2627c59124f0f161040c1" in text
+    assert "does not claim that model editing is lossless" in " ".join(text.split())
+
+
 def test_methodology_defines_reproducibility_and_quality_contracts() -> None:
     text = _read("benchmarks/methodology.md")
     required = (

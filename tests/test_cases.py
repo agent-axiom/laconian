@@ -1,12 +1,17 @@
+import traceback
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
+from laconian_eval.capsule.limits import ResourceLimitError
 from laconian_eval.cases import (
+    finalize_response_cases,
     load_activation_cases,
     load_manifest,
     load_response_cases,
+    parse_response_case_bytes,
+    response_case_sha256,
 )
 from laconian_eval.models import ActivationCase, ResponseCase, RunManifest
 
@@ -458,3 +463,282 @@ def test_invalid_manifest_is_rejected_with_source_path(tmp_path: Path) -> None:
         load_manifest(path)
 
     assert str(path) in str(exc_info.value)
+
+
+def test_response_case_bytes_parse_before_cross_file_finalization(tmp_path: Path) -> None:
+    english_path = tmp_path / "english.yaml"
+    russian_path = tmp_path / "russian.yaml"
+    english = (
+        dedent(
+            """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """
+        )
+        .strip()
+        .encode()
+        + b"\n"
+    )
+    russian = (
+        dedent(
+            """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """
+        )
+        .strip()
+        .encode()
+        + b"\n"
+    )
+
+    english_cases = parse_response_case_bytes(english, source=english_path)
+    russian_cases = parse_response_case_bytes(russian, source=russian_path)
+    cases = finalize_response_cases(
+        [(english_cases[0], english_path), (russian_cases[0], russian_path)]
+    )
+
+    assert tuple(case.id for case in cases) == ("direct-001-en", "direct-001-ru")
+
+
+def test_response_case_path_loader_uses_one_captured_buffer_for_validation_and_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "responses.yaml"
+    write_yaml(
+        path,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+    from laconian_eval import cases as cases_module
+
+    real_capture = cases_module.read_regular_file_once
+    captures = 0
+
+    def capture_then_poison(
+        directory_fd: int,
+        source_path: str,
+        *,
+        limit: int,
+        code: str,
+    ) -> bytes:
+        nonlocal captures
+        captures += 1
+        if captures > 1:
+            raise AssertionError("source path reopened after capture")
+        captured = real_capture(
+            directory_fd,
+            source_path,
+            limit=limit,
+            code=code,
+        )
+        path.write_bytes(b"not valid YAML anymore\n")
+        return captured
+
+    monkeypatch.setattr(cases_module, "read_regular_file_once", capture_then_poison)
+
+    parsed = load_response_cases([path])
+
+    assert captures == 1
+    assert tuple(case.id for case in parsed) == ("direct-001-en", "direct-001-ru")
+    assert response_case_sha256(parsed[0]) == response_case_sha256(
+        parse_response_case_bytes(
+            dedent(
+                """
+                schema_version: "1"
+                kind: response
+                cases:
+                  - id: direct-001-en
+                    scenario_id: direct-001
+                    locale: en
+                    category: direct
+                    prompt: Answer briefly.
+                """
+            )
+            .strip()
+            .encode()
+            + b"\n",
+            source=path,
+        )[0]
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "value: &shared secret\ncopy: plain\n",
+        "value: &shared secret\ncopy: *shared\n",
+        "base: {prompt: secret}\ncase: {<<: {prompt: overwritten}}\n",
+    ],
+)
+def test_case_path_loader_rejects_yaml_references_and_merge_keys(
+    tmp_path: Path, document: str
+) -> None:
+    path = tmp_path / "unsafe.yaml"
+    path.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError) as caught:
+        load_response_cases([path])
+
+    assert str(path) in str(caught.value)
+    assert "secret" not in str(caught.value)
+
+
+def test_response_case_bytes_preserve_stable_resource_limit_code(tmp_path: Path) -> None:
+    document = b"[" * 65 + b"secret" + b"]" * 65
+
+    with pytest.raises(ResourceLimitError) as caught:
+        parse_response_case_bytes(document, source=tmp_path / "deep.yaml")
+
+    assert caught.value.code == "nesting_depth_limit"
+    assert "secret" not in str(caught.value)
+
+
+def test_response_case_validation_error_does_not_echo_unknown_key(tmp_path: Path) -> None:
+    secret_key = "never-echo-this-secret-key"
+    secret_value = "never-echo-this-secret-value"
+    document = (
+        dedent(
+            f"""
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+            {secret_key}: {secret_value}
+        """
+        )
+        .strip()
+        .encode()
+        + b"\n"
+    )
+
+    with pytest.raises(ValueError) as caught:
+        parse_response_case_bytes(document, source=tmp_path / "unknown-key.yaml")
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert secret_key not in rendered
+    assert secret_value not in rendered
+
+
+def test_response_case_bytes_reject_remaining_budget_before_model_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = (
+        dedent(
+            """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """
+        )
+        .strip()
+        .encode()
+        + b"\n"
+    )
+
+    from laconian_eval import yaml_io
+
+    def forbidden_construction(text: str) -> object:
+        raise AssertionError("over-budget case collection must fail during event preflight")
+
+    monkeypatch.setattr(yaml_io, "_construct_strict_yaml", forbidden_construction)
+
+    with pytest.raises(ResourceLimitError) as caught:
+        parse_response_case_bytes(
+            document,
+            source=tmp_path / "over-budget.yaml",
+            remaining_case_records=0,
+        )
+
+    assert caught.value.code == "case_records_limit"
+
+
+def test_response_case_path_loader_delegates_with_remaining_record_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    english = tmp_path / "english.yaml"
+    russian = tmp_path / "russian.yaml"
+    write_yaml(
+        english,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-en
+            scenario_id: direct-001
+            locale: en
+            category: direct
+            prompt: Answer briefly.
+        """,
+    )
+    write_yaml(
+        russian,
+        """
+        schema_version: "1"
+        kind: response
+        cases:
+          - id: direct-001-ru
+            scenario_id: direct-001
+            locale: ru
+            category: direct
+            prompt: Ответь кратко.
+        """,
+    )
+    from laconian_eval import cases as cases_module
+
+    real_parser = cases_module.parse_response_case_bytes
+    remaining_budgets: list[int] = []
+
+    def tracking_parser(
+        data: bytes,
+        *,
+        source: Path | str,
+        remaining_case_records: int,
+    ) -> tuple[ResponseCase, ...]:
+        remaining_budgets.append(remaining_case_records)
+        return real_parser(
+            data,
+            source=source,
+            remaining_case_records=remaining_case_records,
+        )
+
+    monkeypatch.setattr(cases_module, "parse_response_case_bytes", tracking_parser)
+
+    cases = load_response_cases([english, russian])
+
+    assert tuple(case.id for case in cases) == ("direct-001-en", "direct-001-ru")
+    assert remaining_budgets == [10_000, 9_999]

@@ -22,6 +22,7 @@ Brevity never overrides a higher priority.
 
 ## Edit
 
+- Keep information. Remove only proven redundancy. Preserve uncertain content.
 - Start with the answer.
 - Remove greetings, acknowledgements, and restatement of the request.
 - Omit process narration unless the user asked for it.

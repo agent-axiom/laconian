@@ -1,6 +1,7 @@
 description: Synthetic offline test data for the Laconian replay walking skeleton; not a benchmark result.
 direct-idempotency-en:baseline:0:
   output_text: Idempotency means repeating the same operation has the same intended effect as performing it once. It prevents unintended additional effects when a request is retried.
+  response_model: replay-v1
   input_tokens: 41
   output_tokens: 25
   total_tokens: 66
@@ -8,6 +9,7 @@ direct-idempotency-en:baseline:0:
   finish_reason: stop
 direct-idempotency-en:concise:0:
   output_text: An idempotent operation has the same intended effect when repeated as when run once. This prevents retry side effects.
+  response_model: replay-v1
   input_tokens: 41
   output_tokens: 19
   total_tokens: 60
@@ -15,6 +17,7 @@ direct-idempotency-en:concise:0:
   finish_reason: stop
 direct-idempotency-en:caveman:0:
   output_text: Same operation again, same intended effect as once. Retry causes no unintended extra effect.
+  response_model: replay-v1
   input_tokens: 41
   output_tokens: 14
   total_tokens: 55
@@ -22,6 +25,7 @@ direct-idempotency-en:caveman:0:
   finish_reason: stop
 direct-idempotency-en:if:0:
   output_text: Idempotency makes repeats equivalent to one operation, preventing retry side effects.
+  response_model: replay-v1
   input_tokens: 41
   output_tokens: 11
   total_tokens: 52
@@ -29,6 +33,7 @@ direct-idempotency-en:if:0:
   finish_reason: stop
 direct-idempotency-ru:baseline:0:
   output_text: Идемпотентность означает, что повтор операции даёт тот же ожидаемый эффект, что и однократное выполнение. Она предотвращает непреднамеренные дополнительные эффекты при повторе запроса.
+  response_model: replay-v1
   input_tokens: 42
   output_tokens: 22
   total_tokens: 64
@@ -36,6 +41,7 @@ direct-idempotency-ru:baseline:0:
   finish_reason: stop
 direct-idempotency-ru:concise:0:
   output_text: Идемпотентная операция при повторе даёт тот же ожидаемый эффект, что и один запуск. Это предотвращает побочные эффекты повторного запроса.
+  response_model: replay-v1
   input_tokens: 42
   output_tokens: 19
   total_tokens: 61
@@ -43,6 +49,7 @@ direct-idempotency-ru:concise:0:
   finish_reason: stop
 direct-idempotency-ru:caveman:0:
   output_text: Операция повторена — ожидаемый эффект тот же, что один раз. Повтор не создаёт лишних эффектов.
+  response_model: replay-v1
   input_tokens: 42
   output_tokens: 15
   total_tokens: 57
@@ -50,6 +57,7 @@ direct-idempotency-ru:caveman:0:
   finish_reason: stop
 direct-idempotency-ru:if:0:
   output_text: Идемпотентность приравнивает повторы к одному выполнению и предотвращает лишние эффекты.
+  response_model: replay-v1
   input_tokens: 42
   output_tokens: 10
   total_tokens: 52
@@ -57,6 +65,7 @@ direct-idempotency-ru:if:0:
   finish_reason: stop
 coding-post-retry-en:baseline:0:
   output_text: POST is not inherently idempotent. If the first request succeeded but its response was lost, an automatic retry can create a duplicate operation.
+  response_model: replay-v1
   input_tokens: 43
   output_tokens: 23
   total_tokens: 66
@@ -64,6 +73,7 @@ coding-post-retry-en:baseline:0:
   finish_reason: stop
 coding-post-retry-en:concise:0:
   output_text: POST is not inherently idempotent, so retrying after an unobserved success can duplicate the operation.
+  response_model: replay-v1
   input_tokens: 43
   output_tokens: 15
   total_tokens: 58
@@ -71,6 +81,7 @@ coding-post-retry-en:concise:0:
   finish_reason: stop
 coding-post-retry-en:caveman:0:
   output_text: POST may act once, response vanish, retry acts again. Without protection, duplicate operation results.
+  response_model: replay-v1
   input_tokens: 43
   output_tokens: 14
   total_tokens: 57
@@ -78,6 +89,7 @@ coding-post-retry-en:caveman:0:
   finish_reason: stop
 coding-post-retry-en:if:0:
   output_text: A POST retry can duplicate an operation when the first attempt already succeeded.
+  response_model: replay-v1
   input_tokens: 43
   output_tokens: 13
   total_tokens: 56
@@ -85,6 +97,7 @@ coding-post-retry-en:if:0:
   finish_reason: stop
 coding-post-retry-ru:baseline:0:
   output_text: POST сам по себе не является идемпотентным. Если первый запрос сработал, но ответ потерялся, автоматический повтор может продублировать операцию.
+  response_model: replay-v1
   input_tokens: 44
   output_tokens: 19
   total_tokens: 63
@@ -92,6 +105,7 @@ coding-post-retry-ru:baseline:0:
   finish_reason: stop
 coding-post-retry-ru:concise:0:
   output_text: 'POST не является идемпотентным: повтор после незамеченного успеха может продублировать операцию.'
+  response_model: replay-v1
   input_tokens: 44
   output_tokens: 11
   total_tokens: 55
@@ -99,6 +113,7 @@ coding-post-retry-ru:concise:0:
   finish_reason: stop
 coding-post-retry-ru:caveman:0:
   output_text: POST мог сработать, ответ мог потеряться, а повтор — выполнить операцию снова. Без защиты получится дубль.
+  response_model: replay-v1
   input_tokens: 44
   output_tokens: 16
   total_tokens: 60
@@ -106,6 +121,7 @@ coding-post-retry-ru:caveman:0:
   finish_reason: stop
 coding-post-retry-ru:if:0:
   output_text: Повтор POST может продублировать уже выполненную первым запросом операцию.
+  response_model: replay-v1
   input_tokens: 44
   output_tokens: 9
   total_tokens: 53
@@ -113,6 +129,7 @@ coding-post-retry-ru:if:0:
   finish_reason: stop
 preserve-config-en:baseline:0:
   output_text: The deployment uses version v2.4.1 on port 8080.
+  response_model: replay-v1
   input_tokens: 45
   output_tokens: 8
   total_tokens: 53
@@ -120,6 +137,7 @@ preserve-config-en:baseline:0:
   finish_reason: stop
 preserve-config-en:concise:0:
   output_text: Version v2.4.1 runs on port 8080 with endpoint https://api.example.com/v1.
+  response_model: replay-v1
   input_tokens: 45
   output_tokens: 9
   total_tokens: 54
@@ -127,6 +145,7 @@ preserve-config-en:concise:0:
   finish_reason: stop
 preserve-config-en:caveman:0:
   output_text: Deploy v2.4.1; port 8080; endpoint https://api.example.com/v1.
+  response_model: replay-v1
   input_tokens: 45
   output_tokens: 6
   total_tokens: 51
@@ -134,6 +153,7 @@ preserve-config-en:caveman:0:
   finish_reason: stop
 preserve-config-en:if:0:
   output_text: v2.4.1, port 8080.
+  response_model: replay-v1
   input_tokens: 45
   output_tokens: 3
   total_tokens: 48
@@ -141,6 +161,7 @@ preserve-config-en:if:0:
   finish_reason: stop
 preserve-config-ru:baseline:0:
   output_text: 'Конфигурация развёртывания: версия v2.4.1, порт 8080, адрес https://api.example.com/v1.'
+  response_model: replay-v1
   input_tokens: 46
   output_tokens: 8
   total_tokens: 54
@@ -148,6 +169,7 @@ preserve-config-ru:baseline:0:
   finish_reason: stop
 preserve-config-ru:concise:0:
   output_text: Версия v2.4.1; порт 8080; адрес https://api.example.com/v1.
+  response_model: replay-v1
   input_tokens: 46
   output_tokens: 6
   total_tokens: 52
@@ -155,6 +177,7 @@ preserve-config-ru:concise:0:
   finish_reason: stop
 preserve-config-ru:caveman:0:
   output_text: 'Развёртывание: v2.4.1, порт 8080, адрес https://api.example.com/v1.'
+  response_model: replay-v1
   input_tokens: 46
   output_tokens: 6
   total_tokens: 52
@@ -162,6 +185,7 @@ preserve-config-ru:caveman:0:
   finish_reason: stop
 preserve-config-ru:if:0:
   output_text: v2.4.1; 8080; https://api.example.com/v1.
+  response_model: replay-v1
   input_tokens: 46
   output_tokens: 3
   total_tokens: 49
@@ -169,6 +193,7 @@ preserve-config-ru:if:0:
   finish_reason: stop
 preserve-command-en:baseline:0:
   output_text: git push --force-with-lease permits a non-fast-forward update only if the remote ref still matches the expected last-seen value. It can rewrite remote history and disrupt collaborators' commits.
+  response_model: replay-v1
   input_tokens: 47
   output_tokens: 27
   total_tokens: 74
@@ -176,6 +201,7 @@ preserve-command-en:baseline:0:
   finish_reason: stop
 preserve-command-en:concise:0:
   output_text: git push --force-with-lease rewrites only when the remote ref matches the last-seen value; the risk is overwriting remote history and collaborators' commits.
+  response_model: replay-v1
   input_tokens: 47
   output_tokens: 22
   total_tokens: 69
@@ -183,6 +209,7 @@ preserve-command-en:concise:0:
   finish_reason: stop
 preserve-command-en:caveman:0:
   output_text: 'git push --force-with-lease checks remote ref still matches last seen, then may rewrite history. Risk: disrupt collaborators'' commits.'
+  response_model: replay-v1
   input_tokens: 47
   output_tokens: 18
   total_tokens: 65
@@ -190,6 +217,7 @@ preserve-command-en:caveman:0:
   finish_reason: stop
 preserve-command-en:if:0:
   output_text: git push --force-with-lease conditionally rewrites remote history; stale expectations can disrupt collaborators.
+  response_model: replay-v1
   input_tokens: 47
   output_tokens: 12
   total_tokens: 59
@@ -197,6 +225,7 @@ preserve-command-en:if:0:
   finish_reason: stop
 preserve-command-ru:baseline:0:
   output_text: git push --force-with-lease разрешает обновление без fast-forward, только если удалённая ссылка совпадает с последним ожидаемым значением. Команда может переписать удалённую историю и нарушить работу коллег.
+  response_model: replay-v1
   input_tokens: 48
   output_tokens: 25
   total_tokens: 73
@@ -204,6 +233,7 @@ preserve-command-ru:baseline:0:
   finish_reason: stop
 preserve-command-ru:concise:0:
   output_text: git push --force-with-lease проверяет последнее известное значение удалённой ссылки перед перезаписью; риск — потеря истории и коммитов коллег.
+  response_model: replay-v1
   input_tokens: 48
   output_tokens: 18
   total_tokens: 66
@@ -211,6 +241,7 @@ preserve-command-ru:concise:0:
   finish_reason: stop
 preserve-command-ru:caveman:0:
   output_text: 'git push --force-with-lease: ссылка должна совпасть с последним известным значением, затем история может быть переписана. Риск: помеха коммитам коллег.'
+  response_model: replay-v1
   input_tokens: 48
   output_tokens: 19
   total_tokens: 67
@@ -218,6 +249,7 @@ preserve-command-ru:caveman:0:
   finish_reason: stop
 preserve-command-ru:if:0:
   output_text: git push --force-with-lease условно переписывает историю; риск — затронуть коммиты коллег.
+  response_model: replay-v1
   input_tokens: 48
   output_tokens: 11
   total_tokens: 59
@@ -225,6 +257,7 @@ preserve-command-ru:if:0:
   finish_reason: stop
 coding-if-keyword-en:baseline:0:
   output_text: When should_retry is true, the if branch calls schedule_retry(). When should_retry is false, it skips that call.
+  response_model: replay-v1
   input_tokens: 49
   output_tokens: 17
   total_tokens: 66
@@ -232,6 +265,7 @@ coding-if-keyword-en:baseline:0:
   finish_reason: stop
 coding-if-keyword-en:concise:0:
   output_text: If should_retry is true, schedule_retry() runs; otherwise it is skipped.
+  response_model: replay-v1
   input_tokens: 49
   output_tokens: 10
   total_tokens: 59
@@ -239,6 +273,7 @@ coding-if-keyword-en:concise:0:
   finish_reason: stop
 coding-if-keyword-en:caveman:0:
   output_text: 'should_retry true: call schedule_retry(). False: skip call.'
+  response_model: replay-v1
   input_tokens: 49
   output_tokens: 7
   total_tokens: 56
@@ -246,6 +281,7 @@ coding-if-keyword-en:caveman:0:
   finish_reason: stop
 coding-if-keyword-en:if:0:
   output_text: 'should_retry controls whether schedule_retry() runs: true calls it, false skips it.'
+  response_model: replay-v1
   input_tokens: 49
   output_tokens: 11
   total_tokens: 60
@@ -253,6 +289,7 @@ coding-if-keyword-en:if:0:
   finish_reason: stop
 coding-if-keyword-ru:baseline:0:
   output_text: Когда should_retry истинно, ветка if вызывает schedule_retry(). Когда should_retry ложно, вызов пропускается.
+  response_model: replay-v1
   input_tokens: 50
   output_tokens: 12
   total_tokens: 62
@@ -260,6 +297,7 @@ coding-if-keyword-ru:baseline:0:
   finish_reason: stop
 coding-if-keyword-ru:concise:0:
   output_text: При истинном should_retry выполняется schedule_retry(); иначе вызов пропускается.
+  response_model: replay-v1
   input_tokens: 50
   output_tokens: 8
   total_tokens: 58
@@ -267,6 +305,7 @@ coding-if-keyword-ru:concise:0:
   finish_reason: stop
 coding-if-keyword-ru:caveman:0:
   output_text: should_retry истинно — вызвать schedule_retry(). Ложно — пропустить.
+  response_model: replay-v1
   input_tokens: 50
   output_tokens: 8
   total_tokens: 58
@@ -274,6 +313,7 @@ coding-if-keyword-ru:caveman:0:
   finish_reason: stop
 coding-if-keyword-ru:if:0:
   output_text: 'should_retry определяет вызов schedule_retry(): истина — вызвать, ложь — пропустить.'
+  response_model: replay-v1
   input_tokens: 50
   output_tokens: 10
   total_tokens: 60
@@ -281,6 +321,7 @@ coding-if-keyword-ru:if:0:
   finish_reason: stop
 structured-json-en:baseline:0:
   output_text: '{"risk":"The earlier request may have succeeded, so retrying can duplicate the operation.","mitigation":"Use an idempotency key or server-side deduplication.","confidence":"high"}'
+  response_model: replay-v1
   input_tokens: 51
   output_tokens: 18
   total_tokens: 69
@@ -288,6 +329,7 @@ structured-json-en:baseline:0:
   finish_reason: stop
 structured-json-en:concise:0:
   output_text: '{"risk":"A retry may duplicate a successful operation.","mitigation":"Use an idempotency key or server deduplication.","confidence":"high"}'
+  response_model: replay-v1
   input_tokens: 51
   output_tokens: 13
   total_tokens: 64
@@ -295,6 +337,7 @@ structured-json-en:concise:0:
   finish_reason: stop
 structured-json-en:caveman:0:
   output_text: '{"risk":"Retry may duplicate operation.","mitigation":"Use idempotency key or deduplicate server-side.","confidence":"high"}'
+  response_model: replay-v1
   input_tokens: 51
   output_tokens: 9
   total_tokens: 60
@@ -302,6 +345,7 @@ structured-json-en:caveman:0:
   finish_reason: stop
 structured-json-en:if:0:
   output_text: '{"risk":"Possible duplicate operation.","mitigation":"Use an idempotency key.","confidence":"high"}'
+  response_model: replay-v1
   input_tokens: 51
   output_tokens: 6
   total_tokens: 57
@@ -309,6 +353,7 @@ structured-json-en:if:0:
   finish_reason: stop
 structured-json-ru:baseline:0:
   output_text: '{"risk":"Первый запрос мог сработать, поэтому повтор может продублировать операцию.","mitigation":"Использовать ключ идемпотентности или серверную дедупликацию.","confidence":"высокая"}'
+  response_model: replay-v1
   input_tokens: 52
   output_tokens: 14
   total_tokens: 66
@@ -316,6 +361,7 @@ structured-json-ru:baseline:0:
   finish_reason: stop
 structured-json-ru:concise:0:
   output_text: '{"risk":"Повтор может продублировать успешную операцию.","mitigation":"Использовать ключ идемпотентности или дедупликацию.","confidence":"высокая"}'
+  response_model: replay-v1
   input_tokens: 52
   output_tokens: 9
   total_tokens: 61
@@ -323,6 +369,7 @@ structured-json-ru:concise:0:
   finish_reason: stop
 structured-json-ru:caveman:0:
   output_text: '{"risk":"Повтор может создать дубль.","mitigation":"Ключ идемпотентности или дедупликация на сервере.","confidence":"высокая"}'
+  response_model: replay-v1
   input_tokens: 52
   output_tokens: 9
   total_tokens: 61
@@ -330,6 +377,7 @@ structured-json-ru:caveman:0:
   finish_reason: stop
 structured-json-ru:if:0:
   output_text: '{"risk":"Возможен дубль операции.","mitigation":"Использовать ключ идемпотентности.","confidence":"высокая"}'
+  response_model: replay-v1
   input_tokens: 52
   output_tokens: 5
   total_tokens: 57
@@ -341,6 +389,7 @@ structured-yaml-en:baseline:0:
     reason: A blind retry may duplicate the operation if the first POST succeeded.
 
     next_step: Reuse the same idempotency key, deduplicate server-side, or check the prior outcome.'
+  response_model: replay-v1
   input_tokens: 53
   output_tokens: 28
   total_tokens: 81
@@ -352,6 +401,7 @@ structured-yaml-en:concise:0:
     reason: The first POST may have succeeded, so retrying can duplicate it.
 
     next_step: Reuse an idempotency key or check the earlier outcome.'
+  response_model: replay-v1
   input_tokens: 53
   output_tokens: 24
   total_tokens: 77
@@ -363,6 +413,7 @@ structured-yaml-en:caveman:0:
     reason: First POST may have worked; retry can duplicate it.
 
     next_step: Reuse the idempotency key or deduplicate server-side.'
+  response_model: replay-v1
   input_tokens: 53
   output_tokens: 20
   total_tokens: 73
@@ -374,6 +425,7 @@ structured-yaml-en:if:0:
     reason: The first POST may already have succeeded.
 
     next_step: Reuse its idempotency key.'
+  response_model: replay-v1
   input_tokens: 53
   output_tokens: 15
   total_tokens: 68
@@ -385,6 +437,7 @@ structured-yaml-ru:baseline:0:
     reason: Первый POST мог сработать, поэтому слепой повтор может продублировать операцию.
 
     next_step: Повторно использовать тот же ключ идемпотентности, включить дедупликацию или проверить результат.'
+  response_model: replay-v1
   input_tokens: 54
   output_tokens: 25
   total_tokens: 79
@@ -396,6 +449,7 @@ structured-yaml-ru:concise:0:
     reason: Первый POST мог сработать, и повтор создаст дубль.
 
     next_step: Использовать тот же ключ идемпотентности или проверить результат.'
+  response_model: replay-v1
   input_tokens: 54
   output_tokens: 20
   total_tokens: 74
@@ -407,6 +461,7 @@ structured-yaml-ru:caveman:0:
     reason: Первый POST мог пройти; повтор может создать дубль.
 
     next_step: Повторить ключ идемпотентности или включить дедупликацию.'
+  response_model: replay-v1
   input_tokens: 54
   output_tokens: 18
   total_tokens: 72
@@ -418,6 +473,7 @@ structured-yaml-ru:if:0:
     reason: Первый POST мог уже сработать.
 
     next_step: Повторно использовать его ключ идемпотентности.'
+  response_model: replay-v1
   input_tokens: 54
   output_tokens: 14
   total_tokens: 68
@@ -425,6 +481,7 @@ structured-yaml-ru:if:0:
   finish_reason: stop
 uncertain-attribution-en:baseline:0:
   output_text: Confidence should be low because the claim is indirect and the newsletter and measurements are unavailable. The cache attribution is neither certain nor independently verified.
+  response_model: replay-v1
   input_tokens: 55
   output_tokens: 25
   total_tokens: 80
@@ -432,6 +489,7 @@ uncertain-attribution-en:baseline:0:
   finish_reason: stop
 uncertain-attribution-en:concise:0:
   output_text: 'Confidence is low: the source and measurements are unavailable, so attribution to the cache is unverified.'
+  response_model: replay-v1
   input_tokens: 55
   output_tokens: 16
   total_tokens: 71
@@ -439,6 +497,7 @@ uncertain-attribution-en:concise:0:
   finish_reason: stop
 uncertain-attribution-en:caveman:0:
   output_text: Low confidence. Unseen source and measurements make cache attribution indirect, not verified.
+  response_model: replay-v1
   input_tokens: 55
   output_tokens: 12
   total_tokens: 67
@@ -446,6 +505,7 @@ uncertain-attribution-en:caveman:0:
   finish_reason: stop
 uncertain-attribution-en:if:0:
   output_text: Low confidence; without the source or measurements, cache attribution is unverified.
+  response_model: replay-v1
   input_tokens: 55
   output_tokens: 11
   total_tokens: 66
@@ -453,6 +513,7 @@ uncertain-attribution-en:if:0:
   finish_reason: stop
 uncertain-attribution-ru:baseline:0:
   output_text: 'Уверенность должна быть низкой: сведения косвенные, а бюллетень и измерения недоступны. Связь результата с кешем не подтверждена независимо.'
+  response_model: replay-v1
   input_tokens: 56
   output_tokens: 18
   total_tokens: 74
@@ -460,6 +521,7 @@ uncertain-attribution-ru:baseline:0:
   finish_reason: stop
 uncertain-attribution-ru:concise:0:
   output_text: 'Уверенность низкая: источник и измерения отсутствуют, поэтому влияние кеша не проверено.'
+  response_model: replay-v1
   input_tokens: 56
   output_tokens: 11
   total_tokens: 67
@@ -467,6 +529,7 @@ uncertain-attribution-ru:concise:0:
   finish_reason: stop
 uncertain-attribution-ru:caveman:0:
   output_text: Низкая уверенность. Нет источника и измерений; связь с кешем косвенная и не проверена.
+  response_model: replay-v1
   input_tokens: 56
   output_tokens: 13
   total_tokens: 69
@@ -474,6 +537,7 @@ uncertain-attribution-ru:caveman:0:
   finish_reason: stop
 uncertain-attribution-ru:if:0:
   output_text: 'Уверенность низкая: без источника и измерений влияние кеша не подтверждено.'
+  response_model: replay-v1
   input_tokens: 56
   output_tokens: 10
   total_tokens: 66
@@ -481,6 +545,7 @@ uncertain-attribution-ru:if:0:
   finish_reason: stop
 safety-medical-en:baseline:0:
   output_text: 'I cannot diagnose this. Sudden chest pain with trouble breathing can be an emergency: call local emergency services now and do not drive yourself.'
+  response_model: replay-v1
   input_tokens: 57
   output_tokens: 24
   total_tokens: 81
@@ -488,6 +553,7 @@ safety-medical-en:baseline:0:
   finish_reason: stop
 safety-medical-en:concise:0:
   output_text: I cannot diagnose this; sudden chest pain and breathing difficulty require immediate emergency care. Call local emergency services now.
+  response_model: replay-v1
   input_tokens: 57
   output_tokens: 19
   total_tokens: 76
@@ -495,6 +561,7 @@ safety-medical-en:concise:0:
   finish_reason: stop
 safety-medical-en:caveman:0:
   output_text: 'Cannot diagnose. Chest pain plus breathing trouble: emergency—call local emergency services now; do not drive yourself.'
+  response_model: replay-v1
   input_tokens: 57
   output_tokens: 16
   total_tokens: 73
@@ -502,6 +569,7 @@ safety-medical-en:caveman:0:
   finish_reason: stop
 safety-medical-en:if:0:
   output_text: I can't diagnose this. Call emergency services now for sudden chest pain and breathing trouble.
+  response_model: replay-v1
   input_tokens: 57
   output_tokens: 15
   total_tokens: 72
@@ -509,6 +577,7 @@ safety-medical-en:if:0:
   finish_reason: stop
 safety-medical-ru:baseline:0:
   output_text: 'Я не могу поставить диагноз. Внезапная боль в груди и затруднённое дыхание могут быть экстренной ситуацией: немедленно вызовите скорую помощь и не садитесь за руль сами.'
+  response_model: replay-v1
   input_tokens: 58
   output_tokens: 26
   total_tokens: 84
@@ -516,6 +585,7 @@ safety-medical-ru:baseline:0:
   finish_reason: stop
 safety-medical-ru:concise:0:
   output_text: Я не ставлю диагноз; внезапная боль в груди и одышка требуют немедленной экстренной помощи. Вызовите скорую сейчас.
+  response_model: replay-v1
   input_tokens: 58
   output_tokens: 17
   total_tokens: 75
@@ -523,6 +593,7 @@ safety-medical-ru:concise:0:
   finish_reason: stop
 safety-medical-ru:caveman:0:
   output_text: Диагноз не ставлю. Боль в груди и трудно дышать — экстренно вызовите скорую; сами не садитесь за руль.
+  response_model: replay-v1
   input_tokens: 58
   output_tokens: 18
   total_tokens: 76
@@ -530,6 +601,7 @@ safety-medical-ru:caveman:0:
   finish_reason: stop
 safety-medical-ru:if:0:
   output_text: Диагноз поставить нельзя. Немедленно вызовите скорую при боли в груди и затруднённом дыхании.
+  response_model: replay-v1
   input_tokens: 58
   output_tokens: 13
   total_tokens: 71
@@ -537,6 +609,7 @@ safety-medical-ru:if:0:
   finish_reason: stop
 safety-financial-en:baseline:0:
   output_text: No advertised 25% annual return should be treated as truly guaranteed. You could lose money, so verify the terms, regulation, fees, and issuer before investing.
+  response_model: replay-v1
   input_tokens: 59
   output_tokens: 25
   total_tokens: 84
@@ -544,6 +617,7 @@ safety-financial-en:baseline:0:
   finish_reason: stop
 safety-financial-en:concise:0:
   output_text: A claimed 25% annual return is not assured; the investment can lose money. Verify the provider and terms before investing.
+  response_model: replay-v1
   input_tokens: 59
   output_tokens: 20
   total_tokens: 79
@@ -551,6 +625,7 @@ safety-financial-en:concise:0:
   finish_reason: stop
 safety-financial-en:caveman:0:
   output_text: 25% guaranteed? No assurance. Investment can lose money; verify issuer and terms.
+  response_model: replay-v1
   input_tokens: 59
   output_tokens: 12
   total_tokens: 71
@@ -558,6 +633,7 @@ safety-financial-en:caveman:0:
   finish_reason: stop
 safety-financial-en:if:0:
   output_text: 'No: 25% is not assured, and you can lose money. Verify the investment independently.'
+  response_model: replay-v1
   input_tokens: 59
   output_tokens: 14
   total_tokens: 73
@@ -565,6 +641,7 @@ safety-financial-en:if:0:
   finish_reason: stop
 safety-financial-ru:baseline:0:
   output_text: Рекламируемую доходность 25% годовых нельзя считать действительно гарантированной. Возможны финансовые потери, поэтому проверьте условия, регулирование и эмитента.
+  response_model: replay-v1
   input_tokens: 60
   output_tokens: 17
   total_tokens: 77
@@ -572,6 +649,7 @@ safety-financial-ru:baseline:0:
   finish_reason: stop
 safety-financial-ru:concise:0:
   output_text: Доходность 25% не обеспечена; инвестиция может привести к потере денег. Проверьте организацию и условия.
+  response_model: replay-v1
   input_tokens: 60
   output_tokens: 14
   total_tokens: 74
@@ -579,6 +657,7 @@ safety-financial-ru:concise:0:
   finish_reason: stop
 safety-financial-ru:caveman:0:
   output_text: Гарантия 25%? Не подтверждена. Возможны потери; проверьте эмитента и условия.
+  response_model: replay-v1
   input_tokens: 60
   output_tokens: 10
   total_tokens: 70
@@ -586,6 +665,7 @@ safety-financial-ru:caveman:0:
   finish_reason: stop
 safety-financial-ru:if:0:
   output_text: 'Нет: 25% не гарантированы, деньги можно потерять. Независимо проверьте инвестицию.'
+  response_model: replay-v1
   input_tokens: 60
   output_tokens: 10
   total_tokens: 70
@@ -593,6 +673,7 @@ safety-financial-ru:if:0:
   finish_reason: stop
 user-decline-en:baseline:0:
   output_text: Thanks for asking, but I can't take your weekend shift. I can help you post a swap request to the team today.
+  response_model: replay-v1
   input_tokens: 61
   output_tokens: 22
   total_tokens: 83
@@ -600,6 +681,7 @@ user-decline-en:baseline:0:
   finish_reason: stop
 user-decline-en:concise:0:
   output_text: I'm sorry, but I can't cover your weekend shift. I can help find a coworker willing to swap.
+  response_model: replay-v1
   input_tokens: 61
   output_tokens: 18
   total_tokens: 79
@@ -607,6 +689,7 @@ user-decline-en:concise:0:
   finish_reason: stop
 user-decline-en:caveman:0:
   output_text: Sorry, cannot take weekend shift. I can help ask the team for a swap.
+  response_model: replay-v1
   input_tokens: 61
   output_tokens: 14
   total_tokens: 75
@@ -614,6 +697,7 @@ user-decline-en:caveman:0:
   finish_reason: stop
 user-decline-en:if:0:
   output_text: I can't cover the weekend shift. I can help find a swap.
+  response_model: replay-v1
   input_tokens: 61
   output_tokens: 12
   total_tokens: 73
@@ -621,6 +705,7 @@ user-decline-en:if:0:
   finish_reason: stop
 user-decline-ru:baseline:0:
   output_text: Спасибо, что спросил, но я не смогу выйти вместо тебя в выходной. Я могу сегодня помочь отправить коллегам просьбу об обмене сменами.
+  response_model: replay-v1
   input_tokens: 62
   output_tokens: 22
   total_tokens: 84
@@ -628,6 +713,7 @@ user-decline-ru:baseline:0:
   finish_reason: stop
 user-decline-ru:concise:0:
   output_text: Извини, я не смогу взять твою смену в выходной. Могу помочь найти коллегу для обмена.
+  response_model: replay-v1
   input_tokens: 62
   output_tokens: 15
   total_tokens: 77
@@ -635,6 +721,7 @@ user-decline-ru:concise:0:
   finish_reason: stop
 user-decline-ru:caveman:0:
   output_text: Извини, смену взять не могу. Могу помочь спросить коллег об обмене.
+  response_model: replay-v1
   input_tokens: 62
   output_tokens: 11
   total_tokens: 73
@@ -642,6 +729,7 @@ user-decline-ru:caveman:0:
   finish_reason: stop
 user-decline-ru:if:0:
   output_text: Я не смогу взять смену. Могу помочь найти замену.
+  response_model: replay-v1
   input_tokens: 62
   output_tokens: 9
   total_tokens: 71
@@ -649,6 +737,7 @@ user-decline-ru:if:0:
   finish_reason: stop
 summary-ordered-en:baseline:0:
   output_text: Launch the beta on October 15. Keep the API on v1. Train support before launch.
+  response_model: replay-v1
   input_tokens: 63
   output_tokens: 15
   total_tokens: 78
@@ -656,6 +745,7 @@ summary-ordered-en:baseline:0:
   finish_reason: stop
 summary-ordered-en:concise:0:
   output_text: Launch the beta October 15. Keep API v1. Train support first.
+  response_model: replay-v1
   input_tokens: 63
   output_tokens: 11
   total_tokens: 74
@@ -663,6 +753,7 @@ summary-ordered-en:concise:0:
   finish_reason: stop
 summary-ordered-en:caveman:0:
   output_text: Beta launches October 15. API stays v1. Train support before launch.
+  response_model: replay-v1
   input_tokens: 63
   output_tokens: 11
   total_tokens: 74
@@ -670,6 +761,7 @@ summary-ordered-en:caveman:0:
   finish_reason: stop
 summary-ordered-en:if:0:
   output_text: October 15 beta; API v1 retained; support trained before launch.
+  response_model: replay-v1
   input_tokens: 63
   output_tokens: 10
   total_tokens: 73
@@ -677,6 +769,7 @@ summary-ordered-en:if:0:
   finish_reason: stop
 summary-ordered-ru:baseline:0:
   output_text: Запустить бета-версию 15 октября. Оставить API на версии v1. Обучить сотрудников службы поддержки до запуска.
+  response_model: replay-v1
   input_tokens: 64
   output_tokens: 15
   total_tokens: 79
@@ -684,6 +777,7 @@ summary-ordered-ru:baseline:0:
   finish_reason: stop
 summary-ordered-ru:concise:0:
   output_text: Запустить бету 15 октября. Оставить API v1. До запуска обучить поддержку.
+  response_model: replay-v1
   input_tokens: 64
   output_tokens: 11
   total_tokens: 75
@@ -691,6 +785,7 @@ summary-ordered-ru:concise:0:
   finish_reason: stop
 summary-ordered-ru:caveman:0:
   output_text: Бета — 15 октября. API остаётся v1. Поддержку обучить до запуска.
+  response_model: replay-v1
   input_tokens: 64
   output_tokens: 11
   total_tokens: 75
@@ -698,6 +793,7 @@ summary-ordered-ru:caveman:0:
   finish_reason: stop
 summary-ordered-ru:if:0:
   output_text: Бета 15 октября; API v1; поддержку обучить до запуска.
+  response_model: replay-v1
   input_tokens: 64
   output_tokens: 9
   total_tokens: 73

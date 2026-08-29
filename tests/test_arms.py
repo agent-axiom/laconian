@@ -28,6 +28,12 @@ def test_load_arms_hashes_exact_utf8_bytes_and_preserves_requested_order() -> No
         sha256((ROOT / "evals/baselines/caveman/SKILL.md").read_bytes()).hexdigest(),
         sha256(b"Answer concisely.").hexdigest(),
     ]
+    assert [arm.instruction_bytes for arm in arms] == [
+        (ROOT / "skills/if/SKILL.md").read_bytes(),
+        b"",
+        (ROOT / "evals/baselines/caveman/SKILL.md").read_bytes(),
+        b"Answer concisely.",
+    ]
 
 
 def test_file_arm_hash_preserves_exact_utf8_line_endings(tmp_path: Path) -> None:
