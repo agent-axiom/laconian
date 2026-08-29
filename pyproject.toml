@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laconian-eval"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "Open benchmark for the shortest complete agent answer"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ packages = ["src/laconian_eval"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
+pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff]

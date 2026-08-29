@@ -128,7 +128,7 @@ def _installed_provenance(*, provider_kind: str = "fake") -> InstalledProvenance
         runner_source=runner,
         runner_distribution=_capture_runner_distribution(),
         dependencies=dependencies,
-        package_version="0.1.0.dev0",
+        package_version="0.1.0a1",
         checkout_binding="unavailable",
         git_commit=None,
         git_state="unavailable",
@@ -2312,7 +2312,7 @@ def test_guard_wraps_independently_returned_owned_spec_before_loader_can_execute
     module.__spec__ = guarded
     guarded.loader.exec_module(module)
     assert executed == []
-    assert module.__version__ == "0.1.0.dev0"  # type: ignore[attr-defined]
+    assert module.__version__ == "0.1.0a1"  # type: ignore[attr-defined]
 
 
 def test_guard_rejects_custom_loader_for_owned_native_extension(

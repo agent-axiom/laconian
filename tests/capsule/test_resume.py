@@ -157,7 +157,7 @@ cases:
     manifest = input_root / "manifest.yaml"
     manifest.write_text(
         """schema_version: "2"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: resume-subprocess
 provider:
   kind: fake

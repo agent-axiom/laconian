@@ -68,7 +68,7 @@ provenance = InstalledProvenance(
     runner_source=runner,
     runner_distribution=_capture_runner_distribution(),
     dependencies=capture_dependency_closure(provider_kind=provider_kind),
-    package_version="0.1.0.dev0",
+    package_version="0.1.0a1",
     checkout_binding="unavailable",
     git_commit=None,
     git_state="unavailable",
@@ -246,7 +246,7 @@ cases:
     manifest = input_root / "manifest.yaml"
     manifest.write_text(
         """schema_version: "2"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: public-import-guard
 provider:
   kind: fake
