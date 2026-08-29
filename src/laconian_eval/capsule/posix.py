@@ -238,6 +238,24 @@ def _validate_platform_abi(platform: Platform) -> None:
 class PosixOps:
     """Injectable raw POSIX operations for Linux and macOS."""
 
+    __slots__ = (
+        "_flock",
+        "_fsync",
+        "_functions",
+        "_libc",
+        "_mountinfo_close",
+        "_mountinfo_open",
+        "_mountinfo_read",
+        "_sealed",
+        "machine",
+        "platform",
+    )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("PosixOps is sealed")
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         platform: str | None = None,
@@ -288,6 +306,7 @@ class PosixOps:
         self._mountinfo_open = os.open if mountinfo_open_fn is None else mountinfo_open_fn
         self._mountinfo_read = os.read if mountinfo_read_fn is None else mountinfo_read_fn
         self._mountinfo_close = os.close if mountinfo_close_fn is None else mountinfo_close_fn
+        object.__setattr__(self, "_sealed", True)
 
     def _bind(
         self,

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar, cast
+from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
@@ -54,7 +55,12 @@ from laconian_eval.capsule.history import (
     ValidatedHistoryV1,
     derive_lifecycle_v1,
 )
-from laconian_eval.capsule.journal import JournalError, snapshot_journal_pair
+from laconian_eval.capsule.journal import (
+    JournalError,
+    JournalPairSnapshotV1,
+    TailPolicy,
+    snapshot_journal_pair,
+)
 from laconian_eval.capsule.limits import (
     RESOURCE_LIMITS_V1,
     ResourceLimitError,
@@ -494,6 +500,7 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
         value.request_history_present,
         value.execution_history_present,
         value.latest_no_call_blocked,
+        value.latest_event_recovered,
         value.has_ambiguous_delivery,
         value.has_authentication_stop,
     )
@@ -604,6 +611,7 @@ def _history_commitment(history: ValidatedHistoryV1) -> str:
             "request_history_present": history.request_history_present,
             "execution_history_present": history.execution_history_present,
             "latest_no_call_blocked": history.latest_no_call_blocked,
+            "latest_event_recovered": history.latest_event_recovered,
             "has_ambiguous_delivery": history.has_ambiguous_delivery,
             "has_authentication_stop": history.has_authentication_stop,
             "seal_requested": None
@@ -641,6 +649,7 @@ class _VerifiedCapsuleContext:
     history: ValidatedHistoryV1
     lifecycle: LifecycleProjectionV1
     _history_sha256: str = field(repr=False)
+    _journal_pair: JournalPairSnapshotV1 = field(repr=False)
 
     def __post_init__(self) -> None:
         try:
@@ -667,6 +676,12 @@ class _VerifiedCapsuleContext:
             derived_lifecycle = derive_lifecycle_v1(history)
             if lifecycle != derived_lifecycle:
                 raise TypeError
+            if (
+                type(self._journal_pair) is not JournalPairSnapshotV1
+                or self._journal_pair.history != history
+                or self._journal_pair.lifecycle != derived_lifecycle
+            ):
+                raise TypeError
             object.__setattr__(self, "capsule", capsule)
             object.__setattr__(self, "manifest", manifest)
             object.__setattr__(self, "environment", environment)
@@ -678,6 +693,83 @@ class _VerifiedCapsuleContext:
             object.__setattr__(self, "lifecycle", derived_lifecycle)
         except Exception:
             raise _Failure("invalid_model", None) from None
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedRecoveryContext:
+    """Descriptor-bound static and journal evidence authorized for recovery."""
+
+    context: _VerifiedCapsuleContext
+    root_identity: _Identity
+    parent_identity: _Identity
+    destination_name: str
+    immutable_tree_sha256: str
+    immutable_evidence_bytes: int
+
+
+def _bound_recovery_root(
+    root_fd: int,
+    parent_fd: int,
+    destination_name: str,
+) -> tuple[_Identity, _Identity]:
+    if (
+        type(destination_name) is not str
+        or not destination_name
+        or destination_name in {".", ".."}
+        or "/" in destination_name
+        or "\x00" in destination_name
+    ):
+        raise _Failure("invalid_model", None)
+    try:
+        root = _identity(os.fstat(root_fd))
+        parent = _identity(os.fstat(parent_fd))
+        visible = _identity(os.stat(destination_name, dir_fd=parent_fd, follow_symlinks=False))
+    except OSError:
+        raise _Failure("unstable_snapshot", None) from None
+    if (
+        not stat.S_ISDIR(root.mode)
+        or not stat.S_ISDIR(parent.mode)
+        or not _same_leaf(root, visible)
+    ):
+        raise _Failure("unstable_snapshot", None)
+    return root, parent
+
+
+def _immutable_inventory_commitment(inventory: _Inventory) -> tuple[str, int]:
+    """Commit to immutable paths and identities without retaining the inventory."""
+
+    digest = hashlib.sha256(b"laconian-recovery-static-inventory-v1\x00")
+    immutable_evidence_bytes = 0
+    excluded = {".laconian.lock", "events.jsonl", "raw.jsonl"}
+    entries = (
+        (("directory", path, identity) for path, identity in inventory.directories.items()),
+        (
+            ("file", path, identity)
+            for path, identity in inventory.files.items()
+            if path not in excluded
+        ),
+    )
+    flattened = sorted(
+        (entry for group in entries for entry in group),
+        key=lambda item: (item[0], item[1].encode("utf-8")),
+    )
+    for kind, path, identity in flattened:
+        encoded_path = path.encode("utf-8")
+        digest.update(kind.encode("ascii") + b"\x00")
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        for value in (
+            identity.device,
+            identity.inode,
+            identity.mode,
+            identity.size,
+            identity.mtime_ns,
+            identity.ctime_ns,
+        ):
+            digest.update(value.to_bytes(16, "big", signed=False))
+        if kind == "file":
+            immutable_evidence_bytes += identity.size
+    return digest.hexdigest(), immutable_evidence_bytes
 
 
 _FIXED_FILES = frozenset(
@@ -2289,8 +2381,12 @@ def _valid_result(
     )
 
 
-def _verify_capsule_context_descriptors(
-    root_fd: int, inventory: _Inventory
+def _verify_capsule_context_descriptors_with_journal_policy(
+    root_fd: int,
+    inventory: _Inventory,
+    *,
+    tail_policy: TailPolicy = "reject",
+    reserved_operation_id: UUID | None = None,
 ) -> _VerifiedCapsuleContext:
     """Validate one already-owned descriptor snapshot without acquiring any lock."""
 
@@ -2502,7 +2598,8 @@ def _verify_capsule_context_descriptors(
         journals = snapshot_journal_pair(
             root_fd,
             history_context=HistoryContextV1(capsule, manifest, environment, plan),
-            tail_policy="reject",
+            tail_policy=tail_policy,
+            reserved_operation_id=reserved_operation_id,
         )
     except JournalError as error:
         raise _Failure(
@@ -2561,6 +2658,55 @@ def _verify_capsule_context_descriptors(
         journals.history,
         journals.lifecycle,
         _history_commitment(journals.history),
+        journals,
+    )
+
+
+def _verify_capsule_context_descriptors(
+    root_fd: int,
+    inventory: _Inventory,
+) -> _VerifiedCapsuleContext:
+    """Validate the exact read-only verifier boundary; journal tails are corruption."""
+
+    return _verify_capsule_context_descriptors_with_journal_policy(
+        root_fd,
+        inventory,
+        tail_policy="reject",
+        reserved_operation_id=None,
+    )
+
+
+def _verify_recoverable_capsule_descriptors(
+    root_fd: int,
+    *,
+    parent_fd: int,
+    destination_name: str,
+    reserved_operation_id: UUID,
+) -> _VerifiedRecoveryContext:
+    """Verify one recoverable capsule without opening any writable descriptor."""
+
+    root_before, parent_before = _bound_recovery_root(root_fd, parent_fd, destination_name)
+    inventory = _scan_inventory(root_fd)
+    if inventory.root_identity != root_before:
+        raise _Failure("unstable_snapshot", None)
+    context = _verify_capsule_context_descriptors_with_journal_policy(
+        root_fd,
+        inventory,
+        tail_policy="report",
+        reserved_operation_id=reserved_operation_id,
+    )
+    final_inventory = _scan_inventory(root_fd)
+    root_after, parent_after = _bound_recovery_root(root_fd, parent_fd, destination_name)
+    if root_after != root_before or parent_after != parent_before or final_inventory != inventory:
+        raise _Failure("unstable_snapshot", None)
+    immutable_tree_sha256, immutable_evidence_bytes = _immutable_inventory_commitment(inventory)
+    return _VerifiedRecoveryContext(
+        context,
+        root_before,
+        parent_before,
+        destination_name,
+        immutable_tree_sha256,
+        immutable_evidence_bytes,
     )
 
 

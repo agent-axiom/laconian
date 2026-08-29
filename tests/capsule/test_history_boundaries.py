@@ -10,6 +10,7 @@ from capsule.test_lifecycle import (
     EXECUTION_OPERATION,
     NOW,
     PREPARE_OPERATION,
+    RECOVERY_OPERATION,
     RUN_ID,
     SESSION_ID,
     _attempt,
@@ -17,8 +18,10 @@ from capsule.test_lifecycle import (
     _execution_started,
     _prepared,
     _session_payload,
+    _start,
     _validate,
 )
+from laconian_eval.capsule.attempts import raw_record_sha256
 from laconian_eval.capsule.events import EventV1, make_event
 from laconian_eval.capsule.history import HistoryError, validate_history_v1
 
@@ -172,3 +175,89 @@ def test_hostile_iterable_failures_are_content_free(hostile_ledger: str) -> None
     assert caught.value.ledger == hostile_ledger
     assert "CANARY" not in str(caught.value)
     assert "/private" not in str(caught.value)
+
+
+def _tail_recovered(sequence: int, ledger: str) -> EventV1:
+    return make_event(
+        sequence=sequence,
+        run_id=RUN_ID,
+        occurred_at=NOW,
+        kind="tail_recovered",
+        operation_id=RECOVERY_OPERATION,
+        execution_session_id=None,
+        payload={
+            "ledger": ledger,
+            "removed_byte_count": 1,
+            "removed_sha256": "a" * 64,
+            "related_attempt_id": None,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "tail_ledgers",
+    [
+        ("raw", "events"),
+        ("events", "events"),
+        ("raw", "raw"),
+    ],
+)
+def test_tail_recovery_audits_are_unique_and_events_before_raw_per_operation(
+    tail_ledgers: tuple[str, str],
+) -> None:
+    capsule, _manifest, _environment, _plan = _context()
+    events = (
+        _prepared(capsule),
+        _tail_recovered(1, tail_ledgers[0]),
+        _tail_recovered(2, tail_ledgers[1]),
+    )
+
+    with pytest.raises(HistoryError) as caught:
+        _validate(events)
+
+    assert (caught.value.code, caught.value.ledger, caught.value.row_index) == (
+        "history_mismatch",
+        "events",
+        2,
+    )
+
+
+def test_tail_recovery_cannot_follow_a_recovered_finish_in_the_same_operation() -> None:
+    capsule, _manifest, environment, plan = _context()
+    start = _start(plan[0])
+    attempt = _attempt(plan[0], "success")
+    recovered_finish = make_event(
+        sequence=3,
+        run_id=RUN_ID,
+        occurred_at=NOW,
+        kind="request_finished",
+        operation_id=RECOVERY_OPERATION,
+        execution_session_id=None,
+        payload={
+            "call_sequence": start.payload.call_sequence,
+            "plan_item_id": start.payload.plan_item_id,
+            "attempt_id": start.payload.attempt_id,
+            "request_started_event_id": start.event_id,
+            "raw_record_sha256": raw_record_sha256(attempt),
+            "recovered": True,
+        },
+    )
+    late_tail = _tail_recovered(4, "events")
+
+    with pytest.raises(HistoryError) as caught:
+        _validate(
+            (
+                _prepared(capsule),
+                _execution_started(environment),
+                start,
+                recovered_finish,
+                late_tail,
+            ),
+            (attempt,),
+        )
+
+    assert (caught.value.code, caught.value.ledger, caught.value.row_index) == (
+        "history_mismatch",
+        "events",
+        4,
+    )

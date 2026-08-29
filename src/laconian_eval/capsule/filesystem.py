@@ -237,6 +237,7 @@ class LockHandle:
 
     descriptor: int
     _posix: FilesystemPosixOps = field(repr=False)
+    _exclusive: bool = field(repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -569,7 +570,7 @@ def _open_lock(
             with suppress(OSError):
                 os.close(descriptor)
         raise
-    return LockHandle(descriptor=descriptor, _posix=posix)
+    return LockHandle(descriptor=descriptor, _posix=posix, _exclusive=exclusive)
 
 
 def acquire_creator_lock(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Literal, NoReturn
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 from laconian_eval.capsule.attempts import (
     RawAttemptV2,
@@ -59,6 +59,7 @@ RecoveryKind = Literal[
     "delivery_ambiguous",
     "generation_completed",
 ]
+RecoveryStep = Literal["tail_events", "tail_raw", "finish", "marker", "completion"]
 IdentityKind = Literal["run", "operation", "session"]
 CoreIdentityDeclaration = Callable[[UUID, IdentityKind, int], None]
 SealIdentityDeclaration = Callable[[UUID, UUID, int], None]
@@ -156,6 +157,7 @@ class ValidatedHistoryV1:
     request_history_present: bool
     execution_history_present: bool
     latest_no_call_blocked: bool
+    latest_event_recovered: bool
     has_ambiguous_delivery: bool
     has_authentication_stop: bool
     seal_requested: SealRequestedEventV1 | None
@@ -174,6 +176,28 @@ def _fail(
     row_index: int | None = None,
 ) -> NoReturn:
     raise HistoryError(code, ledger, row_index)
+
+
+def _advance_recovery_phase(current: int, step: RecoveryStep, row_index: int) -> int:
+    if step == "tail_events":
+        if current != 0:
+            _fail("history_mismatch", "events", row_index)
+        return 1
+    if step == "tail_raw":
+        if current not in (0, 1):
+            _fail("history_mismatch", "events", row_index)
+        return 2
+    if step == "finish":
+        if current > 2:
+            _fail("history_mismatch", "events", row_index)
+        return 3
+    if step == "marker":
+        if current > 3:
+            _fail("history_mismatch", "events", row_index)
+        return 4
+    if current > 3:
+        _fail("history_mismatch", "events", row_index)
+    return 5
 
 
 def _python_major_minor(value: str, row_index: int) -> tuple[int, int]:
@@ -289,6 +313,7 @@ def _validate_event_ledger_v1(
     last_start: RequestStartedEventV1 | None = None
     last_finish: RequestFinishedEventV1 | None = None
     recovery_operation: UUID | None = None
+    recovery_phase = 0
     terminal_suffix = False
     seal_seen = False
     expected_call = 0
@@ -301,12 +326,17 @@ def _validate_event_ledger_v1(
         if declare_core_identity is not None:
             declare_core_identity(session_id, "session", row_index)
 
-    def accept_recovery_operation(operation_id: UUID, row_index: int) -> None:
-        nonlocal recovery_operation
-        if operation_id == recovery_operation:
-            return
-        declare_new_operation(operation_id, row_index)
-        recovery_operation = operation_id
+    def accept_recovery_operation(
+        operation_id: UUID,
+        row_index: int,
+        step: RecoveryStep,
+    ) -> None:
+        nonlocal recovery_operation, recovery_phase
+        if operation_id != recovery_operation:
+            declare_new_operation(operation_id, row_index)
+            recovery_operation = operation_id
+            recovery_phase = 0
+        recovery_phase = _advance_recovery_phase(recovery_phase, step, row_index)
 
     def plan_row(plan_item_id: str) -> PlanRowV1 | None:
         return plan_by_id.get(plan_item_id)
@@ -357,6 +387,7 @@ def _validate_event_ledger_v1(
                 declare_new_operation(event.operation_id, row_index)
             declare_new_session(event.execution_session_id, row_index)
             recovery_operation = None
+            recovery_phase = 0
             _validate_session(event, context.environment, row_index)
             active_epoch = (event.operation_id, event.execution_session_id)
             active_resume_ordinal = event.payload.resume_from_plan_ordinal
@@ -366,14 +397,18 @@ def _validate_event_ledger_v1(
             continue
 
         if isinstance(event, TailRecoveredEventV1):
-            expected_related = (
-                open_start.payload.attempt_id
+            allowed_related = (
+                {None, open_start.payload.attempt_id}
                 if event.payload.ledger == "raw" and open_start is not None
-                else None
+                else {None}
             )
-            if event.payload.related_attempt_id != expected_related:
+            if event.payload.related_attempt_id not in allowed_related:
                 _fail("identity_mismatch", "events", row_index)
-            accept_recovery_operation(event.operation_id, row_index)
+            accept_recovery_operation(
+                event.operation_id,
+                row_index,
+                "tail_events" if event.payload.ledger == "events" else "tail_raw",
+            )
             active_epoch = None
             active_resume_ordinal = None
             continue
@@ -388,6 +423,7 @@ def _validate_event_ledger_v1(
                     row_index,
                 )
             recovery_operation = None
+            recovery_phase = 0
             active_epoch = None
             active_resume_ordinal = None
             seal_seen = True
@@ -482,7 +518,7 @@ def _validate_event_ledger_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if finish_payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "finish")
             last_start = open_start
             last_finish = event
             open_start = None
@@ -503,7 +539,7 @@ def _validate_event_ledger_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if event.payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "marker")
             terminal_suffix = True
             active_epoch = None
             active_resume_ordinal = None
@@ -525,7 +561,7 @@ def _validate_event_ledger_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if event.payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "completion")
             terminal_suffix = True
             active_epoch = None
             active_resume_ordinal = None
@@ -541,11 +577,18 @@ def validate_event_ledger_v1(
     declare_core_identity: CoreIdentityDeclaration | None = None,
     declare_seal_identity: SealIdentityDeclaration | None = None,
     scratch_forbidden_namespace_identities: frozenset[NamespaceIdentity] | None = None,
+    reserved_operation_id: UUID | None = None,
 ) -> None:
     """Validate event-only grammar and exact identities with bounded resident memory."""
 
     if (declare_core_identity is None) != (declare_seal_identity is None):
         _fail("io_error", "events", None)
+    if reserved_operation_id is not None and (
+        type(reserved_operation_id) is not UUID
+        or reserved_operation_id.version != 4
+        or reserved_operation_id.variant != RFC_4122
+    ):
+        _fail("identity_mismatch", "events", None)
     if declare_core_identity is None:
         try:
             with ExactIdentityRegistry(
@@ -557,6 +600,8 @@ def validate_event_ledger_v1(
                     declare_core_identity=identities.declare_core,
                     declare_seal_identity=identities.declare_seal,
                 )
+                if reserved_operation_id is not None:
+                    identities.declare_core(reserved_operation_id, "operation", 0)
             return
         except IdentityCollision as error:
             _fail("identity_mismatch", "events", error.row_index)
@@ -569,6 +614,9 @@ def validate_event_ledger_v1(
             declare_core_identity=declare_core_identity,
             declare_seal_identity=declare_seal_identity,
         )
+        if reserved_operation_id is not None:
+            assert declare_core_identity is not None
+            declare_core_identity(reserved_operation_id, "operation", 0)
     except IdentityCollision as error:
         _fail("identity_mismatch", "events", error.row_index)
     except ScratchError:
@@ -722,10 +770,12 @@ def _validate_history_v1(
     completion_seen = False
     terminal_suffix = False
     recovery_operation: UUID | None = None
+    recovery_phase = 0
     seal_requested: SealRequestedEventV1 | None = None
     execution_history = False
     request_history = False
     latest_no_call_blocked = False
+    latest_event_recovered = False
     has_ambiguity = False
     has_auth = False
     current_ordinal = 0
@@ -758,12 +808,17 @@ def _validate_history_v1(
             raw_index += 1
         return value
 
-    def accept_recovery_operation(operation_id: UUID, row_index: int) -> None:
-        nonlocal recovery_operation
-        if operation_id == recovery_operation:
-            return
-        identity_registry.declare_core(operation_id, "operation", row_index)
-        recovery_operation = operation_id
+    def accept_recovery_operation(
+        operation_id: UUID,
+        row_index: int,
+        step: RecoveryStep,
+    ) -> None:
+        nonlocal recovery_operation, recovery_phase
+        if operation_id != recovery_operation:
+            identity_registry.declare_core(operation_id, "operation", row_index)
+            recovery_operation = operation_id
+            recovery_phase = 0
+        recovery_phase = _advance_recovery_phase(recovery_phase, step, row_index)
 
     def event_rows() -> Iterator[tuple[int, EventV1]]:
         row_index = 1
@@ -800,6 +855,19 @@ def _validate_history_v1(
         if type(event) is PreparedEventV1:
             _fail("history_mismatch", "events", row_index)
 
+        latest_event_recovered = isinstance(event, TailRecoveredEventV1) or (
+            isinstance(
+                event,
+                (
+                    RequestFinishedEventV1,
+                    AuthenticationStoppedEventV1,
+                    DeliveryAmbiguousEventV1,
+                    GenerationCompletedEventV1,
+                ),
+            )
+            and event.payload.recovered
+        )
+
         if isinstance(event, ExecutionStartedEventV1):
             execution_history = True
             latest_no_call_blocked = False
@@ -814,6 +882,7 @@ def _validate_history_v1(
                 identity_registry.declare_core(event.operation_id, "operation", row_index)
             identity_registry.declare_core(session_id, "session", row_index)
             recovery_operation = None
+            recovery_phase = 0
             _validate_session(event, context.environment, row_index)
             if event.payload.resume_from_plan_ordinal != current_ordinal:
                 _fail("identity_mismatch", "events", row_index)
@@ -824,12 +893,20 @@ def _validate_history_v1(
         if isinstance(event, TailRecoveredEventV1):
             expected_related = (
                 open_commit.start.payload.attempt_id
-                if event.payload.ledger == "raw" and open_commit
+                if (
+                    event.payload.ledger == "raw"
+                    and open_commit is not None
+                    and open_commit.raw is None
+                )
                 else None
             )
             if event.payload.related_attempt_id != expected_related:
                 _fail("identity_mismatch", "events", row_index)
-            accept_recovery_operation(event.operation_id, row_index)
+            accept_recovery_operation(
+                event.operation_id,
+                row_index,
+                "tail_events" if event.payload.ledger == "events" else "tail_raw",
+            )
             active_epoch = None
             continue
 
@@ -844,6 +921,7 @@ def _validate_history_v1(
                 row_index,
             )
             recovery_operation = None
+            recovery_phase = 0
             seal_requested = event
             continue
 
@@ -972,7 +1050,7 @@ def _validate_history_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if finish_payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "finish")
             open_commit = None
             last_projection = projection
             last_finish = event
@@ -1004,7 +1082,7 @@ def _validate_history_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if event.payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "marker")
             pending_marker = None
             marker_seen = True
             terminal_suffix = True
@@ -1029,7 +1107,7 @@ def _validate_history_v1(
             ):
                 _fail("history_mismatch", "events", row_index)
             if event.payload.recovered:
-                accept_recovery_operation(event.operation_id, row_index)
+                accept_recovery_operation(event.operation_id, row_index, "completion")
             completion_seen = True
             terminal_suffix = True
             active_epoch = None
@@ -1061,10 +1139,10 @@ def _validate_history_v1(
                 last_projection.plan_item_id,
                 last_projection.attempt_id,
                 (
-                    last_finish.payload.request_started_event_id
-                    if last_finish is not None
-                    else open_commit.start.event_id
+                    open_commit.start.event_id
                     if open_commit is not None
+                    else last_finish.payload.request_started_event_id
+                    if last_finish is not None
                     else None
                 ),
             )
@@ -1078,7 +1156,9 @@ def _validate_history_v1(
                 "generation_completed",
                 final_sequence,
                 origin_request_finished_event_id=(
-                    last_finish.event_id if last_finish is not None else None
+                    last_finish.event_id
+                    if last_finish is not None and open_commit is None
+                    else None
                 ),
             )
         )
@@ -1107,6 +1187,7 @@ def _validate_history_v1(
         request_history_present=request_history,
         execution_history_present=execution_history,
         latest_no_call_blocked=latest_no_call_blocked,
+        latest_event_recovered=latest_event_recovered,
         has_ambiguous_delivery=has_ambiguity
         or (open_commit is not None and open_commit.raw is None),
         has_authentication_stop=has_auth,
@@ -1123,14 +1204,21 @@ def validate_history_v1(
     events: Iterable[EventV1],
     raw_attempts: Iterable[RawAttemptV2],
     scratch_forbidden_namespace_identities: frozenset[NamespaceIdentity] | None = None,
+    reserved_operation_id: UUID | None = None,
 ) -> ValidatedHistoryV1:
     """Validate both ledgers with exact external identity state and bounded resident memory."""
 
+    if reserved_operation_id is not None and (
+        type(reserved_operation_id) is not UUID
+        or reserved_operation_id.version != 4
+        or reserved_operation_id.variant != RFC_4122
+    ):
+        _fail("identity_mismatch", "events", None)
     try:
         with ExactIdentityRegistry(
             forbidden_namespace_identities=scratch_forbidden_namespace_identities
         ) as identities:
-            return _validate_history_v1(
+            history = _validate_history_v1(
                 capsule=capsule,
                 manifest=manifest,
                 environment=environment,
@@ -1139,6 +1227,9 @@ def validate_history_v1(
                 raw_attempts=raw_attempts,
                 identity_registry=identities,
             )
+            if reserved_operation_id is not None:
+                identities.declare_core(reserved_operation_id, "operation", 0)
+            return history
     except IdentityCollision as error:
         _fail("identity_mismatch", "events", error.row_index)
     except ScratchError:
