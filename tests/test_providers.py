@@ -119,6 +119,31 @@ def test_fake_provider_rejects_missing_key_without_retry() -> None:
     assert error.value.request_id is None
 
 
+def test_fake_missing_key_is_definitely_not_sent() -> None:
+    provider = FakeProvider({})
+
+    with pytest.raises(ProviderError, match="missing fake key") as error:
+        provider.generate(request(case_id="missing", arm="if", repetition=0))
+
+    assert error.value.delivery_certainty == "definitely_not_sent"
+
+
+def test_fake_provider_preserves_scripted_delivery_evidence_by_identity() -> None:
+    scripted = ProviderError(
+        kind="synthetic_failure",
+        message="Synthetic failure.",
+        retryable=True,
+        delivery_certainty="definitely_rejected",
+    )
+    provider = FakeProvider({"case:if:0": scripted})
+
+    with pytest.raises(ProviderError) as error:
+        provider.generate(request(case_id="case", arm="if", repetition=0))
+
+    assert error.value is scripted
+    assert error.value.delivery_certainty == "definitely_rejected"
+
+
 def test_replay_provider_rejects_missing_key(tmp_path) -> None:
     path = tmp_path / "responses.yaml"
     provider = ReplayProvider.from_path(path)
@@ -126,6 +151,27 @@ def test_replay_provider_rejects_missing_key(tmp_path) -> None:
         provider.generate(request(case_id="missing", arm="if", repetition=0))
     assert error.value.retryable is False
     assert str(path) in str(error.value)
+
+
+def test_replay_missing_key_is_definitely_not_sent(tmp_path: Path) -> None:
+    provider = ReplayProvider.from_path(tmp_path / "missing.yaml")
+
+    with pytest.raises(ProviderError, match="missing replay key") as error:
+        provider.generate(request(case_id="missing", arm="if", repetition=0))
+
+    assert error.value.delivery_certainty == "definitely_not_sent"
+
+
+def test_replay_task10_still_accepts_rows_without_response_model(tmp_path: Path) -> None:
+    path = tmp_path / "responses.yaml"
+    write_yaml(path, "case:if:0:\n  output_text: Done.")
+
+    result = ReplayProvider.from_path(path).generate(
+        request(case_id="case", arm="if", repetition=0)
+    )
+
+    assert result.response_model is None
+    assert result.delivery_certainty == "response_received"
 
 
 def test_replay_provider_rejects_duplicate_top_level_key_with_path(tmp_path: Path) -> None:

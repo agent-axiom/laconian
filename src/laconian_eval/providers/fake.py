@@ -18,6 +18,7 @@ class FakeProvider:
                 kind="missing_fake_key",
                 message=f"missing fake key: {key}",
                 retryable=False,
+                delivery_certainty="definitely_not_sent",
             ) from None
 
         if isinstance(outcome, ProviderError):

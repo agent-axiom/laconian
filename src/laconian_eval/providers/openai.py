@@ -5,6 +5,7 @@ import os
 from typing import Protocol, cast
 
 from laconian_eval.providers.base import (
+    DeliveryCertainty,
     GenerationRequest,
     GenerationResult,
     ProviderError,
@@ -20,21 +21,52 @@ class _OpenAIClient(Protocol):
     responses: _ResponsesResource
 
 
+def _provider_error(
+    *,
+    kind: str,
+    message: str,
+    retryable: bool,
+    delivery_certainty: DeliveryCertainty,
+    request_id: str | None = None,
+    response_model: str | None = None,
+    finish_reason: str | None = None,
+    usage: TokenUsage | None = None,
+) -> ProviderError:
+    return ProviderError(
+        kind=kind,
+        message=message,
+        retryable=retryable,
+        request_id=request_id,
+        delivery_certainty=delivery_certainty,
+        response_model=response_model,
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
 def _configuration_error(message: str) -> ProviderError:
-    return ProviderError(kind="configuration", message=message, retryable=False)
+    return _provider_error(
+        kind="configuration",
+        message=message,
+        retryable=False,
+        delivery_certainty="definitely_not_sent",
+    )
 
 
 def _validate_timeout(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _configuration_error("timeout_seconds must be a finite positive number")
-    normalized = float(value)
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise _configuration_error("timeout_seconds must be a finite positive number") from None
     if not math.isfinite(normalized) or normalized <= 0:
         raise _configuration_error("timeout_seconds must be a finite positive number")
     return normalized
 
 
-def _exception_names(error: Exception) -> frozenset[str]:
-    return frozenset(base.__name__ for base in type(error).__mro__)
+def _openai_exception_names(error: Exception) -> frozenset[str]:
+    return frozenset(base.__name__ for base in type(error).__mro__ if base.__module__ == "openai")
 
 
 def _request_id(error: Exception) -> str | None:
@@ -43,30 +75,20 @@ def _request_id(error: Exception) -> str | None:
 
 
 def _classify_api_error(error: Exception) -> ProviderError | None:
-    names = _exception_names(error)
-    recognized = bool(
-        names
-        & {
-            "OpenAIError",
-            "APIError",
-            "APIStatusError",
-            "AuthenticationError",
-            "PermissionDeniedError",
-            "BadRequestError",
-            "RateLimitError",
-            "APITimeoutError",
-            "APIConnectionError",
-            "InternalServerError",
-        }
-    )
-    if not recognized:
+    names = _openai_exception_names(error)
+    if "OpenAIError" not in names:
         return None
-
     raw_status = getattr(error, "status_code", None)
     status = raw_status if type(raw_status) is int else None
     kind = "provider_error"
     retryable = False
-    if "AuthenticationError" in names or status == 401:
+    if "APITimeoutError" in names:
+        kind = "timeout"
+        retryable = True
+    elif "APIConnectionError" in names:
+        kind = "connection"
+        retryable = True
+    elif "AuthenticationError" in names or status == 401:
         kind = "authentication"
     elif "PermissionDeniedError" in names or status == 403:
         kind = "permission"
@@ -74,12 +96,6 @@ def _classify_api_error(error: Exception) -> ProviderError | None:
         kind = "bad_request"
     elif "RateLimitError" in names or status == 429:
         kind = "rate_limit"
-        retryable = True
-    elif "APITimeoutError" in names:
-        kind = "timeout"
-        retryable = True
-    elif "APIConnectionError" in names:
-        kind = "connection"
         retryable = True
     elif status in (408, 409):
         kind = "provider_status"
@@ -90,20 +106,45 @@ def _classify_api_error(error: Exception) -> ProviderError | None:
     elif "APIStatusError" in names:
         kind = "provider_status"
 
-    return ProviderError(
+    timeout_or_connection = bool(names & {"APITimeoutError", "APIConnectionError"})
+    if timeout_or_connection or status == 408 or (status is not None and status >= 500):
+        delivery_certainty: DeliveryCertainty = "unknown"
+    elif (status is not None and 400 <= status < 500) or names & {
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "BadRequestError",
+        "RateLimitError",
+    }:
+        delivery_certainty = "definitely_rejected"
+    else:
+        delivery_certainty = "unknown"
+
+    return _provider_error(
         kind=kind,
         message=str(error),
         retryable=retryable,
+        delivery_certainty=delivery_certainty,
         request_id=_request_id(error),
     )
 
 
-def _malformed(message: str, request_id: str | None) -> ProviderError:
-    return ProviderError(
+def _malformed(
+    message: str,
+    request_id: str | None,
+    *,
+    response_model: str | None = None,
+    finish_reason: str | None = None,
+    usage: TokenUsage | None = None,
+) -> ProviderError:
+    return _provider_error(
         kind="malformed_response",
         message=message,
         retryable=False,
+        delivery_certainty="response_received",
         request_id=request_id,
+        response_model=response_model,
+        finish_reason=finish_reason,
+        usage=usage,
     )
 
 
@@ -145,9 +186,9 @@ def _parse_usage(raw_usage: object | None, request_id: str | None) -> TokenUsage
     output_tokens = _required_count(raw_usage, "output_tokens", request_id)
     total_tokens = _required_count(raw_usage, "total_tokens", request_id)
     cached_tokens = _optional_cached_count(raw_usage, request_id)
-    if total_tokens < input_tokens + output_tokens:
+    if total_tokens != input_tokens + output_tokens:
         raise _malformed(
-            "response usage total_tokens must cover input_tokens + output_tokens",
+            "response usage total_tokens must equal input_tokens + output_tokens",
             request_id,
         )
     if cached_tokens is not None and cached_tokens > input_tokens:
@@ -181,32 +222,79 @@ def _public_response_error(error: object, request_id: str | None) -> tuple[str, 
 
 
 def _parse_response(response: object) -> GenerationResult:
-    request_id = _response_request_id(response)
-    status = getattr(response, "status", None)
-    if not isinstance(status, str):
-        raise _malformed("response status must be a string", request_id)
-    response_model = getattr(response, "model", None)
-    if not isinstance(response_model, str) or not response_model.strip():
-        raise _malformed("response model must be a nonblank string", request_id)
+    metadata_error: str | None = None
+    request_id: str | None = None
+    try:
+        request_id = _response_request_id(response)
+    except ProviderError as error:
+        metadata_error = error.message
 
+    raw_response_model = getattr(response, "model", None)
+    response_model: str | None = None
+    if not isinstance(raw_response_model, str) or not raw_response_model.strip():
+        metadata_error = metadata_error or "response model must be a nonblank string"
+    else:
+        response_model = raw_response_model
+
+    raw_status = getattr(response, "status", None)
+    status: str | None = None
+    if not isinstance(raw_status, str):
+        metadata_error = metadata_error or "response status must be a string"
+    else:
+        status = raw_status
+
+    usage: TokenUsage | None = None
+    try:
+        usage = _parse_usage(getattr(response, "usage", None), request_id)
+    except ProviderError as error:
+        metadata_error = metadata_error or error.message
+
+    if metadata_error is not None:
+        raise _malformed(
+            metadata_error,
+            request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
+        )
+
+    assert response_model is not None
+    assert status is not None
     response_error = getattr(response, "error", None)
     if status == "incomplete":
-        raise ProviderError(
+        raise _provider_error(
             kind="incomplete_response",
             message=f"OpenAI response is incomplete for model {response_model}",
             retryable=False,
+            delivery_certainty="response_received",
             request_id=request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
         )
     if status == "failed":
         if response_error is None:
-            raise ProviderError(
+            raise _provider_error(
                 kind="failed_response",
                 message=f"OpenAI response failed for model {response_model}",
                 retryable=False,
+                delivery_certainty="response_received",
                 request_id=request_id,
+                response_model=response_model,
+                finish_reason=status,
+                usage=usage,
             )
-        code, message = _public_response_error(response_error, request_id)
-        raise ProviderError(
+        try:
+            code, message = _public_response_error(response_error, request_id)
+        except ProviderError as error:
+            raise _malformed(
+                error.message,
+                request_id,
+                response_model=response_model,
+                finish_reason=status,
+                usage=usage,
+            ) from None
+        raise _provider_error(
             kind=code,
             message=message,
             retryable=code
@@ -216,31 +304,64 @@ def _parse_response(response: object) -> GenerationResult:
                 "server_error",
                 "vector_store_timeout",
             },
+            delivery_certainty="response_received",
             request_id=request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
         )
     if status == "cancelled":
         message = f"OpenAI response was cancelled for model {response_model}"
         if response_error is not None:
-            _, message = _public_response_error(response_error, request_id)
-        raise ProviderError(
+            try:
+                _, message = _public_response_error(response_error, request_id)
+            except ProviderError as error:
+                raise _malformed(
+                    error.message,
+                    request_id,
+                    response_model=response_model,
+                    finish_reason=status,
+                    usage=usage,
+                ) from None
+        raise _provider_error(
             kind="cancelled",
             message=message,
             retryable=False,
+            delivery_certainty="response_received",
             request_id=request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
         )
     if status != "completed":
         raise _malformed(
-            f"response status {status!r} is not a completed terminal status", request_id
+            f"response status {status!r} is not a completed terminal status",
+            request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
         )
     if response_error is not None:
-        raise _malformed("completed response must not contain an error", request_id)
+        raise _malformed(
+            "completed response must not contain an error",
+            request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
+        )
 
     output_text = getattr(response, "output_text", None)
     if not isinstance(output_text, str) or not output_text.strip():
-        raise _malformed("response output_text must be a nonblank string", request_id)
+        raise _malformed(
+            "response output_text must be a nonblank string",
+            request_id,
+            response_model=response_model,
+            finish_reason=status,
+            usage=usage,
+        )
     return GenerationResult(
         output_text=output_text,
-        usage=_parse_usage(getattr(response, "usage", None), request_id),
+        usage=usage,
         request_id=request_id,
         finish_reason=status,
         response_model=response_model,
@@ -268,7 +389,7 @@ class OpenAIProvider:
                 "OPENAI_CUSTOM_HEADERS must be unset or blank for reproducible runs"
             )
         try:
-            from openai import OpenAI
+            from openai import DefaultHttpxClient, OpenAI
         except ImportError as exc:
             raise _configuration_error(
                 "the openai extra is required; install with `uv sync --extra openai`"
@@ -284,6 +405,7 @@ class OpenAIProvider:
                 project="",
                 admin_api_key="",
                 webhook_secret="",
+                http_client=DefaultHttpxClient(trust_env=False),
             ),
         )
 
@@ -300,12 +422,13 @@ class OpenAIProvider:
             raise _configuration_error("max_output_tokens must be a positive integer")
         if request.temperature is not None:
             temperature = request.temperature
-            if (
-                isinstance(temperature, bool)
-                or not isinstance(temperature, (int, float))
-                or not math.isfinite(float(temperature))
-                or not 0 <= float(temperature) <= 2
-            ):
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+                raise _configuration_error("temperature must be null or between 0 and 2")
+            try:
+                normalized_temperature = float(temperature)
+            except (OverflowError, TypeError, ValueError):
+                raise _configuration_error("temperature must be null or between 0 and 2") from None
+            if not math.isfinite(normalized_temperature) or not 0 <= normalized_temperature <= 2:
                 raise _configuration_error("temperature must be null or between 0 and 2")
         request_timeout = _validate_timeout(request.timeout_seconds)
         if request_timeout != self._timeout_seconds:

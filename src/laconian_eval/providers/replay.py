@@ -145,4 +145,5 @@ class ReplayProvider:
                 kind="missing_replay_key",
                 message=f"missing replay key: {key}{source}",
                 retryable=False,
+                delivery_certainty="definitely_not_sent",
             ) from None
