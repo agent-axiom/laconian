@@ -1,5 +1,6 @@
 import json
 from dataclasses import FrozenInstanceError
+from hashlib import sha256
 from pathlib import Path
 from textwrap import dedent
 
@@ -162,16 +163,74 @@ def test_replay_missing_key_is_definitely_not_sent(tmp_path: Path) -> None:
     assert error.value.delivery_certainty == "definitely_not_sent"
 
 
-def test_replay_task10_still_accepts_rows_without_response_model(tmp_path: Path) -> None:
-    path = tmp_path / "responses.yaml"
-    write_yaml(path, "case:if:0:\n  output_text: Done.")
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"output_text": "Done."},
+        {"output_text": "Done.", "response_model": None},
+        {"output_text": "Done.", "response_model": " \t"},
+        {"output_text": "Done.", "response_model": 7},
+    ],
+)
+def test_replay_provider_requires_exact_nonblank_response_model(
+    tmp_path: Path,
+    entry: dict[str, object],
+) -> None:
+    path = tmp_path / "invalid-response-model.yaml"
+    path.write_text(yaml.safe_dump({"case:if:0": entry}), encoding="utf-8")
 
-    result = ReplayProvider.from_path(path).generate(
-        request(case_id="case", arm="if", repetition=0)
+    with pytest.raises(
+        ValueError,
+        match="field 'response_model' must be an exact nonblank string",
+    ) as error:
+        ReplayProvider.from_path(path)
+
+    assert str(path) in str(error.value)
+
+
+def test_replay_provider_preserves_per_attempt_response_models(tmp_path: Path) -> None:
+    path = tmp_path / "responses.yaml"
+    write_yaml(
+        path,
+        """
+        case:if:0:
+          output_text: First.
+          response_model: returned-model-a
+        case:if:1:
+          output_text: Second.
+          response_model: returned-model-b
+        """,
+    )
+    provider = ReplayProvider.from_path(path)
+
+    first = provider.generate(request(case_id="case", arm="if", repetition=0))
+    second = provider.generate(request(case_id="case", arm="if", repetition=1))
+
+    assert first.response_model == "returned-model-a"
+    assert second.response_model == "returned-model-b"
+    assert first.response_model != request(case_id="case", arm="if", repetition=0).model
+
+
+def test_replay_provider_rejects_one_invalid_row_among_valid_rows(tmp_path: Path) -> None:
+    path = tmp_path / "mixed-validity.yaml"
+    write_yaml(
+        path,
+        """
+        case:if:0:
+          output_text: Valid.
+          response_model: returned-model-a
+        case:if:1:
+          output_text: Missing returned model.
+        case:if:2:
+          output_text: Also valid.
+          response_model: returned-model-b
+        """,
     )
 
-    assert result.response_model is None
-    assert result.delivery_certainty == "response_received"
+    with pytest.raises(ValueError, match=r"case:if:1.*response_model") as error:
+        ReplayProvider.from_path(path)
+
+    assert str(path) in str(error.value)
 
 
 def test_replay_provider_rejects_duplicate_top_level_key_with_path(tmp_path: Path) -> None:
@@ -235,6 +294,7 @@ def test_replay_provider_parses_description_usage_and_metadata(tmp_path: Path) -
         description: Synthetic data ignored by replay.
         case:if:0:
           output_text: Done.
+          response_model: returned-model-a
           input_tokens: 8
           output_tokens: 2
           total_tokens: 10
@@ -243,6 +303,7 @@ def test_replay_provider_parses_description_usage_and_metadata(tmp_path: Path) -
           finish_reason: stop
         case:baseline:0:
           output_text: No usage metadata.
+          response_model: returned-model-b
           request_id: null
           finish_reason: null
         """,
@@ -262,15 +323,25 @@ def test_replay_provider_parses_description_usage_and_metadata(tmp_path: Path) -
         ),
         request_id="replay-request-1",
         finish_reason="stop",
+        response_model="returned-model-a",
     )
-    assert no_usage == GenerationResult(output_text="No usage metadata.")
+    assert no_usage == GenerationResult(
+        output_text="No usage metadata.",
+        response_model="returned-model-b",
+    )
 
 
 def test_replay_provider_snapshots_loaded_entries(tmp_path: Path) -> None:
     path = tmp_path / "responses.yaml"
-    write_yaml(path, "case:if:0:\n  output_text: Original.")
+    write_yaml(
+        path,
+        "case:if:0:\n  output_text: Original.\n  response_model: returned-model-a",
+    )
     provider = ReplayProvider.from_path(path)
-    write_yaml(path, "case:if:0:\n  output_text: Mutated.")
+    write_yaml(
+        path,
+        "case:if:0:\n  output_text: Mutated.\n  response_model: returned-model-b",
+    )
 
     result = provider.generate(request(case_id="case", arm="if", repetition=0))
 
@@ -297,7 +368,7 @@ def test_replay_provider_rejects_malformed_or_nonmapping_yaml_with_path(
         None,
         "not a mapping",
         {},
-        {"output_text": 7},
+        {"output_text": 7, "response_model": "returned-model"},
     ],
 )
 def test_replay_provider_rejects_invalid_entries_with_path(
@@ -316,9 +387,18 @@ def test_replay_provider_rejects_invalid_entries_with_path(
 @pytest.mark.parametrize(
     "entry",
     [
-        {"output_text": "Done.", "input_tokens": 2},
-        {"output_text": "Done.", "output_tokens": 1, "total_tokens": 3},
-        {"output_text": "Done.", "cached_input_tokens": 1},
+        {"output_text": "Done.", "response_model": "returned-model", "input_tokens": 2},
+        {
+            "output_text": "Done.",
+            "response_model": "returned-model",
+            "output_tokens": 1,
+            "total_tokens": 3,
+        },
+        {
+            "output_text": "Done.",
+            "response_model": "returned-model",
+            "cached_input_tokens": 1,
+        },
     ],
 )
 def test_replay_provider_rejects_partial_usage_with_path(
@@ -356,6 +436,7 @@ def test_replay_provider_rejects_invalid_token_counts_with_path(
     path = tmp_path / "invalid-count.yaml"
     entry: dict[str, object] = {
         "output_text": "Done.",
+        "response_model": "returned-model",
         "input_tokens": 2,
         "output_tokens": 1,
         "total_tokens": 3,
@@ -375,12 +456,21 @@ def test_replay_provider_rejects_invalid_token_counts_with_path(
     [
         {
             "output_text": "Done.",
+            "response_model": "returned-model",
             "input_tokens": 2,
             "output_tokens": 2,
             "total_tokens": 3,
         },
         {
             "output_text": "Done.",
+            "response_model": "returned-model",
+            "input_tokens": 2,
+            "output_tokens": 1,
+            "total_tokens": 4,
+        },
+        {
+            "output_text": "Done.",
+            "response_model": "returned-model",
             "input_tokens": 2,
             "output_tokens": 1,
             "total_tokens": 3,
@@ -404,9 +494,17 @@ def test_replay_provider_rejects_inconsistent_token_counts_with_path(
 @pytest.mark.parametrize(
     "entry",
     [
-        {"output_text": "Done.", "unexpected": "field"},
-        {"output_text": "Done.", "request_id": 1},
-        {"output_text": "Done.", "finish_reason": False},
+        {
+            "output_text": "Done.",
+            "response_model": "returned-model",
+            "unexpected": "field",
+        },
+        {"output_text": "Done.", "response_model": "returned-model", "request_id": 1},
+        {
+            "output_text": "Done.",
+            "response_model": "returned-model",
+            "finish_reason": False,
+        },
     ],
 )
 def test_replay_provider_rejects_extra_or_invalid_metadata_with_path(
@@ -425,8 +523,14 @@ def test_replay_provider_rejects_extra_or_invalid_metadata_with_path(
 @pytest.mark.parametrize(
     "document",
     [
-        {"description": 3, "case:if:0": {"output_text": "Done."}},
-        {7: {"output_text": "Done."}},
+        {
+            "description": 3,
+            "case:if:0": {
+                "output_text": "Done.",
+                "response_model": "returned-model",
+            },
+        },
+        {7: {"output_text": "Done.", "response_model": "returned-model"}},
     ],
 )
 def test_replay_provider_rejects_invalid_top_level_fields_with_path(
@@ -454,6 +558,13 @@ def test_complete_replay_fixture_covers_every_case_arm_once_with_metadata() -> N
     assert len(cases) == 24
     assert len(raw) == 96
     assert set(raw) == expected_keys
+    assert (
+        sum(
+            type(entry) is dict and entry.get("response_model") == "replay-v1"
+            for entry in raw.values()
+        )
+        == 96
+    )
 
     provider = ReplayProvider.from_path(REPLAY_FIXTURE)
     request_ids: set[str] = set()
@@ -464,9 +575,10 @@ def test_complete_replay_fixture_covers_every_case_arm_once_with_metadata() -> N
             assert result.usage.input_tokens > 0
             assert result.usage.output_tokens > 0
             assert result.usage.total_tokens > 0
-            assert result.usage.total_tokens >= (
+            assert result.usage.total_tokens == (
                 result.usage.input_tokens + result.usage.output_tokens
             )
+            assert result.response_model == "replay-v1"
             assert result.request_id
             assert result.request_id not in request_ids
             request_ids.add(result.request_id)
@@ -482,6 +594,7 @@ def test_complete_replay_fixture_has_valid_exact_structured_outputs() -> None:
                 request(case_id=f"structured-json-{locale}", arm=arm, repetition=0)
             )
             json_value = json.loads(json_result.output_text)
+            assert json_result.response_model == "replay-v1"
             assert isinstance(json_value, dict)
             assert set(json_value) == {"risk", "mitigation", "confidence"}
 
@@ -489,8 +602,21 @@ def test_complete_replay_fixture_has_valid_exact_structured_outputs() -> None:
                 request(case_id=f"structured-yaml-{locale}", arm=arm, repetition=0)
             )
             yaml_value = yaml.safe_load(yaml_result.output_text)
+            assert yaml_result.response_model == "replay-v1"
             assert isinstance(yaml_value, dict)
             assert set(yaml_value) == {"status", "reason", "next_step"}
+
+
+def test_complete_replay_fixture_migration_preserves_all_preexisting_bytes() -> None:
+    fixture_bytes = REPLAY_FIXTURE.read_bytes()
+    inserted = b"  response_model: replay-v1\n"
+
+    assert fixture_bytes.count(inserted) == 96
+    assert fixture_bytes.count(inserted + b"  input_tokens:") == 96
+    projection = fixture_bytes.replace(inserted, b"")
+    assert sha256(projection).hexdigest() == (
+        "9331d6ffbf14355a307ace376c6a3a4c93ca7f645a149e543696e334c040afb1"
+    )
 
 
 def test_complete_replay_fixture_contains_explicit_synthetic_hard_failures() -> None:

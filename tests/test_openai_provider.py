@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from laconian_eval.capsule.attempts import normalize_provider_outcome
+from laconian_eval.capsule.sanitizer import SanitizerPatterns
 from laconian_eval.providers import GenerationRequest, ProviderError, TokenUsage
 from laconian_eval.providers.openai import OpenAIProvider
 
@@ -697,3 +699,56 @@ def test_huge_provider_timeout_is_a_local_configuration_error() -> None:
     assert caught.value.retryable is False
     assert caught.value.delivery_certainty == "definitely_not_sent"
     assert client.responses.calls == []
+
+
+def test_injected_openai_result_flows_through_content_free_normalization() -> None:
+    patterns = SanitizerPatterns(
+        credential_values=("TOP-SECRET",),
+        cwd_roots=("/private/build",),
+    )
+    parsed = OpenAIProvider(
+        client=StubClient(
+            response(
+                output_text="TOP-SECRET answer",
+                _request_id="/private/build/request",
+            )
+        )
+    ).generate(request())
+
+    evidence = normalize_provider_outcome(parsed, patterns=patterns)
+
+    assert evidence.delivery_certainty == "response_received"
+    assert evidence.output is None
+    assert evidence.response_model == "gpt-5.5-2026-08-01"
+    assert evidence.request_id is None
+    assert evidence.finish_reason == "completed"
+    assert evidence.error is not None
+    assert evidence.error.kind == "unsafe_provider_metadata"
+    assert evidence.error.message == "unsafe_provider_metadata"
+    assert evidence.error.retryable is False
+    assert "TOP-SECRET" not in repr(evidence)
+    assert "/private/build" not in repr(evidence)
+
+
+def test_injected_openai_error_flows_through_diagnostic_normalization() -> None:
+    patterns = SanitizerPatterns(
+        credential_values=("TOP-SECRET",),
+        cwd_roots=("/private/build",),
+    )
+    exception = sdk_error_type("RateLimitError")("TOP-SECRET failed at /private/build/job")
+    exception.status_code = 429  # type: ignore[attr-defined]
+    exception.request_id = "req-safe"  # type: ignore[attr-defined]
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=StubClient(exception)).generate(request())
+
+    evidence = normalize_provider_outcome(caught.value, patterns=patterns)
+
+    assert evidence.delivery_certainty == "definitely_rejected"
+    assert evidence.output is None
+    assert evidence.request_id == "req-safe"
+    assert evidence.error is not None
+    assert evidence.error.kind == "rate_limit"
+    assert evidence.error.message == "[REDACTED] failed at [CWD]/job"
+    assert evidence.error.retryable is True
+    assert "TOP-SECRET" not in repr(evidence)
+    assert "/private/build" not in repr(evidence)

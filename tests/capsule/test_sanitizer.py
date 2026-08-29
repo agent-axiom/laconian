@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import builtins
+import hashlib
 from dataclasses import FrozenInstanceError
 
 import pytest
 
+import laconian_eval.capsule.sanitizer as sanitizer_module
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
 from laconian_eval.capsule.sanitizer import (
     DIAGNOSTIC_TRUNCATION_SUFFIX,
@@ -366,3 +369,455 @@ def test_diagnostic_requires_an_exact_builtin_string() -> None:
 
     assert caught.value.code == "invalid_diagnostic"
     assert str(caught.value) == "diagnostic sanitization failed"
+
+
+def test_output_uses_only_credential_patterns_longest_first() -> None:
+    patterns = _patterns(
+        credential_values=("secret", "secret-long"),
+        source_roots=("/workspace",),
+        local_hostnames=("builder",),
+    )
+    expected_text = "[REDACTED] [REDACTED] /workspace builder"
+
+    result = sanitizer_module.sanitize_output(
+        "secret-long secret /workspace builder",
+        patterns=patterns,
+    )
+
+    assert result == sanitizer_module.SanitizedOutput(
+        text=expected_text,
+        byte_length=len(expected_text.encode("utf-8")),
+        sha256=hashlib.sha256(expected_text.encode("utf-8")).hexdigest(),
+        credential_replacement_count=2,
+    )
+    assert result.was_redacted is True
+    assert not hasattr(result, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        result.text = "changed"  # type: ignore[misc]
+
+
+def test_output_replacements_are_not_rescanned() -> None:
+    result = sanitizer_module.sanitize_output(
+        "secret",
+        patterns=_patterns(credential_values=("secret", "[REDACTED]")),
+    )
+
+    assert result.text == "[REDACTED]"
+    assert result.credential_replacement_count == 1
+
+
+def test_output_redaction_count_precedes_size_decision() -> None:
+    limit = RESOURCE_LIMITS_V1.output_utf8_bytes
+    replacement_bytes = len(b"[REDACTED]")
+    occurrences = (limit // replacement_bytes) + 1
+
+    result = sanitizer_module.sanitize_output(
+        "x" * occurrences,
+        patterns=_patterns(credential_values=("x",)),
+    )
+
+    assert result.text is None
+    assert result.byte_length == occurrences * replacement_bytes
+    assert result.credential_replacement_count == occurrences
+    assert result.was_redacted is True
+
+
+def test_output_at_two_mib_is_retained_with_exact_hash() -> None:
+    value = "x" * RESOURCE_LIMITS_V1.output_utf8_bytes
+
+    result = sanitizer_module.sanitize_output(value, patterns=_patterns())
+
+    assert result.text == value
+    assert result.byte_length == RESOURCE_LIMITS_V1.output_utf8_bytes
+    assert result.sha256 == hashlib.sha256(value.encode("utf-8")).hexdigest()
+    assert result.credential_replacement_count == 0
+    assert result.was_redacted is False
+
+
+def test_output_over_two_mib_retains_only_sanitized_length_and_hash() -> None:
+    value = "x" * (RESOURCE_LIMITS_V1.output_utf8_bytes + 1)
+
+    result = sanitizer_module.sanitize_output(value, patterns=_patterns())
+
+    assert result == sanitizer_module.SanitizedOutput(
+        text=None,
+        byte_length=RESOURCE_LIMITS_V1.output_utf8_bytes + 1,
+        sha256=hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        credential_replacement_count=0,
+    )
+
+
+def test_output_never_hashes_or_retains_pre_redaction_secret_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_sha256 = hashlib.sha256
+    hashed_chunks: list[bytes] = []
+
+    class RecordingHash:
+        def __init__(self) -> None:
+            self._inner = original_sha256()
+
+        def update(self, value: bytes) -> None:
+            hashed_chunks.append(bytes(value))
+            self._inner.update(value)
+
+        def hexdigest(self) -> str:
+            return self._inner.hexdigest()
+
+    monkeypatch.setattr(sanitizer_module.hashlib, "sha256", RecordingHash)
+    secret = "top-secret-value"
+    expected_text = "before [REDACTED] after"
+
+    result = sanitizer_module.sanitize_output(
+        f"before {secret} after",
+        patterns=_patterns(credential_values=(secret,)),
+    )
+
+    hashed = b"".join(hashed_chunks)
+    assert hashed == expected_text.encode("utf-8")
+    assert secret.encode("utf-8") not in hashed
+    assert result.text == expected_text
+    assert result.sha256 == original_sha256(hashed).hexdigest()
+
+
+def test_output_secret_crossing_stream_chunk_boundary_is_redacted() -> None:
+    prefix = "a" * 4094
+    secret = "secret-crossing-boundary"
+
+    result = sanitizer_module.sanitize_output(
+        prefix + secret + " tail",
+        patterns=_patterns(credential_values=(secret,)),
+    )
+
+    assert result.text == prefix + "[REDACTED] tail"
+    assert result.credential_replacement_count == 1
+
+
+def test_output_multibyte_scalar_adjacent_to_chunk_boundary_is_preserved() -> None:
+    value = ("a" * 4095) + "€" + "tail"
+
+    result = sanitizer_module.sanitize_output(value, patterns=_patterns())
+
+    assert result.text == value
+    assert result.byte_length == len(value.encode("utf-8"))
+    assert result.sha256 == hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def test_output_overlong_nonmatch_never_accumulates_a_raw_byte_carry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_sha256 = hashlib.sha256
+    hashed_chunks: list[bytes] = []
+
+    class RecordingHash:
+        def __init__(self) -> None:
+            self._inner = original_sha256()
+
+        def update(self, value: bytes) -> None:
+            hashed_chunks.append(bytes(value))
+            self._inner.update(value)
+
+        def hexdigest(self) -> str:
+            return self._inner.hexdigest()
+
+    monkeypatch.setattr(sanitizer_module, "_OUTPUT_STREAM_CHUNK_CHARACTERS", 4)
+    monkeypatch.setattr(sanitizer_module.hashlib, "sha256", RecordingHash)
+    value = "x" * 32
+
+    result = sanitizer_module.sanitize_output(
+        value,
+        patterns=_patterns(credential_values=("x" * 33,)),
+    )
+
+    assert max(map(len, hashed_chunks)) <= 4
+    assert b"".join(hashed_chunks) == value.encode("utf-8")
+    assert result == sanitizer_module.SanitizedOutput(
+        text=value,
+        byte_length=len(value.encode("utf-8")),
+        sha256=original_sha256(value.encode("utf-8")).hexdigest(),
+        credential_replacement_count=0,
+    )
+
+
+def test_invalid_blank_subclass_or_non_utf8_output_fails_content_free() -> None:
+    class StringSubclass(str):
+        pass
+
+    invalid_values: tuple[object, ...] = (
+        "",
+        " \t\n",
+        StringSubclass("answer"),
+        "\ud800",
+        123,
+    )
+
+    for value in invalid_values:
+        with pytest.raises(SanitizerError) as caught:
+            sanitizer_module.sanitize_output(value, patterns=_patterns())
+
+        assert caught.value.code == "invalid_output"
+        assert str(caught.value) == "output sanitization failed"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ("response_model", "request_id", "finish_reason", "error_kind"),
+)
+def test_provider_metadata_exact_one_kib_boundary_for_every_controlled_field(
+    field_name: str,
+) -> None:
+    limit = RESOURCE_LIMITS_V1.bounded_string_bytes
+    repeated = field_name * ((limit // len(field_name)) + 1)
+    safe_value = repeated[:limit]
+
+    assert len(safe_value.encode("utf-8")) == limit
+    assert sanitizer_module.provider_metadata_is_safe(safe_value, patterns=_patterns()) is True
+    assert (
+        sanitizer_module.require_safe_provider_metadata(
+            safe_value,
+            patterns=_patterns(),
+        )
+        is safe_value
+    )
+    assert (
+        sanitizer_module.provider_metadata_is_safe(
+            safe_value + "x",
+            patterns=_patterns(),
+        )
+        is False
+    )
+
+
+def test_provider_metadata_accepts_null_and_rejects_invalid_values_content_free() -> None:
+    class StringSubclass(str):
+        pass
+
+    assert sanitizer_module.provider_metadata_is_safe(None, patterns=_patterns()) is True
+    assert sanitizer_module.require_safe_provider_metadata(None, patterns=_patterns()) is None
+
+    invalid_values: tuple[object, ...] = (
+        "",
+        " \t\n",
+        123,
+        StringSubclass("safe"),
+        "\ud800",
+        "before\x00after",
+        "before\tafter",
+        "before\u0085after",
+    )
+    for value in invalid_values:
+        assert sanitizer_module.provider_metadata_is_safe(value, patterns=_patterns()) is False
+        with pytest.raises(SanitizerError) as caught:
+            sanitizer_module.require_safe_provider_metadata(value, patterns=_patterns())
+
+        assert caught.value.code == "unsafe_provider_metadata"
+        assert str(caught.value) == "unsafe_provider_metadata"
+
+
+def test_provider_metadata_rejects_oversized_before_whitespace_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized = " " * (RESOURCE_LIMITS_V1.bounded_string_bytes + 1)
+
+    def fail_if_scanned(iterable: object) -> bool:
+        del iterable
+        raise AssertionError("oversized metadata must be rejected before iteration")
+
+    with monkeypatch.context() as bounded_patch:
+        bounded_patch.setattr(builtins, "any", fail_if_scanned)
+        result = sanitizer_module.provider_metadata_is_safe(
+            oversized,
+            patterns=_patterns(),
+        )
+
+    assert result is False
+
+
+def test_provider_metadata_rejects_credentials_paths_and_macos_aliases() -> None:
+    patterns = _patterns(
+        credential_values=("secret-token",),
+        capsule_roots=("/capsule",),
+        input_roots=(
+            "/var/folders/ab/work/input",
+            "/private/var/folders/ab/work/input",
+        ),
+    )
+
+    for value in (
+        "prefixsecret-tokensuffix",
+        "/capsule",
+        "/capsule/file",
+        "/var/folders/ab/work/input/cases",
+        "/private/var/folders/ab/work/input/cases",
+    ):
+        assert sanitizer_module.provider_metadata_is_safe(value, patterns=patterns) is False
+
+    assert sanitizer_module.provider_metadata_is_safe("/capsule-other", patterns=patterns) is True
+
+
+def test_provider_metadata_rejects_ascii_case_insensitive_url_authority() -> None:
+    for value in (
+        "HTTPS://user:secret@HOST:443/path",
+        "prefix hTtP://host?q=1 suffix",
+        "https://host",
+    ):
+        assert sanitizer_module.provider_metadata_is_safe(value, patterns=_patterns()) is False
+
+    assert (
+        sanitizer_module.provider_metadata_is_safe(
+            "literal https token without authority",
+            patterns=_patterns(),
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "BUILD.EXAMPLE.TEST",
+        "(build)",
+        "/Alice/",
+        "éAliceé",
+    ),
+)
+def test_provider_metadata_rejects_boundary_delimited_local_identities(value: str) -> None:
+    patterns = _patterns(
+        local_fqdns=("Build.Example.Test",),
+        local_hostnames=("Build",),
+        local_usernames=("Alice",),
+    )
+
+    assert sanitizer_module.provider_metadata_is_safe(value, patterns=patterns) is False
+
+
+@pytest.mark.parametrize(
+    ("patterns", "value"),
+    (
+        (_patterns(local_fqdns=("Build.Example.Test",)), "xBUILD.EXAMPLE.TEST"),
+        (_patterns(local_fqdns=("Build.Example.Test",)), "BUILD.EXAMPLE.TEST9"),
+        (_patterns(local_hostnames=("Build",)), "xbuild9"),
+        (_patterns(local_usernames=("Alice",)), "xAlice9"),
+        (_patterns(local_usernames=("Alice",)), "alice"),
+    ),
+)
+def test_provider_metadata_allows_ascii_alphanumeric_local_identity_embedding(
+    patterns: SanitizerPatterns,
+    value: str,
+) -> None:
+    assert sanitizer_module.provider_metadata_is_safe(value, patterns=patterns) is True
+
+
+def test_provider_metadata_matcher_does_not_rescan_replacement_tokens() -> None:
+    patterns = _patterns(
+        credential_values=("[HOST]",),
+        local_hostnames=("build",),
+    )
+
+    assert sanitizer_module.provider_metadata_is_safe("xbuild9", patterns=patterns) is True
+    assert (
+        sanitizer_module.provider_metadata_is_safe("literal [REDACTED]", patterns=patterns) is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("patterns", "value"),
+    (
+        (
+            _patterns(
+                credential_values=("secret",),
+                local_hostnames=("buildsecret",),
+            ),
+            "xbuildsecret9",
+        ),
+        (
+            _patterns(
+                capsule_roots=("/secret",),
+                local_hostnames=("build/secret/path",),
+            ),
+            "xbuild/secret/path9",
+        ),
+        (
+            _patterns(
+                local_hostnames=("build-secret",),
+                local_usernames=("build",),
+            ),
+            "build-secret9",
+        ),
+    ),
+)
+def test_provider_metadata_checks_each_pattern_without_longer_local_shielding(
+    patterns: SanitizerPatterns,
+    value: str,
+) -> None:
+    assert sanitizer_module.provider_metadata_is_safe(value, patterns=patterns) is False
+
+
+def test_provider_metadata_multibyte_boundaries_and_byte_limit_are_exact() -> None:
+    exact_limit = "é" * (RESOURCE_LIMITS_V1.bounded_string_bytes // 2)
+    patterns = _patterns(local_usernames=("é",))
+
+    assert len(exact_limit.encode("utf-8")) == RESOURCE_LIMITS_V1.bounded_string_bytes
+    assert (
+        sanitizer_module.provider_metadata_is_safe(exact_limit + "a", patterns=_patterns()) is False
+    )
+    assert sanitizer_module.provider_metadata_is_safe("aé9", patterns=patterns) is True
+    assert sanitizer_module.provider_metadata_is_safe("€é€", patterns=patterns) is False
+
+
+def test_require_safe_provider_metadata_returns_safe_value_without_rewriting() -> None:
+    value = "returned-model-v1"
+
+    result = sanitizer_module.require_safe_provider_metadata(value, patterns=_patterns())
+
+    assert result is value
+
+
+def test_compiled_patterns_are_globally_deduplicated_after_priority() -> None:
+    compiled = sanitizer_module._compiled_patterns(  # type: ignore[attr-defined]
+        _patterns(
+            credential_values=("same",),
+            capsule_roots=("same",),
+            local_hostnames=("same",),
+        )
+    )
+    matching = [pattern for pattern in compiled if pattern.value == b"same"]
+
+    assert len(matching) == 1
+    assert matching[0].replacement == b"[REDACTED]"
+    assert matching[0].credential is True
+
+
+@pytest.mark.parametrize("value", (123, "\ud800", "", " \t\n", "\x00\t\u0085"))
+def test_diagnostic_constant_fallback_is_content_free(value: object) -> None:
+    result = sanitizer_module.sanitize_diagnostic_or_constant(value, patterns=_patterns())
+
+    assert result == SanitizedDiagnostic(
+        text="diagnostic sanitization failed",
+        credential_replacement_count=0,
+    )
+
+
+def test_diagnostic_constant_wrapper_delegates_valid_nonblank_bytes_exactly() -> None:
+    patterns = _patterns(
+        credential_values=("secret",),
+        source_roots=("/workspace",),
+    )
+    value = " failed for secret at /workspace/file\x00 "
+
+    assert sanitizer_module.sanitize_diagnostic_or_constant(
+        value,
+        patterns=patterns,
+    ) == sanitize_diagnostic(value, patterns=patterns)
+
+
+def test_diagnostic_constant_fallback_checks_blankness_before_truncation() -> None:
+    result = sanitizer_module.sanitize_diagnostic_or_constant(
+        "\u00a0" * 3000,
+        patterns=_patterns(),
+    )
+
+    assert result == SanitizedDiagnostic(
+        text="diagnostic sanitization failed",
+        credential_replacement_count=0,
+    )

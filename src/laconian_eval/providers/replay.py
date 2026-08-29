@@ -14,6 +14,7 @@ from laconian_eval.yaml_io import safe_load_unique
 _ENTRY_FIELDS = frozenset(
     {
         "output_text",
+        "response_model",
         "input_tokens",
         "output_tokens",
         "total_tokens",
@@ -63,8 +64,8 @@ def _parse_usage(
             raise _entry_error(path, key, f"field {field!r} must be nonnegative")
         counts[field] = value
 
-    if counts["total_tokens"] < counts["input_tokens"] + counts["output_tokens"]:
-        raise _entry_error(path, key, "total_tokens must cover input_tokens + output_tokens")
+    if counts["total_tokens"] != counts["input_tokens"] + counts["output_tokens"]:
+        raise _entry_error(path, key, "total_tokens must equal input_tokens + output_tokens")
     cached_input_tokens = counts.get("cached_input_tokens")
     if cached_input_tokens is not None and cached_input_tokens > counts["input_tokens"]:
         raise _entry_error(path, key, "cached_input_tokens cannot exceed input_tokens")
@@ -88,12 +89,20 @@ def _parse_entry(path: Path, key: str, raw_entry: object) -> GenerationResult:
     output_text = raw_entry.get("output_text")
     if not isinstance(output_text, str):
         raise _entry_error(path, key, "field 'output_text' must be a string")
+    response_model = raw_entry.get("response_model")
+    if type(response_model) is not str or not response_model.strip():
+        raise _entry_error(
+            path,
+            key,
+            "field 'response_model' must be an exact nonblank string",
+        )
 
     return GenerationResult(
         output_text=output_text,
         usage=_parse_usage(path, key, raw_entry),
         request_id=_optional_string(path, key, raw_entry, "request_id"),
         finish_reason=_optional_string(path, key, raw_entry, "finish_reason"),
+        response_model=response_model,
     )
 
 
