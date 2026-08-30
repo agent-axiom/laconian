@@ -478,8 +478,7 @@ def test_social_card_has_exact_copy_and_dimensions() -> None:
     svg = _read("assets/social/laconian-alpha.svg")
     root = ET.fromstring(svg)
     visible_text = [
-        "".join(node.itertext())
-        for node in root.findall("{http://www.w3.org/2000/svg}text")
+        "".join(node.itertext()) for node in root.findall("{http://www.w3.org/2000/svg}text")
     ]
     assert visible_text == [
         "if",

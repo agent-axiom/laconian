@@ -497,7 +497,9 @@ def test_root_plugin_packages_the_canonical_if_skill() -> None:
             }
         ],
     }
-    assert all(prompt.startswith("$laconian:if ") for prompt in plugin["interface"]["defaultPrompt"])
+    assert all(
+        prompt.startswith("$laconian:if ") for prompt in plugin["interface"]["defaultPrompt"]
+    )
 ```
 
 - [ ] **Step 2: Run and verify RED**
@@ -769,8 +771,7 @@ Add constants and tests:
 PLUGIN_ADD = "codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json"
 PLUGIN_INSTALL = "codex plugin add laconian@laconian --json"
 STANDALONE_URL = (
-    "https://raw.githubusercontent.com/agent-axiom/laconian/"
-    "v0.1.0-alpha.1/skills/if/SKILL.md"
+    "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md"
 )
 
 
