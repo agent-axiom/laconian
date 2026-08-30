@@ -895,6 +895,7 @@ def test_ci_preserves_ubuntu_matrix_and_adds_focused_credential_free_macos_job()
         "uv run ruff format --check .",
         "uv run ruff check .",
         "uv run mypy src",
+        "uv run pytest tests/test_skill_contract.py tests/test_plugin_contract.py -q",
         "uv run pytest -q",
     ]
 
