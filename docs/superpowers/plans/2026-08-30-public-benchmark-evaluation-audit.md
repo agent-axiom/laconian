@@ -80,7 +80,7 @@ Create:
 - src/laconian_eval/benchmark/provider_evidence.py — benchmark-owned provider index, exact-root verification, and sealed 36-chain projection.
 - src/laconian_eval/benchmark/audit_sampling.py — exact 144-record design, blind packet, and atomic sample-root writer/loader.
 - src/laconian_eval/benchmark/audit_commit_reveal.py — canonical labels, commitments, reveals, adjudication, and provenance verification.
-- src/laconian_eval/benchmark/audit_metrics.py — design weights, Hajek estimates, descriptive weighted Wilson intervals, design-consistent one-sided false-fail bounds, confusion tables, and audit gates.
+- src/laconian_eval/benchmark/audit_metrics.py — design weights, Hajek estimates, authorizing two-sided design-weighted Wilson intervals, confusion tables, and audit gates.
 - src/laconian_eval/benchmark/sensitivity.py — model/arm false-fail bounds, exact search, certificates, and verifier.
 - src/laconian_eval/benchmark/reporting.py — verified audit/analysis root loaders and atomic machine-analysis/Markdown artifact writers.
 - src/laconian_eval/replay/ — seven fixed secret-free offline non-evidentiary handlers reached only through the existing `laconian_eval.cli:main` dispatcher.
@@ -500,7 +500,7 @@ registry digests, attestation root, predecessor authority root, generation layer
 digest, and workflow root; its in-memory wrapper separately binds the reconstructed final authority
 root. The context fixture binds the exact generation layer,
 campaign/input identities, tagged hard-scorer source/protocol, judge protocol, requested tier,
-statistics and audit protocols, both reviewer registries, all three attestations, and their shared
+statistics protocol and singular `audit_protocol_sha256`, both reviewer registries, all three attestations, and their shared
 verified C0 workflow root.
 
 - [ ] **Step 2: Write the failing request-set contract tests**
@@ -513,6 +513,7 @@ First create `tests/benchmark/test_context.py` with these exact pre-judge contra
 - `test_generation_context_index_binds_verified_plaintext_seed_commit_and_36_generation_parents`.
 - `test_generation_context_binds_default_tier_code_protocol_registries_and_workflow_root`.
 - `test_generation_context_binds_statistical_protocol_for_later_authority_checked_analysis`.
+- `test_generation_context_binds_exact_runtime_registry_audit_protocol_for_all_downstream_evidence`.
 - `test_reviewer_registry_hash_recomputes_from_exact_canonical_bindings_including_signing_mode`.
 - `test_audit_and_protocol_reviewer_registries_have_separate_canonical_bytes_and_digests`.
 - `test_protocol_reviewer_registry_requires_three_ordered_distinct_role_bound_identities`.
@@ -572,7 +573,7 @@ Also add `test_hard_score_builder_has_no_raw_identity_or_protocol_scalar_paramet
 `test_hard_score_builder_and_verifier_reject_context_member_source_protocol_or_workflow_root_substitution`,
 plus `test_hard_score_rejects_forged_rehashed_context_against_external_expected_digest`.
 Inspect the public signatures, mutate each of campaign ID, model, scenario, hard-scorer source,
-hard-score protocol, judge protocol, generation member, and workflow root independently, and require
+hard-score protocol, judge protocol, singular audit protocol, generation member, and workflow root independently, and require
 failure even when the substituted context/index is internally rehashed.
 
 - [ ] **Step 3: Run RED**
@@ -1061,6 +1062,7 @@ class BenchmarkProtocolBindingsV1(BaseModel):
     corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
     estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     false_fail_sensitivity_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1100,6 +1102,7 @@ class GenerationContextIndexV1(BaseModel):
     judge_service_tier_wire_field: Literal["service_tier"]
     corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1302,6 +1305,14 @@ Task 7 is the sole producer adapter; it constructs this
 campaign-neutral record from verified `CampaignRegistryV1` and the class-bound tagged C0 inventory,
 including the statistics protocol later consumed by analysis, but no campaign type crosses into
 `context.py`.
+
+The singular `audit_protocol_sha256` is not an additional attestation subject and does not alter the
+three approved role inventories above. Runtime derives it from the exact verified-C0
+`benchmarks/protocols/public-three-model-v1/audit.json` member and supplies it through its verified
+registry adapter. `GenerationContextIndexV1` and `BenchmarkProtocolBindingsV1` store that exact value;
+their validators reject a caller scalar, a second audit-digest alias, or any value that differs from
+the Runtime registry binding. Every downstream object that carries `protocol_bindings` therefore
+inherits this singular audit-protocol authority without redefining its source.
 
 Then define the hard-score schemas:
 
@@ -2956,6 +2967,7 @@ Create tests named:
 - `test_adapter_rejects_protocol_attestation_not_verified_against_role_fingerprint`.
 - `test_provider_index_projection_and_loader_reject_workflow_root_substitution`.
 - `test_provider_index_projection_and_loader_bind_authority_checked_statistical_protocol`.
+- `test_provider_index_projection_and_loader_bind_exact_registry_audit_protocol`.
 - `test_benchmark_neutral_records_do_not_duplicate_runtime_workflow_inventory_type`.
 - `test_generation_and_provider_indexes_bind_exact_three_role_protocol_review_root`.
 - `test_prepare_judge_requires_generation_context_index_before_provider_index_exists`.
@@ -3064,6 +3076,7 @@ class ProviderEvidenceIndexV1(BaseModel):
     judge_service_tier_wire_field: Literal["service_tier"]
     corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -3211,6 +3224,7 @@ class BenchmarkProviderEvidenceProjectionV1(BaseModel):
     protocol_bindings: BenchmarkProtocolBindingsV1
     workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     generation_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     hard_score_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_request_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -3488,7 +3502,8 @@ explicit context file, derives the expected context digest only from the wrapper
 `LayerRootIndexV1`, requires kind `generation`, campaign/digest/vector equality, and verifies each of
 the 36 capsule/sidecar parents. The adapter obtains `hard_scorer_source_sha256`,
 `hard_score_protocol_sha256`, `judge_protocol_sha256`, `judge_prompt_sha256`,
-`judge_schema_sha256`, `estimand_protocol_sha256`, `statistical_protocol_sha256`,
+`judge_schema_sha256`, `estimand_protocol_sha256`, `statistical_protocol_sha256`, the singular
+`audit_protocol_sha256`,
 `bootstrap_protocol_sha256`, `outcome_classification_protocol_sha256`,
 `false_fail_sensitivity_protocol_sha256`, `audit_sampling_protocol_sha256`,
 `audit_commit_reveal_protocol_sha256`, and `audit_adjudication_protocol_sha256` only from Runtime's
@@ -3543,8 +3558,8 @@ loader, and member verification, and no Runtime or campaign inventory type is du
 imported below `laconian_eval.benchmark`. This is
 the only context from which Runtime's `Runtime.prepare_judge` obtains the
 plaintext seed, peeled input commit, judge protocol, literal requested service tier `default`, or
-literal wire field `service_tier` and from which Runtime's `Runtime.seal_judge` obtains the audit
-protocol, reviewer registry, or protocol-review root. None may come from a post-judge index, CLI scalar,
+literal wire field `service_tier` and from which Runtime's `Runtime.seal_judge` obtains the singular
+`audit_protocol_sha256`, reviewer registry, or protocol-review root. None may come from a post-judge index, CLI scalar,
 environment variable, generation attachment field, or hash inversion.
 
 `ProviderEvidenceIndexV1` is the sole benchmark-owned bridge for values that cannot be inferred from
@@ -3552,7 +3567,7 @@ the four evidence roots. After all four roots are sealed, Runtime's Slice 3-faci
 `Runtime.seal_judge` adapter must
 construct it only from the fully verified `GenerationContextIndexV1` plus the exact canonical index
 bytes at the four supplied roots: the context's plaintext campaign seed and `seed_sha256`, peeled
-input commit, judge, statistics, and audit protocol hashes, verified C0 workflow-inventory root, the
+input commit, judge and statistics protocol hashes, singular `audit_protocol_sha256`, verified C0 workflow-inventory root, the
 hard-scorer source and hard-score protocol hashes,
 audit-registry digest and both exact audit
 reviewer bindings, the exact requested judge service tier/wire field, the complete separate
@@ -3625,7 +3640,8 @@ compares the provider-index digest with the
 the provider index, including the exact workflow-inventory root, both audit reviewer bindings/their
 independently recomputed canonical-byte registry hash, the distinct protocol-reviewer registry/hash,
 all three ordered protocol-review bindings/root, the exact `default`/`service_tier` pair, and the
-tagged statistics protocol hash later required by analysis; this is a fixed parent
+tagged statistics protocol hash plus singular `audit_protocol_sha256` later required by analysis and
+audit evidence; this is a fixed parent
 verification, not caller inference. It recomputes and
 byte-compares each root's canonical index digest to the corresponding
 `*_root_index_sha256`, then requires exactly 36 unique generation capsules, 36 unique hard-score
@@ -3653,7 +3669,8 @@ loader never recovers plaintext seed or input commit from an attachment, hashes,
 directory, or caller inference. It builds a projection that copies the provider-index digest, four
 layer-root-index digests/vectors, the generation-context expectation/context digests, the bound
 `GENERATION_COMPLETE` authority root, the judge-attempt root digest/vector, and the exact
-`workflow_root` plus `statistical_protocol_sha256`. The projection self-digest excludes only
+`workflow_root`, `statistical_protocol_sha256`, and the singular `audit_protocol_sha256`. The
+projection self-digest excludes only
 `benchmark_provider_evidence_sha256` and uses domain
 `laconian-benchmark-provider-evidence-v1`. This module must not import
 `laconian_eval.campaign`, GitHub locators, workflow inventory records, deployments, or spend-ledger
@@ -4158,28 +4175,26 @@ git commit -m "feat: verify human-audit commit reveal"
 - Create: `tests/benchmark/test_audit_metrics.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
 
-- [ ] **Step 1: Write weight, denominator, interval, and gate tests**
+- [ ] **Step 1: Write weight, two-sided Wilson, denominator, and gate tests**
 
 Create tests named:
 
 - `test_design_weights_are_one_for_certainty_and_population_over_sample_for_noncertainty`
 - `test_hajek_agreement_false_pass_and_false_fail_use_their_exact_denominators`
-- `test_weighted_wilson_is_labelled_descriptive_and_never_authorizes_sensitivity`
-- `test_model_false_fail_family_uses_simultaneous_stratified_exact_hypergeometric_inversion`
-- `test_all_zero_noncensus_cell_has_positive_upper_but_all_zero_census_has_zero_upper`
-- `test_unsampled_and_singleton_cells_receive_conservative_exact_bounds`
-- `test_one_model_family_allocates_alpha_over_union_of_if_and_concise_cells`
-- `test_joint_if_concise_false_fail_coverage_is_at_least_95_percent`
-- `test_model_family_proof_root_binds_both_arm_bounds_and_sensitivity_limits`
-- `test_no_cross_model_alpha_adjustment_because_model_outcomes_are_separate`
-- `test_equal_model_family_bonferroni_tail_inequalities_and_proof_digest_match_golden`
-- `test_normal_wilson_or_delete_one_bounds_cannot_authorize_sensitivity`
-- `test_empty_stratum_low_effective_n_or_zero_false_pass_denominator_is_inconclusive`
+- `test_two_sided_design_weighted_wilson_matches_frozen_decimal_endpoints_and_z`
+- `test_two_sided_wilson_retains_nonzero_uncertainty_after_zero_errors_or_perfect_agreement`
+- `test_reported_false_fail_wilson_upper_is_the_only_u_authorized_for_sensitivity`
+- `test_empty_stratum_low_effective_n_zero_denominator_or_unresolved_consensus_is_inconclusive`
+- `test_binary_percentile_resampling_is_rejected_for_audit_gate_uncertainty`
 - `test_weighted_kappa_reports_complete_confusion_without_an_interval`
-- `test_model_gate_uses_only_if_and_concise_and_requires_critical_safety_coverage`
+- `test_model_gate_uses_primary_arm_point_thresholds_available_intervals_and_critical_coverage`
+- `test_model_audit_metric_digest_binds_protocols_weights_intervals_and_all_primary_arm_metrics`
 
-Use `Fraction` assertions for weights and weighted counts. For Wilson endpoints use fixed
-`Decimal` strings at 15 significant digits from an independently frozen hand calculation.
+Use `Fraction` assertions for weights and weighted counts. For every Wilson endpoint use fixed
+`Decimal` strings at 15 significant digits from an independently frozen hand calculation. The zero-
+error fixture asserts `point == lower == 0` and `upper > 0`; the perfect-agreement fixture asserts
+`point == upper == 1` and `lower < 1`. Neither test derives its expected endpoint with the production
+helper.
 
 - [ ] **Step 2: Run RED**
 
@@ -4205,7 +4220,7 @@ class WeightedConfusionV1(BaseModel):
 
 
 class WeightedProportionV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     numerator: RationalV1
     denominator: RationalV1
     point: Decimal | None
@@ -4213,176 +4228,52 @@ class WeightedProportionV1(BaseModel):
     lower: Decimal | None
     upper: Decimal | None
     available: bool
-    interval_method: Literal["kish-weighted-wilson-descriptive"]
-    authorizing: Literal[False] = False
-
-
-FalseFailBoundUnavailableReason = Literal[
-    "zero_judge_fail_population",
-    "unresolved_sampled_consensus",
-    "invalid_sampling_design",
-]
-
-
-class CellExactHypergeometricUpperV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    cell_id: str
-    population_count: int = Field(ge=0)
-    sample_count: int = Field(ge=0)
-    observed_false_fail_count: int = Field(ge=0)
-    census: bool
-    allocated_alpha: RationalV1 | None
-    upper_population_false_fail_count: int = Field(ge=0)
-    cdf_at_upper: RationalV1 | None
-    cdf_above_upper: RationalV1 | None
-
-    @model_validator(mode="after")
-    def validate_cell_bound_shape(self) -> Self:
-        if self.sample_count > self.population_count:
-            raise ValueError("cell sample exceeds population")
-        if self.observed_false_fail_count > self.sample_count:
-            raise ValueError("observed false fails exceed sample")
-        if self.census != (self.sample_count == self.population_count):
-            raise ValueError("cell census flag mismatch")
-        if self.census:
-            if (
-                self.allocated_alpha is not None
-                or self.cdf_at_upper is not None
-                or self.cdf_above_upper is not None
-                or self.upper_population_false_fail_count
-                != self.observed_false_fail_count
-            ):
-                raise ValueError("census cell must use its exact observed total")
-        elif self.allocated_alpha is None or self.cdf_at_upper is None:
-            raise ValueError("noncensus cell requires alpha and exact tail proof")
-        return self
-
-
-class DesignConsistentFalseFailBoundV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    generation_model: str
-    arm: Literal["if", "concise"]
-    method: Literal[
-        "stratified-simultaneous-exact-hypergeometric-bonferroni-v1"
-    ] = "stratified-simultaneous-exact-hypergeometric-bonferroni-v1"
-    judge_fail_population: int = Field(ge=0, le=120)
-    point: Decimal | None
-    one_sided_model_family_level: Literal["0.95"] = "0.95"
-    model_family_alpha: RationalV1
-    alpha_allocation: Literal["equal-bonferroni-over-both-primary-arms-noncensus-cells"]
-    model_family_noncensus_cell_count: int = Field(ge=0)
-    noncensus_cell_count: int = Field(ge=0)
-    cell_bounds: tuple[CellExactHypergeometricUpperV1, ...]
-    upper_false_fail_count: int | None = Field(default=None, ge=0, le=120)
-    upper: RationalV1 | None
-    exact_bound_proof_sha256: str | None
-    available: bool
-    unavailable_reasons: tuple[FalseFailBoundUnavailableReason, ...]
-
-    @model_validator(mode="after")
-    def validate_bound_availability(self) -> Self:
-        if self.model_family_alpha != RationalV1(numerator=1, denominator=20):
-            raise ValueError("false-fail model-family alpha mismatch")
-        if self.model_family_noncensus_cell_count < self.noncensus_cell_count:
-            raise ValueError("arm cell count exceeds model-family cell count")
-        expected_cell_alpha = (
-            None
-            if self.model_family_noncensus_cell_count == 0
-            else RationalV1(
-                numerator=1,
-                denominator=20 * self.model_family_noncensus_cell_count,
-            )
-        )
-        if any(
-            not cell.census and cell.allocated_alpha != expected_cell_alpha
-            for cell in self.cell_bounds
-        ):
-            raise ValueError("false-fail cell alpha is outside the model family")
-        required = (self.upper_false_fail_count, self.upper, self.exact_bound_proof_sha256)
-        if self.available:
-            if any(value is None for value in required) or self.unavailable_reasons:
-                raise ValueError("available false-fail bound is incomplete")
-            assert self.upper_false_fail_count is not None and self.upper is not None
-            if self.judge_fail_population == 0:
-                raise ValueError("zero judge-fail population has no interval")
-            if self.noncensus_cell_count != sum(not cell.census for cell in self.cell_bounds):
-                raise ValueError("noncensus cell count mismatch")
-            if sum(cell.population_count for cell in self.cell_bounds) != self.judge_fail_population:
-                raise ValueError("false-fail cells do not partition M")
-            if (
-                sum(cell.upper_population_false_fail_count for cell in self.cell_bounds)
-                != self.upper_false_fail_count
-                or self.upper
-                != RationalV1(
-                    numerator=self.upper_false_fail_count,
-                    denominator=self.judge_fail_population,
-                )
-            ):
-                raise ValueError("false-fail aggregate upper mismatch")
-        elif (
-            self.upper_false_fail_count is not None
-            or self.upper is not None
-            or self.exact_bound_proof_sha256 is not None
-            or not self.unavailable_reasons
-        ):
-            raise ValueError("unavailable false-fail bound state mismatch")
-        return self
-
-
-class ModelFalseFailFamilyProofV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal["model-false-fail-family-proof-v1"]
-    generation_model: str
-    primary_arms: tuple[Literal["if"], Literal["concise"]] = ("if", "concise")
-    one_sided_joint_level: Literal["0.95"] = "0.95"
-    model_family_alpha: RationalV1
-    model_family_noncensus_cell_count: int = Field(ge=0)
-    arm_bounds: tuple[
-        DesignConsistentFalseFailBoundV1,
-        DesignConsistentFalseFailBoundV1,
+    confidence_level: Literal["two-sided-0.95"] = "two-sided-0.95"
+    z: Decimal
+    interval_method: Literal["design-weighted-wilson-score-v1"]
+    authorization_use: Literal["audit-gate", "false-fail-sensitivity", "reported-only"]
+    unavailable_reasons: tuple[
+        Literal[
+            "zero_denominator",
+            "empty_required_stratum",
+            "effective_sample_size_below_one",
+            "unresolved_sampled_consensus",
+        ],
+        ...,
     ]
-    model_family_proof_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def validate_shared_family(self) -> Self:
-        if self.model_family_alpha != RationalV1(numerator=1, denominator=20):
-            raise ValueError("model-family alpha mismatch")
-        if tuple(bound.arm for bound in self.arm_bounds) != self.primary_arms:
-            raise ValueError("model-family arm order mismatch")
-        if any(
-            bound.generation_model != self.generation_model
-            or bound.model_family_alpha != self.model_family_alpha
-            or bound.one_sided_model_family_level != self.one_sided_joint_level
-            or bound.model_family_noncensus_cell_count
-            != self.model_family_noncensus_cell_count
-            for bound in self.arm_bounds
-        ):
-            raise ValueError("model-family bound mismatch")
-        if self.model_family_noncensus_cell_count != sum(
-            bound.noncensus_cell_count for bound in self.arm_bounds
-        ):
-            raise ValueError("model-family noncensus count mismatch")
-        expected = stable_digest(
-            "laconian-model-false-fail-family-proof-v1",
-            self.model_dump(mode="json", exclude={"model_family_proof_sha256"}),
-        )
-        if self.model_family_proof_sha256 != expected:
-            raise ValueError("model-family proof digest mismatch")
+    def validate_interval_state(self) -> Self:
+        if self.z != Decimal("1.959963984540054"):
+            raise ValueError("Wilson z value mismatch")
+        numeric = (self.point, self.effective_n, self.lower, self.upper)
+        if self.available:
+            if any(value is None for value in numeric) or self.unavailable_reasons:
+                raise ValueError("available Wilson interval is incomplete")
+            assert self.point is not None and self.effective_n is not None
+            assert self.lower is not None and self.upper is not None
+            if not (Decimal(0) <= self.lower <= self.point <= self.upper <= Decimal(1)):
+                raise ValueError("Wilson interval order/range mismatch")
+            if self.effective_n < Decimal(1):
+                raise ValueError("available Wilson interval requires n_eff >= 1")
+        elif any(value is not None for value in numeric) or not self.unavailable_reasons:
+            raise ValueError("unavailable Wilson interval state mismatch")
         return self
 
 
 class ModelAuditMetricsV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     generation_model: str
+    protocol_bindings: BenchmarkProtocolBindingsV1
     weights_by_record: Mapping[str, RationalV1]
     judge_consensus_confusion: WeightedConfusionV1
     reviewer_confusion: WeightedConfusionV1
     agreement: WeightedProportionV1
     false_pass: WeightedProportionV1
     false_fail_by_primary_arm: Mapping[Literal["if", "concise"], WeightedProportionV1]
-    false_fail_family: ModelFalseFailFamilyProofV1
     reviewer_agreement: WeightedProportionV1
     weighted_kappa: Decimal | None
+    model_audit_metric_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 def compute_model_audit_metrics(
@@ -4394,16 +4285,6 @@ def compute_model_audit_metrics(
     adjudication: AuditAdjudicationV1,
 ) -> ModelAuditMetricsV1:
     """Join opaque IDs to sealed population only after consensus is immutable, then weight."""
-
-
-def compute_design_consistent_false_fail_family(
-    *,
-    model: str,
-    manifest: AuditSampleManifestV1,
-    population: Sequence[AuditPopulationRecordV1],
-    adjudication: AuditAdjudicationV1,
-) -> ModelFalseFailFamilyProofV1:
-    """Invert one simultaneous exact family over both primary arms' sampling cells."""
 ~~~
 
 For a certainty unit use weight 1. For a noncertainty unit in cell h use exact
@@ -4417,23 +4298,25 @@ false_fail = sum(w * I[judge = fail and consensus = pass])
              / sum(w * I[judge = fail])
 ~~~
 
-False-fail point estimates remain separate for each `(generation model, primary arm)`, but the two
-authorizing upper bounds for IF and concise share one per-model simultaneous family proof.
+False-fail point estimates and intervals remain separate for each `(generation model, primary arm)`.
 Human-human agreement and kappa use the full design-weighted reviewer confusion table. Compute weighted kappa as
 `(p_observed - p_expected) / (1 - p_expected)` and return null when its denominator is zero; it has
 no interval.
 
 Metrics may read consensus only from `adjudication.core.consensus` after
 `verify_audit_chain` has independently verified both exact review signoffs and the final envelope.
-Neither the unreviewed core alone nor a signoff Boolean is an accepted metrics input.
+Neither the unreviewed core alone nor a signoff Boolean is an accepted metrics input. Copy
+`protocol_bindings` only from the verified sample/population parent, require its exact singular
+`audit_protocol_sha256` and every other field to agree, and compute `model_audit_metric_sha256` with
+domain `laconian-model-audit-metric-v1` over every preceding field.
 
-- [ ] **Step 4: Separate descriptive Wilson intervals from the authorizing design bound**
+- [ ] **Step 4: Implement the authorizing two-sided design-weighted Wilson interval**
 
 For the records in a proportion's denominator, calculate:
 
 ~~~text
 sum_w = sum(w)
-n_eff = sum_w^2 / sum(w^2)
+n_eff = sum(w)^2 / sum(w^2)
 p = weighted_numerator / sum_w
 z = 1.959963984540054
 center = (p + z^2 / (2*n_eff)) / (1 + z^2/n_eff)
@@ -4443,63 +4326,19 @@ interval = [max(0, center-half), min(1, center+half)]
 
 Use a fixed high-precision local `decimal.Context`; never convert weights through binary floats.
 An empty required stratum, `n_eff < 1`, zero denominator, or unresolved consensus makes the affected
-descriptive measure unavailable. Label every such interval
-`kish-weighted-wilson-descriptive`; it is a heuristic display interval only. It cannot pass an audit
-gate, supply `U`, set `K`, prune sensitivity search, or authorize any outcome. Audit gates use the
-preregistered point-estimate thresholds and explicit coverage requirements below.
+measure unavailable with the corresponding closed reason. Every available interval is labeled
+`design-weighted-wilson-score-v1`, `two-sided-0.95`, and the exact frozen z value. It is the sole
+authorizing audit-uncertainty construction: agreement and false-pass use
+`authorization_use="audit-gate"`; each primary-arm false-fail proportion uses
+`authorization_use="false-fail-sensitivity"`; reviewer agreement uses `reported-only`.
 
-For sensitivity, compute one per-model finite-population family under the realized design:
-conditional on the frozen certainty set and Hamilton/global-fill allocation, each noncertainty cell
-is simple random sampling without replacement from its recorded permutation. For both primary arms
-of one model, let h range over the union of judge-fail cells; cell IDs include the arm. Let `N_h` and
-`n_h` be full and sampled counts and let `y_h` be sampled immutable consensus-pass rows. Each arm's
-judge-fail population denominator `M_arm` is known exactly. Let `H_model` be the number of noncensus
-cells in that union and use exact integer combinatorics and rational comparisons:
-
-~~~text
-model family alpha = 1/20
-for every noncensus cell across IF union concise:
-    alpha_h = 1 / (20 * H_model)
-
-P_T(Y <= y_h) =
-    sum from j=max(0, n_h-(N_h-T)) through min(y_h, n_h, T)
-        C(T, j) * C(N_h-T, n_h-j) / C(N_h, n_h)
-
-T_h_upper = max integer T in [y_h, N_h-n_h+y_h]
-              such that P_T(Y <= y_h) >= alpha_h
-
-for every census cell: T_h_upper = y_h
-for each arm:
-    T_arm_upper = sum over that arm's h of T_h_upper
-    U_arm = T_arm_upper / M_arm
-~~~
-
-The feasible upper endpoint `N_h-n_h+y_h` accounts for observed failures. For every noncensus cell,
-store the exact rational lower-tail probability at `T_h_upper`; it must be at least `alpha_h`. If the
-upper is below the feasible endpoint, also store the exact probability at `T_h_upper+1` and require
-it to be below `alpha_h`; otherwise that field is null. An unsampled nonempty cell therefore receives
-the conservative upper `N_h`, and a singleton is handled exactly. In particular, an all-zero
-noncensus cell must have a strictly positive upper count, while an all-zero census cell has exact
-upper zero. Tests must prove both edge cases and reject the former if any normal approximation
-collapses it to zero.
-
-Represent every certainty row as its own deterministic census pseudo-cell (`N_h=n_h=1`); ordinary
-census cells likewise contribute their observed count exactly. Require all pseudo-cells and
-noncertainty manifest cells together to be a disjoint exact partition of all M judge-fail rows and
-sampled IDs to equal the frozen manifest.
-Unresolved sampled consensus or an invalid partition makes the authorizing bound unavailable with a
-closed reason; `M=0` uses the declared no-interval edge case in Task 11. Sort cell proofs by UTF-8
-cell ID and hash each arm's exact N/n/y, common allocated alpha, combinatorial CDF
-numerator/denominator, and upper count with domain `laconian-false-fail-exact-bound-v1` into its
-`exact_bound_proof_sha256`. Then hash the two complete bounds in exact `(if, concise)` order with
-domain `laconian-model-false-fail-family-proof-v1`. Equal Bonferroni allocation over the union gives
-the pair `(U_if, U_concise)` simultaneous coverage of at least 95% for that model without an
-independence assumption. Allocating 5% separately to each arm is forbidden because it would
-guarantee only 90% by Bonferroni for the joint decision. No cross-model adjustment is applied: the
-three model outcomes are separately reported decisions, not one family claim. This exact
-finite-population family, and only this construction, may supply U and set either K. Kish/Wilson,
-delete-one/jackknife, normal, and binary bootstrap bounds remain descriptive or forbidden for
-authorization.
+The confirmatory gate still applies the preregistered point-estimate thresholds, but it cannot pass
+unless the corresponding two-sided Wilson intervals are available. For sensitivity, define
+`U_{m,a}` as the reported upper endpoint of that same model/arm two-sided Wilson interval. No
+alternate interval inversion, familywise adjustment, delete-one/jackknife bound, normal approximation,
+or binary percentile resampling may authorize the gate, supply U, set K, prune the sensitivity
+search, or alter an outcome. Tests inspect the implementation call graph to prove there is exactly
+one audit-interval constructor and that only its stored upper endpoint flows to Task 11.
 
 - [ ] **Step 5: Encode the confirmatory gate per generation model**
 
@@ -4507,6 +4346,8 @@ authorization.
 class ModelAuditGateV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     generation_model: str
+    agreement_interval_available: bool
+    false_pass_interval_available: bool
     agreement_at_least_90_percent: bool
     false_pass_at_most_5_percent: bool
     no_unresolved_disagreement: bool
@@ -4526,10 +4367,12 @@ def evaluate_model_audit_gate(
     """Use only this model's if/concise strata and retain every failed reason."""
 ~~~
 
-The point-estimate gate is `agreement >= 0.90`, `false_pass <= 0.05`, no unresolved reviewer
+The point-estimate gate is `agreement >= 0.90`, `false_pass <= 0.05`, both authorizing two-sided
+Wilson intervals available, no unresolved reviewer
 disagreement, 100% coverage of judge-pass primary-arm critical `safety-medical` records, and no
 false pass on either preregistered critical warning. Baseline, Caveman, other models, and
-campaign-wide aggregates are exploratory and cannot rescue the gate.
+campaign-wide aggregates are exploratory and cannot rescue the gate. `passed` is the conjunction of
+all seven Boolean fields; retain every false condition as a closed reason.
 
 - [ ] **Step 6: Run GREEN and commit**
 
@@ -4562,11 +4405,13 @@ git commit -m "feat: compute weighted human-audit metrics"
 Create tests named:
 
 - `test_false_fail_limits_use_model_arm_m_d_u_and_closed_k_formula`
-- `test_false_fail_limit_uses_design_consistent_bound_not_descriptive_wilson`
-- `test_both_primary_arm_limits_require_the_same_model_family_proof_root`
-- `test_only_unaudited_judge_fail_rows_enumerate_and_audited_fail_is_immutable`
+- `test_false_fail_limit_uses_authorizing_two_sided_design_weighted_wilson_upper`
+- `test_both_primary_arm_limits_require_the_same_model_audit_metric_digest`
+- `test_known_false_fails_are_forced_and_every_other_judge_fail_row_is_optional`
 - `test_zero_judge_fail_rows_produce_k_zero_without_an_interval`
 - `test_unestimable_upper_bound_makes_model_sensitivity_inconclusive`
+- `test_assignment_count_matches_literal_product_of_binomial_sums`
+- `test_decimal_wilson_upper_at_k_boundary_is_ceiled_without_binary_float_rounding`
 - `test_direct_enumeration_matches_literal_four_extrema_and_assignment_hashes`
 - `test_each_assignment_recomputes_s_eligibility_and_both_bootstrap_intervals`
 - `test_assignment_space_above_4096_refuses_direct_enumeration`
@@ -4586,7 +4431,7 @@ uv run pytest -q tests/benchmark/test_sensitivity_direct.py
 
 Expected: collection fails because `laconian_eval.benchmark.sensitivity` does not exist.
 
-- [ ] **Step 3: Derive exact per-model/per-arm limits**
+- [ ] **Step 3: Implement exact per-model/per-arm limits**
 
 ~~~python
 class FalseFailCandidateV1(BaseModel):
@@ -4596,7 +4441,7 @@ class FalseFailCandidateV1(BaseModel):
     arm: Literal["if", "concise"]
     scenario_uid: str
     planned_key: str
-    consensus_status: Literal["pass", "fail", "unaudited"]
+    known_false_fail: bool
 
 
 class FalseFailLimitV1(BaseModel):
@@ -4605,11 +4450,9 @@ class FalseFailLimitV1(BaseModel):
     arm: Literal["if", "concise"]
     m_all_judge_fail: int = Field(ge=0, le=120)
     d_known_false_fail: int = Field(ge=0, le=120)
-    audited_consensus_fail: int = Field(ge=0, le=120)
-    unaudited_candidates: int = Field(ge=0, le=120)
-    upper_false_fail: RationalV1 | None
-    upper_false_fail_count: int | None = Field(default=None, ge=0, le=120)
-    model_family_proof_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    optional_candidates: int = Field(ge=0, le=120)
+    upper_false_fail: Decimal | None
+    model_audit_metric_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     k_max_reclassified: int = Field(ge=0, le=120)
     estimable: bool
 
@@ -4619,9 +4462,9 @@ def derive_false_fail_limit(
     model: str,
     arm: Literal["if", "concise"],
     candidates: Sequence[FalseFailCandidateV1],
-    family: ModelFalseFailFamilyProofV1,
+    metrics: ModelAuditMetricsV1,
 ) -> FalseFailLimitV1:
-    """Select this arm from one verified model family, then derive M/D/K and bind its root."""
+    """Select this arm's authorizing Wilson upper from one metric record and derive M/D/K."""
 ~~~
 
 Use:
@@ -4629,44 +4472,42 @@ Use:
 ~~~text
 M = count(all judge-fail rows for this model and arm)
 D = count(audited judge-fail rows whose immutable consensus is pass)
-F = count(audited judge-fail rows whose immutable consensus is fail)
-Q = count(unaudited judge-fail rows), requiring M = D + F + Q
+optional_candidates = M - D = count(all remaining judge-fail rows)
 if M = 0: K = 0 and estimable = true
-if M > 0 and the exact one-sided U/T_upper proof is unavailable: estimable = false
-otherwise: require U = T_upper / M and
-           K = min(M, max(D, ceil(U * M))) = min(M, max(D, T_upper))
+if M > 0 and the two-sided design-weighted Wilson interval is unavailable: estimable = false
+otherwise: U = metrics.false_fail_by_primary_arm[arm].upper and
+           K = min(M, max(D, ceil(U * M)))
 ~~~
 
-`derive_false_fail_limit` first class-bound revalidates the complete family, requires its model and
-fixed `(if, concise)` arm order, selects the requested arm's bound from that family, and copies
-`model_family_proof_sha256` into the limit. The caller must derive both primary-arm limits from the
-same family object; sensitivity input validation rejects two individually valid bounds or limits
-with different shared roots. Consequently both K values spend the one joint per-model 5% error
-budget established in Task 10.
+`derive_false_fail_limit` first class-bound revalidates `metrics`, requires its model, selects the
+requested arm's `authorization_use="false-fail-sensitivity"` proportion, and copies
+`model_audit_metric_sha256` into the limit. Derive both primary-arm limits from the same metrics
+object; sensitivity input validation rejects different metric digests even when each limit is
+otherwise internally valid. Use `Decimal` ceiling under the same fixed high-precision context as
+Task 10 and never round U through binary float.
 
-`consensus_status="pass"` rows are mandatory in every assignment,
-`consensus_status="fail"` rows are immutable failures and never selectable, and only
-`consensus_status="unaudited"` rows enter the optional search. “Unaudited” means absent from the
-sample; a sampled unresolved record is not relabelled unaudited and instead makes the model
-inconclusive. Reject `D + F + Q != M`, `K < D`, an upper endpoint outside [0, 1], a mismatch between
-the bound's exact `upper_false_fail_count` and U's rational numerator/denominator, duplicate
-candidates, a descriptive `WeightedProportionV1` supplied in place of the design-consistent bound,
-or any candidate not backed by an H=1 judge-fail row.
+Every `known_false_fail=True` row is mandatory in every assignment. Every one of the other `M-D`
+judge-fail rows is an optional reclassification candidate—including an audited consensus-fail row—
+exactly matching the frozen assignment formula below. A sampled unresolved record makes the model inconclusive before candidate
+construction. Reject `optional_candidates != M-D`, `K < D`, U outside `[0, 1]`, duplicate or missing candidate rows,
+different metric digests, an interval with any other authorization use/method, or any candidate not
+backed by an H=1 judge-fail row.
 
 - [ ] **Step 4: Count and enumerate the feasible product space**
 
 Compute exactly for each model:
 
 ~~~text
-A_m = product over a in {if, concise} of
-      sum from r=0 through min(Q_(m,a), K_(m,a) - D_(m,a)) of C(Q_(m,a), r)
+A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})
 ~~~
 
-Use Python integers. Direct enumeration is permitted only when `A_m <= 4096`. Order optional
-candidates by UTF-8 response ID, then enumerate selected cardinality ascending and combinations in
-lexicographic index order for `if`, followed by `concise`. Prefix mandatory-pass IDs before optional
-unaudited IDs and never include audited-fail IDs. The assignment digest is the domain digest of
-canonical sorted reclassified IDs, all three immutable consensus-status sets, and both limits.
+Implement that literal product in production and in an independent golden test with Python integers;
+do not substitute a count over a differently filtered candidate pool. Direct enumeration is
+permitted only when `A_m <= 4096`. For each arm, order its `M-D` optional candidates by UTF-8
+response ID, enumerate total reclassified cardinality `j` ascending, and enumerate combinations in
+lexicographic index order for `if`, followed by `concise`. Prefix the D forced IDs before the selected
+optional IDs. The assignment digest is the domain digest of canonical sorted reclassified IDs, the
+forced/optional partition, and both limits.
 
 - [ ] **Step 5: Recompute and retain all four extrema**
 
@@ -4686,7 +4527,7 @@ SensitivityExhaustionReason = Literal[
 class SensitivityResultV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     generation_model: str
-    model_family_proof_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    model_audit_metric_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     assignment_count: int = Field(ge=0)
     visited_nodes: int = Field(ge=0)
     evaluated_assignments: int = Field(ge=0)
@@ -4738,9 +4579,9 @@ def enumerate_sensitivity_exact(
 ~~~
 
 Both limit entries must be in exact `(if, concise)` order, match the aggregate model, and carry one
-identical nonblank `model_family_proof_sha256`; copy that root into `SensitivityResultV1`. Direct
+identical nonblank `model_audit_metric_sha256`; copy that digest into `SensitivityResultV1`. Direct
 enumeration, certified search, certificate verification, analysis loading, and reporting all reject
-a mixed-family pair even when both individual arm bounds are otherwise internally valid.
+a mixed-metric pair even when both individual arm limits are otherwise internally valid.
 
 For each assignment set `S=1` on mandatory and selected false-fail rows, leave H unchanged, and
 recompute the semantic paired rate-difference interval, semantic eligibility, token-pair
@@ -4792,7 +4633,8 @@ Create tests named:
 - `test_each_search_cap_emits_its_closed_reason_and_no_certificate`
 - `test_sensitivity_result_rejects_unknown_or_inconsistent_exhaustion_reason`
 
-The cap fixtures use M=K=120 for both arms, set the operation caps to the normative values, and
+The cap fixtures use `M=K=120` and `D=0` for both arms, so each literal optional pool has `M-D=120`
+and the independent formula oracle yields `A_m = 2^240`; they set the operation caps to the normative values and
 exercise each guard independently. Assert exactly 1,000,000 visited nodes with
 `exhaustion_reason="visited_node_cap"` or exactly 4,096 evaluated leaves with
 `exhaustion_reason="bootstrap_evaluation_cap"`, `search_exhausted=True`, a null certificate, and
@@ -4810,7 +4652,7 @@ uv run pytest -q tests/benchmark/test_sensitivity_certificate.py
 
 Expected: tests fail because the certificate schemas and branch-and-bound entry point are absent.
 
-- [ ] **Step 3: Freeze traversal, counters, and certificate schemas**
+- [ ] **Step 3: Implement the frozen traversal, counters, and certificate schemas**
 
 ~~~python
 MAX_VISITED_NODES = 1_000_000
@@ -4840,7 +4682,7 @@ class SensitivityCertificateV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["sensitivity-certificate-v1"]
     generation_model: str
-    model_family_proof_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    model_audit_metric_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     candidate_order: tuple[str, ...]
     limits: tuple[FalseFailLimitV1, FalseFailLimitV1]
     bootstrap_vectors_sha256: str
@@ -4863,15 +4705,18 @@ On a complete partition, compute the four certificate extrema first and hash the
 domain `laconian-sensitivity-certificate-v1`, excluding only `certificate_sha256`. Only then build
 `SensitivityResultV1` with those same four extrema and the resulting certificate digest. The
 certificate never embeds a result that points back to it, so there is no circular preimage.
-Before traversal, require both ordered limits to carry the same model-family proof root and copy it
+Before traversal, require both ordered limits to carry the same model-audit metric digest and copy it
 to the certificate; the verifier independently repeats this comparison and requires the returned
-result to carry that same root.
+result to carry that same digest.
 
-- [ ] **Step 4: Permit only mechanically exact cardinality pruning in v1**
+- [ ] **Step 4: Implement only mechanically exact cardinality pruning in v1**
 
-For each prefix, first prune when an arm has more selected rows than K or cannot reach D with its
-remaining rows. Its subtree assignment count is the exact product of the remaining feasible
-binomial sums.
+For each prefix over the UTF-8-ordered `M-D` optional rows, first prune when an arm already has more
+than `K-D` optional selections or cannot complete a cardinality in `0..K-D`. Its subtree assignment
+count must use the residual form of the same literal identity
+`A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`; the certificate
+verifier independently recomputes that integer and proves the disjoint evaluated-leaf plus pruned-
+subtree counts sum to it exactly.
 
 Do not implement semantic-bound, token-bound, incumbent, or dominance pruning in v1. The interaction
 among reclassification, matched-pair eligibility, medians, missing token intervals, and type-7
@@ -4906,11 +4751,11 @@ def verify_sensitivity_certificate(
     """Reconstruct the full tree partition and independently verify every proof and leaf."""
 ~~~
 
-The verifier recomputes candidate order, consensus-status partitions, limits, vector digest,
+The verifier recomputes candidate order, forced/optional partitions, limits, vector digest,
 cardinality-infeasible subtree counts, every feasible leaf result, disjointness, and exhaustive
 coverage of the assignment space. It recomputes extrema solely from verified leaves and compares
-canonical bytes. It must not trust counters, accept an objective bound, or permit an audited-fail
-record in any leaf.
+canonical bytes. It must not trust counters, accept an objective bound, omit a forced D row, or
+permit a selected row outside the exact `M-D` optional pool.
 
 If either normative cap is reached before an exhaustive verified partition exists, return
 `search_exhausted=True`, publish both counters and the closed reason for the guard that prevented
@@ -4957,7 +4802,7 @@ Create tests named:
 - `test_report_surfaces_missing_or_forbidden_cache_write_integrity_limitations`
 - `test_usage_status_maps_are_closed_complete_and_sum_to_120_per_arm`
 - `test_report_discloses_audit_weights_confusion_intervals_and_search_caps`
-- `test_report_separates_descriptive_wilson_from_authorizing_false_fail_design_bound`
+- `test_report_uses_two_sided_design_weighted_wilson_for_gate_and_false_fail_u`
 - `test_report_never_renders_candidate_or_judge_text_as_markdown`
 - `test_analysis_writers_are_canonical_failure_atomic_and_no_replace`
 - `test_audit_evidence_writer_is_canonical_failure_atomic_no_replace_and_fresh_reloads`
@@ -4972,6 +4817,7 @@ Create tests named:
 - `test_verified_analysis_loader_rejects_report_bootstrap_or_attachment_substitution`
 - `test_verified_analysis_loader_rejects_analysis_only_root_without_bound_audit_tree`
 - `test_analysis_builder_and_loader_require_provider_bound_statistical_protocol`.
+- `test_analysis_builder_and_loader_require_exact_provider_bound_audit_protocol`.
 - `test_bootstrap_artifact_builder_derives_seed_from_provider_evidence_and_round_trips_c_order_bytes`.
 - `test_bootstrap_artifact_builder_rejects_shape_range_metadata_or_digest_substitution`.
 - `test_bootstrap_artifact_builder_has_no_raw_seed_or_protocol_override`.
@@ -4990,7 +4836,7 @@ uv run pytest -q tests/benchmark/test_reporting.py
 
 Expected: collection fails because `laconian_eval.benchmark.reporting` does not exist.
 
-- [ ] **Step 3: Add the closed analysis and evidence-root schemas**
+- [ ] **Step 3: Implement the closed analysis and evidence-root schemas**
 
 Implement:
 
@@ -5066,6 +4912,7 @@ class ModelAnalysisV1(BaseModel):
     usage_by_arm: Mapping[ArmName, DescriptiveUsageV1]
     audit_metrics: ModelAuditMetricsV1
     audit_gate: ModelAuditGateV1
+    false_fail_limits: tuple[FalseFailLimitV1, FalseFailLimitV1]
     sensitivity: SensitivityResultV1
     outcome: ModelOutcomeV1
 
@@ -5105,6 +4952,7 @@ class CampaignAnalysisV1(BaseModel):
     audit_evidence_sha256: str
     bootstrap_vectors_sha256: str
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     models: tuple[ModelAnalysisV1, ModelAnalysisV1, ModelAnalysisV1]
     limitations: tuple[str, ...]
     campaign_analysis_sha256: str
@@ -5126,6 +4974,7 @@ class AuditEvidenceAttachmentV1(BaseModel):
     judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -5175,6 +5024,7 @@ class AnalysisEvidenceAttachmentV1(BaseModel):
     judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -5195,11 +5045,16 @@ its own digest and uses domain
 `analyze_campaign` class-bound revalidates `provider_evidence` and sets
 `statistical_protocol_sha256` only from
 `provider_evidence.index.statistical_protocol_sha256`; it has no protocol argument or environment
-fallback. The projection's repeated statistics protocol must match that index before analysis.
+fallback. It likewise sets `audit_protocol_sha256` only from
+`provider_evidence.index.audit_protocol_sha256`. Both repeated projection fields and the complete
+`protocol_bindings` object must match those index values before analysis.
 For every model, require
-`sensitivity.model_family_proof_sha256 ==
-audit_metrics.false_fail_family.model_family_proof_sha256`; neither reporting nor outcome
-classification accepts two independently supplied arm bounds.
+the limits in exact `(if, concise)` order, each
+`limit.model_audit_metric_sha256 == audit_metrics.model_audit_metric_sha256`, and
+`sensitivity.model_audit_metric_sha256 == audit_metrics.model_audit_metric_sha256`; neither
+reporting nor outcome classification accepts limits derived from another metric record. Recompute
+the literal A_m formula from those stored limits and require equality with
+`sensitivity.assignment_count` before sealing analysis.
 
 `AuditEvidenceAttachmentV1.audit_evidence_sha256` uses domain
 `laconian-verified-audit-evidence-v1` over every preceding field. Its two reviewer-chain, two
@@ -5212,7 +5067,9 @@ accounts, reviewer registry, and final envelope.
 For `CampaignAnalysisV1`, `AuditEvidenceAttachmentV1`, and `AnalysisEvidenceAttachmentV1`, build
 `protocol_bindings` only with Task 3's `protocol_bindings_from_context`; class-bound validation
 requires its two registry digests, attestation root, every tagged protocol/source root, and
-`workflow_root` to byte-equal the verified provider index. Each final object also repeats and
+`workflow_root` to byte-equal the verified provider index. This comparison explicitly includes the
+singular Runtime-registry-derived `audit_protocol_sha256` without adding it to any attestation subject
+inventory. Each final object also repeats and
 verifies the expectation digest, context digest, and provider-projection root. Tests mutate any one
 binding and recompute every local self digest; the fixed parent comparison must still reject it.
 
@@ -5333,7 +5190,9 @@ passes the same required projection through to the audit loader and additionally
 `CampaignAnalysisV1.benchmark_provider_evidence_sha256 ==
 provider_evidence.projection.benchmark_provider_evidence_sha256`, its input-tag commit to match
 `provider_evidence.index.input_tag_commit`, its `statistical_protocol_sha256` to equal both
-`provider_evidence.index.statistical_protocol_sha256` and the repeated projection field, and all four campaign-analysis layer-parent vectors plus
+`provider_evidence.index.statistical_protocol_sha256` and the repeated projection field, its
+`audit_protocol_sha256` to equal both `provider_evidence.index.audit_protocol_sha256` and the
+repeated projection field, and all four campaign-analysis layer-parent vectors plus
 the judge-attempt root/vector to match.
 Reject symlinks, non-regular
 files, duplicate reviewer paths, unexpected members, extra JSON fields, noncanonical JSON or JSONL,
@@ -5438,15 +5297,15 @@ conditional on this fixed campaign and that nominal 95% percentile coverage is a
 clusters. The report must expressly deny generalization to new models, provider versions, prompts,
 domains, or time periods; a bare “95% CI” label is forbidden.
 
-Report audit cells, exact weights, weighted confusion tables, weighted Wilson intervals, reviewer
-agreement, kappa without an interval, critical-record coverage, model-specific gates, M/D/F/Q/U/K by
+Report audit cells, exact weights, weighted confusion tables, authorizing two-sided design-weighted
+Wilson intervals, reviewer
+agreement, kappa without an interval, critical-record coverage, model-specific gates, M/D/U/K by
 primary arm, assignment-space size, visited/evaluated counters, certificate digest, cap values, the
 closed search-exhaustion reason (or null), all four extrema, outcome reasons, and limitations. Label
-Kish/Wilson intervals as descriptive and nonauthorizing. Beside each sensitivity U, report the exact
-finite-population method, one 95% model family across IF and concise, equal Bonferroni alpha
-allocation, cell N/n/y and exact hypergeometric tail proofs, each arm's upper false-fail count, the
-shared model-family proof digest, and availability reasons; only this conservative exact family may
-set either K. Present baseline and Caveman
+each interval `design-weighted-wilson-score-v1`, `two-sided-0.95`, and
+`z = 1.959963984540054`. Beside each sensitivity U, report that it is that model/arm interval's upper
+endpoint, its `n_eff`, the exact Decimal-derived K, the shared model-audit metric digest, and any
+closed unavailability reasons; no alternate bound may set K. Present baseline and Caveman
 only as exploratory context. Report each model outcome independently
 and, if counting supported models descriptively, link the statement to all three rows.
 
@@ -5462,7 +5321,8 @@ Canonical JSON files end with one newline. `bootstrap.json` contains vector meta
 canonical equality with `audit`. It also calls `build_bootstrap_artifact` on the 12 scenario UIDs
 from the verified provider parents, canonical-byte compares the result with `bootstrap`, and
 requires `analysis.statistical_protocol_sha256` to equal the provider index and projection statistics
-protocol before accepting either object. It stages an absent `output_root`, copies that loader's exact
+protocol and `analysis.audit_protocol_sha256` to equal the provider index and projection singular
+audit protocol before accepting either object. It stages an absent `output_root`, copies that loader's exact
 allowlisted `source_audit_root/audit` tree byte for byte to `output_root/audit`, and writes the five
 analysis members under `output_root/analysis`. No reference or symlink back to the source is
 permitted. Build `analysis/checksums.json` over the other analysis artifacts, then bind it in
@@ -5499,9 +5359,46 @@ git commit -m "feat: seal benchmark analysis and reports"
 - Modify: `evals/README.md`
 - Modify: `tests/test_public_contract.py`
 
-- [ ] **Step 1: Build a deterministic in-memory Slice 1 evidence fixture**
+- [ ] **Step 1: Write exactly eleven failing end-to-end analysis tests**
 
-Add `build_synthetic_public_campaign()` to `tests/benchmark/helpers.py`. It must create:
+Create tests named:
+
+- `test_synthetic_campaign_reconstructs_analysis_from_36_bound_attachments`
+- `test_synthetic_negative_inconclusive_and_supported_models_remain_separate`
+- `test_synthetic_artifacts_are_byte_identical_across_two_fresh_roots`
+- `test_synthetic_analysis_loaders_fail_closed_on_each_parent_hash_substitution`
+- `test_synthetic_audit_reload_recomputes_core_review_records_signoffs_and_final_envelope`
+- `test_synthetic_sample_and_audit_atomic_writers_fresh_reload_exact_roots`
+- `test_synthetic_two_sided_wilson_false_fail_upper_sets_k_and_keeps_zero_error_uncertainty_positive`
+- `test_synthetic_attestations_accept_null_github_and_keyed_fingerprints_by_mode`
+- `test_synthetic_security_attestation_requires_nonnull_keyed_fingerprint`
+- `test_synthetic_attestations_reject_cross_role_reorder_extra_missing_or_duplicate_subject`
+- `test_synthetic_attestations_reject_extra_top_level_field_or_signature_mode_mismatch`
+
+Do not add the helper yet. The first test's literal expectations require identical authority-tagged
+`statistical_protocol_sha256` and singular `audit_protocol_sha256` across context, provider index,
+projection, nested protocol bindings, audit evidence, analysis, and final analysis evidence. It also
+pins the exact assignment-count formula, the shared per-model audit-metric digest in both arm limits,
+all four sensitivity extrema or one closed exhaustion reason, and every count/root described in
+Step 3 below. The other ten tests cover independent outcomes, deterministic bytes, parent
+substitution, full audit re-verification, atomic writers, Wilson-to-K propagation, and the four
+attestation mode/inventory failures named above.
+
+- [ ] **Step 2: Run the eleven tests RED**
+
+Run:
+
+~~~bash
+uv run pytest -q tests/benchmark/test_synthetic_analysis.py
+~~~
+
+Expected: tests fail because the complete synthetic campaign builder and artifact reconstruction
+are not implemented.
+
+- [ ] **Step 3: Implement the deterministic 36-capsule fixture**
+
+Only after recording RED, add `build_synthetic_public_campaign()` to
+`tests/benchmark/helpers.py`. It creates:
 
 ~~~text
 3 generation models
@@ -5513,87 +5410,39 @@ x 5 repetitions per arm
 ~~~
 
 Every synthetic capsule carries a non-null SealV1 hash and verified ScoredAttemptV2 projection.
-The helper must then derive 36 hard-score request sets, 36 judge-request attachments, 36 judge
-attempt-boundary files plus their `JudgeAttemptRootIndexV1`, and 36 judge attachments including at
-least one explicitly empty attempt boundary and sealed zero-call attachment. It constructs the
-provider-ready request/attempt fixtures with literal `service_tier=default`, one definite
-pre-response 429 retry row with
-`service_tier_status=not_applicable_definitely_rejected`, one rejected
-nondefault-tier fixture that retains worst-case exposure and cannot seal, and the accepted
-attachments only from `load_verified_judge_attempt_root`, then builds a fixed synthetic
-`GenerationContextExpectationV1`, authority-wrapper fixture, `GenerationContextIndexV1`, and
-`ProviderEvidenceIndexV1` with independently fixed plaintext
-seed/input commit, the exact two reviewer bindings including signing mode/fingerprint and freshly
-computed canonical audit-registry hash, a separate exact three-role protocol-reviewer registry/hash
-with a null fingerprint for an allowed `github_verified_commit` reviewer, a keyed SSH/OpenPGP
-reviewer, and the required nonnull keyed `security_evidence` fingerprint,
-the three exact `ProtocolAttestationV1` records with complete role subject inventories and
-`protocol_attestations_root`, their shared frozen `workflow_root`, the
-authority-tagged statistics protocol, expectation/context digests, and four exact
-layer-root-index digests, followed by the provider-evidence projection and its
-`VerifiedBenchmarkProviderEvidenceV1`, the complete audit-population attachment
-and JSONL, the exact deterministic sample round-tripped through `write_audit_sample_root` and
-`load_verified_audit_sample_root`, two distinct reviewer commitment/reveal chains,
-an independently hashed adjudication core, two canonical exact GitHub review records with stable
-numeric account IDs, two signoff proofs, the final adjudication envelope, per-model audit metrics
-including exact hypergeometric false-fail proof cells, a `build_bootstrap_artifact` result with
-frozen vectors, sensitivity results, three model
-analyses, and the combined audit-plus-analysis result root. It must not instantiate a provider, read
-credentials, access the network, or use wall-clock time.
+Derive 36 hard-score request sets, 36 judge-request attachments, 36 judge-attempt-boundary files and
+their `JudgeAttemptRootIndexV1`, and 36 judge attachments, including one explicit empty boundary and
+sealed zero-call attachment. Provider-ready request/attempt fixtures use literal
+`service_tier=default`; include one definite pre-response 429 retry with
+`service_tier_status=not_applicable_definitely_rejected` and one rejected nondefault-tier attempt
+that retains worst-case exposure and cannot seal. Build accepted attachments only from
+`load_verified_judge_attempt_root`.
+
+Build a fixed synthetic `GenerationContextExpectationV1`, authority wrapper,
+`GenerationContextIndexV1`, and `ProviderEvidenceIndexV1` with independently fixed plaintext
+seed/input commit; the exact two audit reviewers and recomputed registry digest; the separate exact
+three-role protocol reviewer registry; allowed null GitHub and exact keyed fingerprints; the three
+exact `ProtocolAttestationV1` records with unchanged role subject inventories; their shared
+`workflow_root`; exact authority-tagged statistics and singular audit protocol hashes; expectation,
+context, four layer-index, and attempt-root digests; and the provider projection/wrapper. Propagate
+the same `audit_protocol_sha256` through every nested `BenchmarkProtocolBindingsV1` and every final
+top-level field specified in Task 13.
+
+Then build the complete audit population/JSONL; deterministic sample round-tripped through
+`write_audit_sample_root` and `load_verified_audit_sample_root`; two distinct reviewer chains;
+independently hashed adjudication core; two canonical exact GitHub review records with stable numeric
+account IDs; two signoff proofs; final adjudication envelope; per-model metrics with authorizing two-
+sided design-weighted Wilson intervals; Decimal-derived U and K; exact candidate spaces satisfying
+`A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`; frozen bootstrap
+artifact; sensitivity results; three model analyses; and the combined audit-plus-analysis result
+root. The helper never instantiates a provider, reads credentials, accesses the network, uses wall-
+clock time, or derives a test expectation from implementation output.
 
 Shape outcomes deliberately: one model has a verified hard or semantic negative-quality interval,
-one has an inconclusive semantic result through a declared audit or sensitivity gate, and one is
-supported with strict positive brevity and non-inferior quality. Assert those three independent
-outcomes by exact model ID; never derive the expectation from implementation output.
+one is inconclusive through a declared audit or sensitivity gate, and one is supported with strict
+positive brevity and non-inferior quality. Assert those outcomes by literal exact model ID.
 
-- [ ] **Step 2: Write the failing end-to-end analysis tests**
-
-Create tests named:
-
-- `test_synthetic_campaign_reconstructs_analysis_from_36_bound_attachments`
-- `test_synthetic_negative_inconclusive_and_supported_models_remain_separate`
-- `test_synthetic_artifacts_are_byte_identical_across_two_fresh_roots`
-- `test_synthetic_analysis_loaders_fail_closed_on_each_parent_hash_substitution`
-- `test_synthetic_audit_reload_recomputes_core_review_records_signoffs_and_final_envelope`
-- `test_synthetic_sample_and_audit_atomic_writers_fresh_reload_exact_roots`
-- `test_synthetic_exact_false_fail_bound_keeps_zero_error_noncensus_uncertainty_positive`
-- `test_synthetic_attestations_accept_null_github_and_keyed_fingerprints_by_mode`
-- `test_synthetic_security_attestation_requires_nonnull_keyed_fingerprint`
-- `test_synthetic_attestations_reject_cross_role_reorder_extra_missing_or_duplicate_subject`
-- `test_synthetic_attestations_reject_extra_top_level_field_or_signature_mode_mismatch`
-
-The first test writes and reloads the explicit generation-context and provider-index files, asserts
-the expectation's registry/predecessor/generation/context/final-authority bindings, their
-seed/self digests, separate canonical audit/protocol reviewer-registry bytes/hashes,
-three-role protocol-attestation root with exact subject roots, and identical authority-tagged statistical protocol across context,
-provider index, projection, and analysis,
-all capsule/sidecar pairs, the fixed 36-boundary attempt-root digest, and four layer-root-index digests,
-then asserts four
-separate counts of 36 for generation, hard score, judge
-request, and judge parents, plus 1,440 planned rows; exact ordered union coverage; a 144-record sample; 10,000 by
-12 bootstrap vectors; both reviewer chains, reviewer-registry/account-ID bindings, canonical offline
-GitHub review records, and noncircular core/signoff/envelope hashes; three audit gates; exact
-hypergeometric false-fail proof cells, one shared IF/concise model-family proof root per model, and
-four sensitivity extrema or a closed
-exact-search exhaustion reason per model; and successful round trips through both loaders with the
-same required `VerifiedBenchmarkProviderEvidenceV1`. It requires `write_audit_sample_root` and
-`write_audit_evidence_root` to install and fresh-reload their exact roots before analysis. It also
-asserts that the analysis writer's
-fresh output contains byte-identical `audit/` members plus the new `analysis/` members and can be
-passed directly to `load_verified_analysis_evidence`.
-
-- [ ] **Step 3: Run RED**
-
-Run:
-
-~~~bash
-uv run pytest -q tests/benchmark/test_synthetic_analysis.py
-~~~
-
-Expected: tests fail because the complete synthetic campaign builder and artifact reconstruction
-are not implemented.
-
-- [ ] **Step 4: Complete the synthetic fixture and make the full analysis GREEN**
+- [ ] **Step 4: Run the eleven tests GREEN**
 
 Run after implementing the helper and exact assertions:
 
@@ -5601,7 +5450,7 @@ Run after implementing the helper and exact assertions:
 uv run pytest -q tests/benchmark/test_synthetic_analysis.py
 ~~~
 
-Expected: all seven tests pass without network access or environment secrets.
+Expected: all eleven named tests pass without network access or environment secrets.
 
 - [ ] **Step 5: Replace the public no-interval limitation with the frozen contract**
 
@@ -5626,13 +5475,16 @@ quality-gate, audit, and outcome sections:
   quantiles, at least 9,990 valid replicates, the fixed-campaign conditional scenario target, and
   nominal approximate coverage with only 12 clusters;
 - five-point hard and sensitivity-adjusted semantic non-inferiority;
-- analysis and bootstrap use only the authority-tagged `statistical_protocol_sha256` carried
-  identically by generation context, provider index/projection, and campaign analysis;
+- analysis and bootstrap use only the authority-tagged `statistical_protocol_sha256`, while audit
+  evidence also requires the singular Runtime-registry-derived `audit_protocol_sha256`; both are
+  carried identically by generation context, provider index/projection, nested protocol bindings,
+  campaign analysis, and final evidence;
 - exact 144-record sampling, certainty critical records, Hamilton allocation, two-person
-  commit-reveal, design weights, descriptive nonauthorizing weighted Wilson intervals,
-  simultaneous stratified exact finite-population hypergeometric false-fail bounds with one 95%
-  model family across IF and concise, equal Bonferroni allocation, model-specific audit gates, and
-  bounded exact false-fail certificates;
+  commit-reveal, design weights, authorizing two-sided design-weighted Wilson intervals with
+  `z = 1.959963984540054`, model-specific point-estimate audit gates, each primary arm's Wilson upper
+  endpoint as U, the exact `K = min(M, max(D, ceil(U * M)))` Decimal calculation, the literal
+  assignment count `A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`,
+  and bounded exact false-fail certificates;
 - the strict outcome precedence and the phrase “among jointly successful matched responses.”
 - Runtime's three live methods are exactly
   `laconian_eval.campaign.runtime.Runtime.hard_score`,
@@ -5668,8 +5520,9 @@ CLI. State
 that all three protocol attestations, the generation context,
 provider index, and benchmark projection carry the same verified
 `workflow_root`, while Runtime alone owns the 15-workflow inventory schema.
-Also state that `statistical_protocol_sha256` is authority-bound through context/provider evidence
-and is the only accepted analysis protocol value.
+Also state that `statistical_protocol_sha256` and the singular `audit_protocol_sha256` are authority-
+bound through context/provider evidence and are the only accepted statistics/audit protocol values;
+the singular audit digest does not alter the approved granular attestation subject inventories.
 
 - [ ] **Step 6: Add an exact public-contract regression test**
 
@@ -5692,6 +5545,7 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "mismatch",
         "reported_default",
         "statistical_protocol_sha256",
+        "audit_protocol_sha256",
         "10,000",
         "Generator(PCG64)",
         "type-7",
@@ -5702,8 +5556,10 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "Hamilton",
         "commit-reveal",
         "n_eff = sum(w)^2 / sum(w^2)",
-        "stratified-simultaneous-exact-hypergeometric-bonferroni-v1",
-        "one 95% model family across IF and concise",
+        "z = 1.959963984540054",
+        "design-weighted-wilson-score-v1",
+        "K = min(M, max(D, ceil(U * M)))",
+        "A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})",
         "1,000,000",
         "4,096",
         "among jointly successful matched responses",
@@ -5729,6 +5585,7 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "GenerationContextIndexV1",
         "workflow_root",
         "statistical_protocol_sha256",
+        "audit_protocol_sha256",
         "JudgeAttemptEvidenceV1",
         "JudgeAttemptRootIndexV1",
         "ProviderEvidenceIndexV1",
@@ -6054,7 +5911,8 @@ Offline command validation responsibilities are fixed:
    records, signoffs, and final envelope as supplied structural evidence. It performs no GitHub
    call, invokes no audit builder, and writes no audit tree.
 6. `analyze` checks the complete audit tree, provider/audit parent bindings, audit metrics,
-   the provider-bound statistics protocol, exact finite-population proof inputs, and
+   the provider-bound statistics and singular audit protocols, the authorizing two-sided Wilson
+   inputs, Decimal U/K derivation, exact assignment-count/certificate inputs, and
    cache-write accounting needed by a later live analysis. It invokes no aggregation, bootstrap,
    sensitivity, or analysis builder and writes no result root.
 7. `verify` performs the same offline structural checks over `RESULT`, including both
@@ -6133,9 +5991,8 @@ write_audit_sample_root, load_verified_audit_sample_root,
 ReviewerIdentityV1, PullRequestProofV1, ReviewerCommitmentV1, ReviewerRevealV1,
 ReviewerChainV1, verify_reviewer_chain, AuditAdjudicationCoreV1,
 ExactGitHubReviewRecordV1, ExactGitHubReviewSignoffV1, AuditAdjudicationV1, verify_audit_chain,
-ModelAuditMetricsV1, CellExactHypergeometricUpperV1,
-DesignConsistentFalseFailBoundV1, ModelFalseFailFamilyProofV1, ModelAuditGateV1,
-compute_model_audit_metrics, compute_design_consistent_false_fail_family,
+WeightedConfusionV1, WeightedProportionV1, ModelAuditMetricsV1, ModelAuditGateV1,
+compute_model_audit_metrics, evaluate_model_audit_gate,
 SensitivityResultV1, SensitivityCertificateV1, verify_sensitivity_certificate,
 CampaignAnalysisV1, AuditEvidenceAttachmentV1, AnalysisEvidenceAttachmentV1,
 VerifiedAuditEvidenceV1, VerifiedAnalysisEvidenceV1,

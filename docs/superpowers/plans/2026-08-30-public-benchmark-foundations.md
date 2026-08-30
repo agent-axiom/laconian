@@ -2907,23 +2907,46 @@ git commit -m "feat: restore capsule checkpoints safely"
 ### Task 12: Prove the complete Slice 1 evidence path and run quality gates
 
 **Files:**
-- Modify: `tests/capsule/test_checkpoint.py`
-- Modify: `tests/capsule/test_sharding.py`
-- Modify: `tests/capsule/test_finalize.py`
-- Modify: `tests/capsule/test_verify_sealed.py`
-- Modify: `tests/capsule/test_scorable.py`
-- Modify: `tests/capsule/test_sidecars.py`
+- Create: `tests/capsule/test_foundation_round_trip.py`
+- Create: `tests/capsule/foundation_round_trip.py`
 
-- [ ] **Step 1: Add the end-to-end shard lifecycle characterization**
+- [ ] **Step 1: Write the failing end-to-end shard lifecycle test**
 
-Add `test_public_foundation_round_trip_from_parent_plan_to_restored_seal` to `tests/capsule/test_checkpoint.py`. The test must perform this exact offline sequence:
+Create `test_foundation_round_trip.py` with
+`test_public_foundation_round_trip_from_parent_plan_to_restored_seal`. Import the test-owned
+`run_public_foundation_round_trip` integration harness from `foundation_round_trip.py`; the harness
+must wire only the already public Slice 1 APIs and must not duplicate their validation or hashing.
+The test requires this exact offline sequence:
+
+```python
+from pathlib import Path
+
+from tests.capsule.foundation_round_trip import run_public_foundation_round_trip
+
+
+def test_public_foundation_round_trip_from_parent_plan_to_restored_seal(
+    tmp_path: Path,
+) -> None:
+    evidence = run_public_foundation_round_trip(tmp_path=tmp_path)
+    assert evidence.provider_call_count == 40
+    assert evidence.request_contract_count == 40
+    assert evidence.all_request_contracts_exact is True
+    assert evidence.all_attempt_evidence_exact is True
+    assert evidence.all_visible_token_subtractions_exact is True
+    assert evidence.source_seal_sha256 == evidence.restored_seal_sha256
+    assert evidence.source_tree_sha256 == evidence.restored_tree_sha256
+    assert evidence.source_sidecar_evidence_sha256 == evidence.restored_sidecar_evidence_sha256
+```
 
 ```text
 construct the three exact native-v2 model manifests with medium reasoning/verbosity, literal default service tier, explicit/30m cache control, five sourced rates, and SDK/lock identity
 materialize three stable 480-row parents
 derive and validate all 36 40-row shard plans
 prepare one captured shard capsule from one parent/shard pair
-execute all 40 requests with an injected fake provider echoing applied explicit/30m, read zero, write zero, reported reasoning tokens, literal default tier, and separately recorded returned model ID
+execute all 40 requests through a function-local recording `OpenAIProvider` test subclass whose exact
+`generate_benchmark(request: PublicBenchmarkRequestV1) -> PublicBenchmarkProviderOutcomeV1` method
+echoes applied explicit/30m, read zero, write zero, reported reasoning tokens, literal default tier,
+and separately recorded returned model ID
 assert every committed attempt has applied/read/write statuses reported_exact/reported_zero/reported_zero, requested and returned default tier with reported_default, exact source digests, and one consistent returned model ID
 assert every visible-token value equals output_tokens minus reasoning_tokens
 finalize the capsule
@@ -2935,33 +2958,110 @@ verify the restored capsule and compare its seal hash and complete tree to the s
 load the same scored sidecar against the restored capsule and require equal verified evidence
 ```
 
-Assert the fake provider received exactly 40 calls, every request carried `reasoning={effort:
+Assert the recording provider received exactly 40 calls, every request carried `reasoning={effort:
 medium}`, `text={verbosity: medium}`, exact `prompt_cache_options={mode: explicit, ttl: 30m}`, and
 `service_tier=default` through the
-injected client boundary, every resulting attempt classified the returned tier as `reported_default`, and no
+exact `OpenAIProvider.generate_benchmark` boundary, every resulting attempt classified the returned tier as `reported_default`, and no
 request from another scenario appears.
 
-- [ ] **Step 2: Run the end-to-end integration gate**
+- [ ] **Step 2: Run the focused test and observe RED**
 
 Run:
 
 ```bash
-uv run pytest tests/capsule/test_checkpoint.py::test_public_foundation_round_trip_from_parent_plan_to_restored_seal -q
+uv run pytest tests/capsule/test_foundation_round_trip.py::test_public_foundation_round_trip_from_parent_plan_to_restored_seal -q
 ```
 
-Expected: PASS. A failure names the first inconsistent cross-component binding; stop, fix only its owning task, add a focused regression beside that component, and rerun this gate.
+Expected: FAIL during collection because `tests/capsule/foundation_round_trip.py` and
+`run_public_foundation_round_trip` do not exist. This RED is required; do not pre-create the helper
+or weaken the test to call one component in isolation.
 
-- [ ] **Step 3: Run the complete focused Slice 1 suite**
+- [ ] **Step 3: Add the minimal integration wiring**
+
+Create `foundation_round_trip.py` with the single keyword-only
+`run_public_foundation_round_trip(*, tmp_path) -> FoundationRoundTripEvidence`
+test helper. It calls the existing manifest/planning, capture/execution, finalize, sealed verification,
+scored-sidecar, deterministic USTAR, restore, and restored-verification APIs in the exact order from
+Step 1. Its frozen result contains only the call count, source/restored seal hashes, source/restored
+tree hashes, and source/restored sidecar evidence hashes. It contains no production fallback,
+credential lookup, live-provider client, copied verifier, path outside `tmp_path`, or new public API.
+
+Define this exact test-owned result and signature; imports shown here are part of the new helper:
+
+```python
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class FoundationRoundTripEvidence:
+    provider_call_count: int
+    request_contract_count: int
+    all_request_contracts_exact: bool
+    all_attempt_evidence_exact: bool
+    all_visible_token_subtractions_exact: bool
+    source_seal_sha256: str
+    restored_seal_sha256: str
+    source_tree_sha256: str
+    restored_tree_sha256: str
+    source_sidecar_evidence_sha256: str
+    restored_sidecar_evidence_sha256: str
+
+
+def run_public_foundation_round_trip(
+    *,
+    tmp_path: Path,
+) -> FoundationRoundTripEvidence:
+    """Return facts freshly read from one exact offline Slice 1 round trip."""
+```
+
+The body contains no additional named adapter. Construct the three strict fixture inputs directly
+with the earlier-owned `PublicBenchmarkRequestV1` and resolved-manifest models. Inside
+`run_public_foundation_round_trip`, define a function-local recording subclass of the earlier-owned
+`OpenAIProvider`; override only the exact Task 3 method
+`generate_benchmark(request: PublicBenchmarkRequestV1) -> PublicBenchmarkProviderOutcomeV1` to
+append each request to a local list and return strict typed `PublicBenchmarkProviderOutcomeV1`
+evidence. No fake-provider class, constant, or alternate provider interface is imported.
+
+Wire only these earlier-task-owned APIs, in this order, using each returned object as the next call's
+input: `materialize_parent_plan`, `validate_parent_plan`, `project_shard_plans`,
+`validate_public_generation_partition`, `materialize_shard_projection`, `prepare_shard_capsule`,
+`OpenAIProvider.generate_benchmark(request: PublicBenchmarkRequestV1) ->
+PublicBenchmarkProviderOutcomeV1` through the existing capsule execution path,
+`finalize_capsule`, `verify_capsule`,
+`write_scored_sidecar`, `load_verified_scored_capsule`, `pack_checkpoint`, `restore_checkpoint`,
+`verify_capsule` again, and `load_verified_scored_capsule` against the restored capsule.
+Use `checkpoint_archive_name` for the archive name and construct the already-defined
+`CheckpointProvenanceV1` and `CheckpointExpectedBindingsV1` directly. Compute complete tree hashes
+by byte-sorted descriptor reads in this test helper only; do not add a production tree-hash API.
+Populate every `FoundationRoundTripEvidence` field directly from the local request list, committed
+attempt evidence, `FinalizeResultV1`, both public verification results, and both
+`VerifiedScoredCapsuleV2` values. There are no other helper names to define or fill in later.
+
+If the integration test exposes an owning-component defect, first add the focused regression and
+minimal fix in that earlier task's exact files and commit; do not hide the mismatch in this harness.
+
+- [ ] **Step 4: Run focused GREEN and the complete Slice 1 suite**
 
 Run:
 
 ```bash
-uv run pytest tests/test_models.py tests/test_smoke_cases.py tests/test_cases.py tests/test_public_contract.py tests/test_openai_provider.py tests/test_providers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py tests/capsule/test_attempts_v2.py tests/capsule/test_execution.py tests/capsule/test_sharding.py tests/capsule/test_record_models.py tests/capsule/test_prepare.py tests/capsule/test_tree_policy.py tests/capsule/test_seal_models.py tests/capsule/test_finalize.py tests/capsule/test_verify_prepared.py tests/capsule/test_verify_sealed.py tests/capsule/test_cli_finalize.py tests/capsule/test_scorable.py tests/capsule/test_sidecars.py tests/capsule/test_checkpoint.py -q
+uv run pytest tests/capsule/test_foundation_round_trip.py::test_public_foundation_round_trip_from_parent_plan_to_restored_seal -q
+```
+
+Expected: PASS with exactly 40 locally recorded provider calls and byte-identical restored evidence.
+
+Then run:
+
+Run:
+
+```bash
+uv run pytest tests/test_models.py tests/test_smoke_cases.py tests/test_cases.py tests/test_public_contract.py tests/test_openai_provider.py tests/test_providers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py tests/capsule/test_attempts_v2.py tests/capsule/test_execution.py tests/capsule/test_sharding.py tests/capsule/test_record_models.py tests/capsule/test_prepare.py tests/capsule/test_tree_policy.py tests/capsule/test_seal_models.py tests/capsule/test_finalize.py tests/capsule/test_verify_prepared.py tests/capsule/test_verify_sealed.py tests/capsule/test_cli_finalize.py tests/capsule/test_scorable.py tests/capsule/test_sidecars.py tests/capsule/test_checkpoint.py tests/capsule/test_foundation_round_trip.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 4: Run the entire repository test suite**
+- [ ] **Step 5: Run the entire repository test suite**
 
 Run:
 
@@ -2971,7 +3071,7 @@ uv run pytest -q
 
 Expected: PASS with no live provider calls and no skipped Slice 1 tests.
 
-- [ ] **Step 5: Run static quality gates**
+- [ ] **Step 6: Run static quality gates**
 
 Run:
 
@@ -2983,7 +3083,7 @@ uv run mypy src
 
 Expected: all three commands exit 0 with no findings.
 
-- [ ] **Step 6: Inspect the final diff for scope and generated residue**
+- [ ] **Step 7: Inspect the final diff for scope and generated residue**
 
 Run:
 
@@ -2993,12 +3093,14 @@ git diff --check
 git diff --stat -- evals/cases/response-smoke.yaml evals/README.md src/laconian_eval tests
 ```
 
-Expected: only the files listed in the Slice 1 boundary are changed; `git diff --check` prints nothing; no result capsule, archive, sidecar, credential-bearing file, cache directory, or provider output is tracked.
+Expected: only the files listed in the Slice 1 boundary are changed; `git diff --check` prints
+nothing; no result capsule, archive, sidecar, credential-bearing file, cache directory, or provider
+output is tracked.
 
-- [ ] **Step 7: Commit the cross-component verification**
+- [ ] **Step 8: Commit the cross-component verification**
 
 ```bash
-git add tests/capsule/test_checkpoint.py tests/capsule/test_sharding.py tests/capsule/test_finalize.py tests/capsule/test_verify_sealed.py tests/capsule/test_scorable.py tests/capsule/test_sidecars.py
+git add tests/capsule/test_foundation_round_trip.py tests/capsule/foundation_round_trip.py
 git commit -m "test: verify public benchmark foundations"
 ```
 

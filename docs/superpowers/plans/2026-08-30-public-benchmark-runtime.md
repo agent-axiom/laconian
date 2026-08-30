@@ -306,6 +306,8 @@ Expected RED: import fails because `laconian_eval.campaign` does not exist.
 uv run pytest -p no:cacheprovider tests/campaign/test_models.py tests/campaign/test_artifact_wire.py tests/capsule/test_canonical.py -q
 ```
 
+Expected GREEN: PASS; the strict identity/artifact models and every hostile canonical vector pass.
+
 #### Step 4: Commit
 
 - [ ] Review `git diff --check` and commit:
@@ -479,6 +481,16 @@ Expected RED: `tag_binding` imports fail.
   hard-score, judge, statistics, audit, retry, checkpoint, and publication contracts. Tests
   independently recompute every protocol hash and reject a file generated from a different source
   revision or containing an unknown/free-form execution field.
+- [ ] Consume, but do not redefine, Evaluation's singular field
+  `audit_protocol_sha256: Sha256`. Runtime Task 2 derives it only by descriptor-reading and hashing
+  the verified C0 member
+  `benchmarks/protocols/public-three-model-v1/audit.json` at the exact peeled input commit. Require
+  that same field and value in `CampaignInputPackageV1`, `VerifiedCampaignInputPackageV1`, and
+  `CampaignRegistryV1`; reject a caller/workflow scalar, a mutable-`main` byte source, a second audit
+  digest alias, or disagreement with the audit member of the ordered seven-protocol inventory.
+  Preserve Evaluation's separate `audit_sampling_protocol_sha256`,
+  `audit_commit_reveal_protocol_sha256`, and `audit_adjudication_protocol_sha256` bindings unchanged;
+  the singular aggregate field neither replaces nor derives those granular bindings.
 - [ ] Import and class-bound revalidate Evaluation-owned `ProtocolAttestationV1`; Runtime must not
   define a substitute. Require exactly these top-level fields in schema order:
   `schema_version`, `role`, `protocol_registry_sha256`, `reviewer_numeric_account_id`,
@@ -584,7 +596,8 @@ Expected RED: the strict input-package loader and real frozen files do not exist
 campaign_id, mode, input tag object and peeled commit,
 current preflight workflow path/SHA-256, exact 15-workflow inventory/root, three manifest/parent-plan hashes,
 ordered 36 shard hashes, exact tagged `src/laconian_eval/benchmark/hard_score.py` source SHA-256,
-hard-score/judge/statistical/audit protocol path/hash fields,
+hard-score/judge/statistical protocol path/hash fields and the Evaluation-owned singular
+`audit_protocol_sha256: Sha256`,
 the plaintext `CampaignSeedV1` and its hash, `CampaignPlanIndexV1` hash,
 all seven ordered protocol hashes, five-dimension price snapshot/source roots, the exact two audit-reviewer account/signing
 bindings and audit-reviewer-registry hash, the exact three role-bound protocol-reviewer bindings and
@@ -598,9 +611,10 @@ micro-USD, cap micro-USD, registry hash
 ```
 
 Derive the hard-scorer source hash by descriptor-reading that one path from verified `C0`; derive
-the hard-score protocol hash from its exact member of the seven-file tagged protocol inventory.
-Neither is accepted as a manifest/CLI/workflow scalar. Re-hash both during registry load, bind their
-paths and hashes into the registry digest, and reject a self-consistent substituted registry whose
+the hard-score protocol hash and `audit_protocol_sha256` from their exact members of the seven-file
+tagged protocol inventory. Neither is accepted as a manifest/CLI/workflow scalar. Re-hash both
+protocol members during registry load, bind their paths and hashes into the registry digest, and
+reject a self-consistent substituted registry whose
 expected digest does not equal the input-tag package bound by canonical preflight authority.
 
 - [ ] Run:
@@ -611,7 +625,7 @@ uv run pytest -p no:cacheprovider tests/campaign/test_preflight.py -q
 
 Expected RED: registry models and `seal_preflight` are absent.
 
-#### Step 5: GREEN the tagged package and deterministic preflight
+#### Step 5: Implement the minimal tagged package and deterministic preflight
 
 - [ ] Implement a strict `load_campaign_input_package(tag_root: Path) -> VerifiedCampaignInputPackageV1`
   that opens only the fixed paths above, rejects symlinks/aliases/duplicates/unknown members, and
@@ -636,7 +650,14 @@ Expected RED: registry models and `seal_preflight` are absent.
   all ledger inputs and outputs are strict nonnegative integers.
 - [ ] Calculate worst-case request exposure through those pure functions and enforce exactly `5_000_000` pilot or `75_000_000` confirmatory micro-USD.
 - [ ] Emit a canonical `PreflightSummaryV1` that contains counts, price URLs, reservations, and hashes but no prompts, outputs, credentials, arbitrary paths, or environment values.
-- [ ] Rerun tag, spend-pricing, and preflight tests to GREEN.
+- [ ] Run:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_tag_binding.py tests/campaign/test_input_package.py tests/campaign/test_preflight.py tests/campaign/test_spend.py tests/campaign/test_trust_boundary.py -q
+```
+
+Expected GREEN: PASS; the verified registry carries the single C0-derived
+`audit_protocol_sha256` together with all unchanged granular audit bindings.
 
 #### Step 6: Commit
 
@@ -986,7 +1007,14 @@ Expected RED: broker policy, canonical object builder, receive-pack lease, and a
   `campaign.__init__`. Keep `apply_campaign_event` pure: it constructs a candidate mutation bound
   to expected state, hold, and authority-ref OID. The broker re-verifies all three immediately
   before the receive-pack lease.
-- [ ] Run state and authority files together to GREEN.
+- [ ] Run state and authority files together to GREEN:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_state_schema.py tests/campaign/test_state.py tests/campaign/test_state_broker.py tests/campaign/test_authority_git.py tests/campaign/test_authority.py -q
+```
+
+Expected GREEN: PASS; the schema-generated state machine, external broker policy, canonical Git
+objects, smart-HTTP receive-pack leases, and reconstructed authority all pass.
 
 #### Step 5: Commit
 
@@ -1108,6 +1136,8 @@ Expected RED: pricing primitives exist from Task 2, but reservation, reconciliat
 uv run pytest -p no:cacheprovider tests/campaign/test_spend.py tests/campaign/test_preflight.py -q
 ```
 
+Expected GREEN: PASS; every reservation and five-component reconciliation is exact.
+
 #### Step 4: Commit
 
 - [ ] Commit spend and now-GREEN preflight together:
@@ -1184,7 +1214,13 @@ Expected RED: campaign retry module and evidence schema are absent; legacy fixed
 - [ ] Implement `RetryEvidenceV1` with status, certainty, raw safe Retry-After, bounded value, exponential bound, seed-derivation digest, chosen delay, source, attempt reservation hash, deadline remainder, and decision.
 - [ ] Keep `RawAttemptV2` policy-neutral: validate terminal/backoff structural consistency but stop enforcing `100 * 2 ** n`. Bind exact campaign retry policy through spend/controller evidence instead.
 - [ ] Update OpenAI classification and sanitizer boundaries. Header lookup failures become unusable Retry-After, never untrusted text in public errors.
-- [ ] Run provider, attempt, delivery, and retry tests to GREEN.
+- [ ] Run provider, attempt, delivery, and retry tests to GREEN:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_retry.py tests/test_openai_provider.py tests/capsule/test_attempts_v2.py tests/capsule/test_delivery_certainty.py -q
+```
+
+Expected GREEN: PASS; only the exact definitely-rejected 429 evidence receives a bounded retry.
 
 #### Step 4: Commit
 
@@ -1283,6 +1319,8 @@ Expected RED: batch planner is absent.
 ```bash
 uv run pytest -p no:cacheprovider tests/campaign/test_batch.py tests/campaign/test_spend.py tests/campaign/test_authority.py -q
 ```
+
+Expected GREEN: PASS; the contiguous planner and single-use receipt consumer satisfy every test.
 
 #### Step 4: Commit
 
@@ -1405,7 +1443,11 @@ uv run pytest -p no:cacheprovider tests/campaign/test_controller.py::test_soft_d
   `write_layer_root_index` for the exact 36 generation capsule/sidecar pairs and
   `write_generation_context_index` for
   `GENERATION/generation-context.json`, copying campaign seed, peeled commit, exact tagged
-  hard-scorer source path/hash, hard-score/judge/statistics/audit protocol paths/hashes,
+  hard-scorer source path/hash, hard-score/judge/statistics protocol paths/hashes, and the exact
+  Evaluation-owned `audit_protocol_sha256: Sha256` already derived by Task 2 from verified C0
+  `benchmarks/protocols/public-three-model-v1/audit.json` bytes at the peeled input commit,
+  plus the unchanged `audit_sampling_protocol_sha256`,
+  `audit_commit_reveal_protocol_sha256`, and `audit_adjudication_protocol_sha256` bindings,
   exact two audit-reviewer and three role-bound protocol-reviewer bindings/signing modes, both
   registry digests, the three ordered protocol attestations/root, exact workflow-inventory
   root, and registry digest from verified `CampaignRegistryV1`. Re-open and
@@ -1505,7 +1547,14 @@ uv run pytest -p no:cacheprovider tests/campaign/test_controller.py::test_soft_d
   the ordered Merkle root of every exact reachable direct receipt. Reload every direct locator,
   receipt, and payload before deriving that root. Never run a projection while the key is mapped and
   never claim its newly packed bytes received an exact-key scan.
-- [ ] Rerun controller and capsule regression tests to GREEN.
+- [ ] Rerun controller and capsule regression tests to GREEN:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_controller.py tests/campaign/test_benchmark_adapter.py tests/campaign/test_runtime.py tests/capsule/test_execution.py tests/capsule/test_resume.py tests/test_public_contract.py -q
+```
+
+Expected GREEN: PASS; the exact generation/judge suffixes, sealed roots, private Runtime methods,
+checkpoint recovery, and credential-scan handoff pass together.
 
 #### Step 5: Commit
 
@@ -1561,9 +1610,10 @@ laconian_eval.campaign.runtime._reconstruct_verified_runtime
 uv run pytest -p no:cacheprovider tests/campaign/test_runtime_boundary.py tests/test_public_contract.py -q
 ```
 
-Expected RED: Runtime construction/export and replay import boundaries are not yet closed.
+Expected RED: FAIL because Runtime construction/export and replay import boundaries are not yet
+closed.
 
-#### Step 2: GREEN the private boundary
+#### Step 2: Implement the minimal private boundary and verify GREEN
 
 - [ ] Make Runtime construction token-gated by a module-private sentinel produced only after exact
   authority reconstruction. Keep the capability in private slots and make serialization/copy
@@ -1571,7 +1621,14 @@ Expected RED: Runtime construction/export and replay import boundaries are not y
 - [ ] Make both fixed stage tools import only `_reconstruct_verified_runtime` plus the three exact
   methods, use fixed literal paths supplied by their workflows, and expose no reusable parser or
   arbitrary method name.
-- [ ] Run the focused boundary tests plus Evaluation's offline CLI tests to GREEN.
+- [ ] Run:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_runtime_boundary.py tests/test_public_contract.py tests/test_cli.py -q
+```
+
+Expected GREEN: PASS; only the private Runtime construction path owns the three live methods and
+all seven public replay commands remain offline.
 
 #### Step 3: Commit
 
@@ -1691,7 +1748,7 @@ uv run pytest -p no:cacheprovider tests/campaign/test_workflow_policy.py tests/t
 
 Expected RED: workflow files are missing.
 
-#### Step 2: GREEN the four Runtime-owned workflows
+#### Step 2: Implement the minimal four Runtime-owned workflows
 
 - [ ] Pin every action to a full 40-character commit. Use the repository's existing checkout/setup pins and the approved artifact pins.
 - [ ] In `prepare-preflight`, seal the verified tagged registry and emit a receipt-bound
@@ -1735,7 +1792,10 @@ Expected RED: workflow files are missing.
   `JUDGE_SET_SEALED` candidate. Generation completion analogously creates
   `GENERATION_SET_SEALED`. Before that generation event, the Slice 3 adapter writes the generation
   `LayerRootIndexV1` and `GENERATION/generation-context.json`, binding the campaign seed, peeled
-  commit, tagged hard-scorer source, hard-score/judge/statistics/audit protocols,
+  commit, tagged hard-scorer source, hard-score/judge/statistics protocols, and the unchanged
+  Evaluation-owned `audit_protocol_sha256: Sha256` from Runtime Task 2's verified peeled-C0 audit
+  member, alongside unchanged `audit_sampling_protocol_sha256`,
+  `audit_commit_reveal_protocol_sha256`, and `audit_adjudication_protocol_sha256`,
   workflow-inventory root, both
   reviewer registries, the three-role `protocol_attestations_root`, and
   the 36 capsule/sidecar pairs. It also writes the exact authority-package
@@ -1758,7 +1818,14 @@ Expected RED: workflow files are missing.
   callee identity, mutation request, returned permissions, or Git-identity digest fails before ref
   mutation.
 - [ ] Set every authority artifact to `retention-days: 90` and preserve exact API artifact IDs/service digests in successor provenance.
-- [ ] Rerun workflow policy tests to GREEN.
+- [ ] Run:
+
+```bash
+uv run pytest -p no:cacheprovider tests/campaign/test_workflow_policy.py tests/test_ci_contract.py -q
+```
+
+Expected GREEN: PASS; all four Runtime-owned workflows and the external-broker boundary satisfy the
+closed policy.
 
 #### Step 3: Prove no secret use in PR/fork CI
 
@@ -1800,9 +1867,9 @@ git commit -m "ci: add protected benchmark batch workflows"
 uv run pytest -p no:cacheprovider tests/campaign/test_runtime_synthetic.py::test_pilot_is_bounded_to_48_total_attempts -q
 ```
 
-Expected RED: the integrated pilot fixture is absent.
+Expected RED: FAIL because the integrated pilot fixture and its end-to-end runtime wiring are absent.
 
-#### Step 2: GREEN a provider-offline 1,440-row runtime
+#### Step 2: Implement the minimal provider-offline runtime wiring and run GREEN
 
 - [ ] Use deterministic fake/replay providers to execute all 36 generation shards through multiple batches, including one 429 retry, one ordinary rejection, one partial checkpoint, and exact suffix resume.
 - [ ] Drive deterministic hard-score fixture attachments, then run all 36 judge attachments through the same controller contract.
@@ -1816,6 +1883,9 @@ Expected RED: the integrated pilot fixture is absent.
 ```bash
 uv run pytest -p no:cacheprovider tests/campaign/test_runtime_synthetic.py -q
 ```
+
+Expected GREEN: PASS with the exact 1,440-row runtime, bounded retry, private Runtime capability,
+checkpoint-resume, receipt, spend, and STOP assertions above.
 
 #### Step 3: Write the operator and broker runbook
 

@@ -777,6 +777,7 @@ class EvidenceInventoryV1(CapsuleModel):
     input_tag_object_sha: GitObjectId
     input_commit_sha: GitObjectId
     campaign_registry_sha256: Sha256
+    audit_protocol_sha256: Sha256
     benchmark_provider_evidence_sha256: Sha256
     shard_plan_root_sha256: Sha256
     spend_ledger_sha256: Sha256
@@ -884,12 +885,17 @@ verifies the ledger and returned-model consistency separately per generation mod
 and derives the provenance root from the ordered exact locators. It opens every input read-only and
 creates no output itself.
 
-Re-hash the tagged `src/laconian_eval/benchmark/hard_score.py` source plus the exact hard-score and
-statistics protocol members from verified `C0`; require their path/hash pairs, the frozen
+Re-hash the tagged `src/laconian_eval/benchmark/hard_score.py` source plus the exact hard-score,
+statistics, and audit protocol members from verified `C0`; require their path/hash pairs, the frozen
 workflow-inventory root, and the authority-bound generation-context digest to equal
 `CampaignRegistryV1`, the neutral context, every hard-score request set, and
 `VerifiedBenchmarkProviderEvidenceV1`. A self-consistent
 substituted context/index or a hash copied from any non-C0 or mutable-`main` commit fails.
+The audit member is exactly
+`benchmarks/protocols/public-three-model-v1/audit.json`; consume Evaluation's singular
+`audit_protocol_sha256: Sha256` as verified by Runtime Task 2, store that same field in
+`EvidenceInventoryV1`, and reject an alias, caller scalar, omitted consumer binding, or any
+redefinition of the Evaluation-owned contract.
 
 No Slice 2 code imports this campaign inventory. Require
 `EvidenceInventoryV1.benchmark_provider_evidence_sha256` to equal that projection's digest and every
@@ -951,6 +957,7 @@ class BundleSealV1(CapsuleModel):
     schema_version: Literal["1"]
     campaign_id: BoundedNonBlankString
     kind: Literal["complete", "invalid_prefix"]
+    audit_protocol_sha256: Sha256
     source_state_sha256: Sha256
     source_artifact_root_sha256: Sha256
     files: tuple[PublicFileV1, ...]
@@ -993,13 +1000,19 @@ class PublicProjectionPolicyV1(CapsuleModel):
 def verify_public_projection(
     root: Path,
     *,
-    campaign_id: str,
+    registry: CampaignRegistryV1,
     kind: Literal["complete", "invalid_prefix"],
     source_state_sha256: str,
     source_artifact_root_sha256: str,
     known_secret_values: tuple[str, ...] = (),
 ) -> BundleSealV1:
 ```
+
+Derive `campaign_id` and the Evaluation-owned `audit_protocol_sha256: Sha256` only from the verified
+Runtime registry. Re-hash the registry-bound peeled-C0
+`benchmarks/protocols/public-three-model-v1/audit.json` projection before returning either bundle
+kind; no projection call accepts either value as an independent scalar or defines an audit-hash
+alias.
 
 `known_secret_values` is an optional offline defense-in-depth input, not the live exact-key control.
 For every generation/judge source, projection first requires the inventory-bound Slice 3
@@ -1110,6 +1123,12 @@ the aggregate inputs only through `load_verified_audit_evidence` and
 `load_verified_analysis_evidence`; copy from already verified descriptors into an
 owned `0700` stage, never parse model text while rendering reports, verify the finished projection,
 fsync, atomically publish, then reverify through a fresh descriptor.
+
+Require `registry`, `evidence_inventory`, `benchmark_provider_evidence`, `audit`, and `analysis` to
+carry the identical Evaluation-owned `audit_protocol_sha256: Sha256`, sourced only from Runtime
+Task 2's verified C0
+`benchmarks/protocols/public-three-model-v1/audit.json` bytes. Re-hash that public projection member
+before sealing; an absent, renamed, independently supplied, or mismatched value blocks collection.
 
 Pass `benchmark_provider_evidence` to both mandatory loader keywords and require its digest to match
 `EvidenceInventoryV1`. The four roots used to reconstruct it must be members of the exact artifact
@@ -1328,8 +1347,12 @@ Implement the private constructor and four methods. `sample_audit` and `seal_aud
 state `PROVIDER_EVIDENCE_VERIFIED`; `analyze` and `verify` require the exact accepted
 `AUDIT_SEALED` lineage, with `verify` additionally fresh-loading the analysis output produced by
 `analyze`. Every call requires the same in-memory verified generation-context capability, both
-identity registries, `protocol_attestations_root`, hard-score/judge/statistical/audit protocol
-hashes, provider-projection root, and common `workflow_root`. The provider index is evidence only;
+identity registries, `protocol_attestations_root`, hard-score/judge/statistical protocol hashes,
+the Evaluation-owned singular `audit_protocol_sha256: Sha256` derived by Runtime Task 2 from exact
+peeled-C0 `benchmarks/protocols/public-three-model-v1/audit.json` bytes, provider-projection root,
+the unchanged `audit_sampling_protocol_sha256`, `audit_commit_reveal_protocol_sha256`, and
+`audit_adjudication_protocol_sha256` bindings, and common `workflow_root`. The singular aggregate
+never replaces or derives those granular bindings. The provider index is evidence only;
 it carries the expectation digest and repeated bindings but never a nested alleged expectation or
 capability.
 
@@ -1564,6 +1587,7 @@ class PublicationPlanV1(CapsuleModel):
     correction_lineage: CorrectionLineageV1 | None
     bundle_kind: Literal["complete", "invalid_prefix"]
     bundle_sha256: Sha256
+    audit_protocol_sha256: Sha256
     bundle_artifact: ExactArtifactLocatorV1
     input_tag_object_sha: GitObjectId
     input_commit_sha: GitObjectId
@@ -1621,7 +1645,11 @@ that pointer, including `supersedes_bundle_kind` and blocked-object evidence.
 nonnull `BlockedReleaseObjectsV1`, even for `pre_tag`. Validate its phase-dependent field presence
 and preserve every observed orphan tag/draft/asset identity without granting release authority,
 independently of `source_campaign_state`. Complete plans require the ordered full audit merge set and
-null STOP fields. Invalid-prefix plans require empty absent-audit suffixes plus exact STOP and
+null STOP fields. Complete plans copy the identical Evaluation-owned
+`audit_protocol_sha256: Sha256` from the verified bundle/inventory lineage and reverify it against
+Runtime Task 2's peeled-C0 audit member; no plan builder accepts that value independently.
+Invalid-prefix plans retain the same campaign-registry field even when no audit output exists and
+require empty absent-audit suffixes plus exact STOP and
 missing-suffix hashes.
 
 Bind `publication_attempt` into the commit message, PR title/body, proposed head, plan digest,
@@ -2415,6 +2443,7 @@ class ResultReleasePlanV1(CapsuleModel):
     unresolved_hold_root_sha256: Sha256
     bundle_kind: Literal["complete"]
     bundle_sha256: Sha256
+    audit_protocol_sha256: Sha256
     publication_plan_sha256: Sha256
     publication_merge_receipt_sha256: Sha256
     publication_pr_number: StrictPositiveInt
@@ -2446,6 +2475,11 @@ the fixed name/email, exact target/type/tag, and one canonical LF-terminated mes
 `expected_tag_object_sha` with `git mktag` in a locale/timezone-independent environment before any
 GitHub call. A rerun must reproduce the same object ID; a tagger clock, identity, message, or newline
 override is forbidden.
+
+`ResultReleasePlanV1.audit_protocol_sha256` must exactly equal the Publication plan, complete
+bundle, evidence inventory, and verified Runtime registry value. The sole source remains Runtime
+Task 2's verified peeled-C0 `benchmarks/protocols/public-three-model-v1/audit.json` digest under the
+Evaluation-owned `audit_protocol_sha256: Sha256` contract; the finalizer accepts no separate input.
 
 Release planning is forbidden for `invalid_prefix`, `INVALID_PREFIX_MERGED`, and
 `INVALID_PREFIX_MERGED_INVALID`; those states are terminal and authorize no tag, Release, asset,
@@ -3051,7 +3085,7 @@ Run: `uv run pytest tests/campaign/test_publication_reconstruction.py -q`
 
 Expected: FAIL until the fixture connects every Slice 4 interface and state event.
 
-- [ ] **Step 5: Complete the deterministic offline fixture**
+- [ ] **Step 5: Implement the minimal deterministic offline fixture**
 
 Use no network, provider key, current time, random UUID, mutable branch lookup, or host-private path.
 Freeze repository ID and trust-boundary/settings records; the run, attempt, job, deployment,
@@ -3321,3 +3355,10 @@ invalid-prefix lineages reconstruct twice with identical hashes, and a maintaine
 repository-settings checklist without changing GitHub as part of implementation. No live provider
 call, publication PR, result tag, GitHub Release, README result block, website result, release note,
 or social package is created by executing this plan.
+Acceptance additionally requires one unchanged Evaluation-owned
+`audit_protocol_sha256: Sha256` across the verified Runtime registry, evidence inventory, aggregate
+audit and analysis loaders, complete/invalid bundle lineage, `Publication` capability,
+`PublicationPlanV1`, and `ResultReleasePlanV1`. Every consumer must prove the value came from
+Runtime Task 2's verified peeled-C0
+`benchmarks/protocols/public-three-model-v1/audit.json` bytes; no Publication schema owns or aliases
+the contract, and the exact `ProtocolAttestationV1` role-subject inventories remain unchanged.
