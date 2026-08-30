@@ -1,4 +1,6 @@
-[English](README.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · [Ελληνικά](README.el.md) · [Italiano](README.it.md) · [Laconian Doric (reconstructed)](README.grc-x-laconian.md)
+[Website](https://agent-axiom.github.io/laconian/) · [English](README.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · [Ελληνικά](README.el.md) · [Italiano](README.it.md) · [Laconian Doric (reconstructed)](README.grc-x-laconian.md)
+
+![Laconian — The shortest complete answer.](assets/laconian-banner.png)
 
 # Laconian
 
