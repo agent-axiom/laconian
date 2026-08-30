@@ -2,12 +2,15 @@
 
 **Date:** 2026-08-30
 
-**Status:** Amendment drafted; pending explicit maintainer reapproval
+**Status:** Amendment approved; implementation pending
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
-**Amendment approval:** Pending. The historical approval does not approve this amendment. A new
-approval record may be added only after a maintainer reviews this exact diff.
+**Amendment approval:** On 2026-08-30, the maintainer/user in this Codex task explicitly approved
+the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with the exact message
+`Одобряю amendment 46147ef`. This successor records governance metadata only and changes no
+normative protocol or design content. Any later normative amendment requires a new explicit
+maintainer approval.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -2163,12 +2166,14 @@ reverified.
 
 ### 14.3 Confirmatory sequence
 
-This amended design is a governance gate. No implementation slice, pilot, or live workflow rollout
-may begin while **Amendment approval** remains pending. A maintainer must review this exact diff and
-add a new dated approval record in a later commit; the historical 2026-08-30 approval cannot satisfy
-that gate.
+This amended design is a governance gate. The gate is satisfied by the dated **Amendment approval**
+record above, which binds the maintainer/user's explicit approval to normative design commit
+`46147ef62b5bb009421d58928e879d92247d84b5`. This successor changes governance metadata only. The
+historical 2026-08-30 approval could not satisfy this gate, and any later normative amendment
+invalidates this approval and requires a new explicit maintainer approval before any affected
+implementation slice, pilot, or live workflow rollout may begin.
 
-After that explicit reapproval and implementation, the release sequence is:
+After this explicit reapproval and the still-required implementation, the release sequence is:
 
 1. full provider-offline synthetic campaign is green;
 2. the exact two audit identities and ordered three protocol identities/attestations are frozen,
@@ -2294,8 +2299,11 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- a maintainer has reviewed this exact amendment diff and recorded a fresh explicit approval; the
-  historical 2026-08-30 approval is not sufficient;
+- the governance prerequisite is satisfied by the dated approval record above: on 2026-08-30 the
+  maintainer/user in this Codex task explicitly approved normative design commit
+  `46147ef62b5bb009421d58928e879d92247d84b5` with the exact message
+  `Одобряю amendment 46147ef`; the historical pre-amendment approval alone was not sufficient, and
+  any later normative amendment requires a new explicit maintainer approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
