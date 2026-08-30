@@ -469,13 +469,13 @@ historical rule-suite result is therefore exactly `bypass`, not `pass`. A namesp
 pre-existing unbound ref, missing or differently authorized creation bypass, wrong/extra/exempt actor,
 update/delete bypass, or different operator for T0 and T1 invalidates the pair.
 
-The operator registry and raw tag-object parser share one lexical grammar. `tagger_name` is 1–80
-printable ASCII bytes `0x21..0x7e` except `<` and `>`, with internal ASCII space permitted only as
-single `0x20` separators; leading, trailing, repeated whitespace and every tab/control/non-ASCII
-byte are forbidden. `tagger_email` is 3–254 printable ASCII bytes, contains exactly one `@`, has
-nonempty sides, and excludes `<`, `>`, whitespace, controls, and consecutive dots. The epoch is
-ASCII `0` or `[1-9][0-9]*`, with no sign or leading zero, and must map to a whole second in GitHub's
-accepted UTC range `1970-01-01T00:00:00Z` through `9999-12-31T23:59:59Z`; timezone is literally
+The operator registry and raw tag-object parser share one lexical grammar. `tagger_name` is one or
+more 1–80-byte non-space ASCII tokens from `0x21..0x7e` excluding `<` and `>`, joined by exactly one
+`0x20`; leading/trailing/repeated whitespace and every tab/control/non-ASCII byte are forbidden.
+`tagger_email` is 3–254 printable non-space ASCII bytes, contains exactly one `@`, has nonempty
+local/domain sides, neither side starts or ends with `.`, neither contains `..`, and `<`, `>`,
+controls, whitespace are forbidden. The epoch is ASCII `0` or `[1-9][0-9]*`, integer range
+`0..253402300799`, with no sign or leading zero; timezone is literally
 `+0000`. Registry bytes that do not satisfy this grammar are invalid, and T0/T1 reproduce the same
 name/email bytes exactly.
 
@@ -504,8 +504,10 @@ whole-second epoch and `+0000`, one blank line, and
 `laconian protocol attestation bundle <T0>: <protocol_attestation_bundle_sha256>` plus one LF; it
 has no signature header. The builder identity has exactly `schema_version`, literal
 `name_ascii="Laconian Protocol Bundle Builder"`, literal
-`email_ascii="laconian-protocol-bundle-builder@users.noreply.github.com"`, and its domain-separated
-digest using `laconian-protocol-bundle-builder-git-identity-v1`. Every identity comes from verified C0 data. `encoding`, `mergetag`, a
+`email_ascii="laconian-protocol-bundle-builder@users.noreply.github.com"`, and
+`protocol_bundle_builder_git_identity_sha256`. That digest is SHA-256 of
+`UTF8("laconian-protocol-bundle-builder-git-identity-v1\n") || CanonicalJSONV1(identity without
+exactly protocol_bundle_builder_git_identity_sha256)`. Every identity comes from verified C0 data. `encoding`, `mergetag`, a
 second/unknown/duplicate header, multiple signatures, tag signatures, CR, NUL, non-NFC or ambiguous
 Unicode, alternate timezone, extra blank line, alternate message, and any system/global/local Git
 configuration or author/committer environment influence are rejected. Golden vectors fix the
@@ -621,6 +623,9 @@ preflight/stage evidence only. Fresh observations may have different transport m
 reconstruct byte-identical stable projections. Offline replay verifies the frozen projection/raw
 Git-object relation and keyed signatures, but cannot independently authenticate GitHub as the
 origin of a `github_verified_commit` projection.
+The receipt digest is SHA-256 of
+`UTF8("laconian-github-signature-observation-receipt-v1\n") || CanonicalJSONV1(receipt without
+exactly github_signature_observation_receipt_sha256)`.
 
 For `ssh_sha256` and `openpgp_fingerprint`, `fingerprint` byte-matches the registry and statement,
 and `keyring_sha256` identifies the frozen public-key material included in the
@@ -712,16 +717,20 @@ sealed root.
 Each tag creation instead requires a unique historical `TagCreationRuleSuiteReceiptV1` with exactly
 `schema_version`, `repository_id`, positive unique `rule_suite_id`, `operation: "create"`, exact
 `ref`, Git all-zero SHA-1 `before_sha`, exact annotated-tag-object OID `after_sha`,
-`actor_account_id`, `actor_login`, `pushed_at`, `overall_result: "bypass"`, `evaluation_result`,
+`actor_account_id`, `actor_login`, `pushed_at`, `overall_result: "bypass"`, `evaluation_result: "fail"`,
 `rule_evaluations`, `creation_authorizer_ruleset_id`, `creation_bypass_grant`,
 `tag_ruleset_policy_root`, `request_ids`, `api_version`, `raw_response_sha256`,
 `canonical_response_sha256`, `observed_at`, and `tag_creation_rule_suite_receipt_sha256`.
-`rule_evaluations` contains exactly one element with exactly `source_ruleset_id`,
-`semantic_role: "creation_authorizer"`, `rule_index: 0`, `rule_type: "creation"`,
-`evaluation_result: "bypass"`, `bypass_actor_id`, `bypass_actor_type: "User"`, and
-`bypass_mode: "always"`. It is ordered by `(source_ruleset_id, rule_index)`; no update/deletion
-evaluation or second source is allowed. `creation_bypass_grant` has exactly `actor_id`,
-`actor_type: "User"`, `bypass_mode: "always"`, and `source_ruleset_id`, matching that element.
+`rule_evaluations` contains exactly one stable element with exactly `rule_source_type: "ruleset"`,
+`rule_source_id`, `enforcement: "active"`, `result: "fail"`, and `rule_type: "creation"`.
+GitHub raw `rule_source.name` and optional evaluation details remain only in the safe raw response
+blob; they are excluded from this stable projection, and an unknown stable field is rejected.
+Elements would sort by `(rule_source_type,rule_source_id,rule_type)`, but cardinality is exactly one;
+its source ID equals the sealed creation-authorizer ruleset. `creation_bypass_grant` is derived, not
+reported per rule, and has exactly `actor_id`, `actor_login`, `source_ruleset_id`, and
+`tag_ruleset_policy_root`; it is valid only because top-level actor ID/login and `overall_result=bypass`
+match the one `TagOperatorRegistryV1` entry and its sealed `User/always` bypass in
+`TagRulesetPolicyV1`. No claim is made that GitHub returns actor type or bypass mode per rule.
 The receipt digest is SHA-256 of
 `UTF8("laconian-tag-creation-rule-suite-receipt-v1\n") || CanonicalJSONV1(receipt without exactly
 tag_creation_rule_suite_receipt_sha256)`. The creation rule's evaluation and grant identify only the frozen operator's exact `User/always`
@@ -729,6 +738,14 @@ bypass. Preflight requires one and only one authenticated historical suite for T
 suite for T1. A reused old suite, delete/recreate, nonzero `before_sha`, different `after_sha`,
 wrong/extra/exempt actor, missing/ambiguous/multiple suite, unauthorized creation result, or any
 update/deletion bypass is invalid.
+
+Raw-to-canonical mapping is exact: suite `result` maps to `overall_result`, suite
+`evaluation_result` maps unchanged, suite `actor_id`/`actor_name` map to
+`actor_account_id`/`actor_login`, and each raw evaluation maps only
+`rule_source.type`, `rule_source.id`, `enforcement`, `result`, and `rule_type` to the stable element.
+Top-level literals must be `bypass` and `fail`; the sole evaluation literals are `ruleset`, the
+sealed ID, `active`, `fail`, and `creation`. Missing, duplicate, differently ordered, extra stable,
+or contradicting values fail closed.
 
 Both receipt types are preflight/stage/archive evidence and are excluded from tag binding,
 `CampaignRegistryV1`, campaign ID, seeds, and plans. Rechecking unchanged objects and semantic
@@ -751,17 +768,21 @@ without exactly protocol_review_object_archive_sha256)`. The already-computed cl
 ordinary field in the outer preimage, so neither digest is circular.
 
 `api_blobs` is ordered lexicographically by `path`; each entry has exactly `path`, `kind`,
-`sha256`, and `raw_bytes_base64`. Paths are exactly
-`api/rest-commit/<commit-oid>.response`, `api/graphql-signature/<commit-oid>.response`,
-`api/rulesets/current/<observation-id>/<ruleset-id>.response`,
-`api/rulesets/creation/<tag-role>/<rule-suite-id>.response`, or the corresponding
-`.canonical.json` projection path. `kind` is exactly `safe_raw_response` or
+`sha256`, and `raw_bytes_base64`. Paths use exactly
+`api/<receipt-kind>/<receipt-sha256>/<zero-based-8-digit-page>.response` or the corresponding
+`.canonical.json`. `kind` is exactly `safe_raw_response` or
 `canonical_projection`. Decoded bytes must hash to `sha256`; canonical projections must parse as
 their named strict schema and reproduce every `canonical_response_sha256`, while safe raw response
-bytes reproduce every `raw_response_sha256`. `api_receipts` is the ordered array of the exact
-signature, current-ruleset, and T0/T1 creation-suite receipts and may reference only paths present
-once in `api_blobs`. Raw blobs are an allowlisted projection of status and response body with
-authorization/cookie/header/query secrets removed before hashing; a secret-bearing blob is invalid.
+bytes reproduce every `raw_response_sha256`. `api_receipts` is an ordered array of strict
+`ArchivedApiReceiptBindingV1` elements with exactly `receipt_kind`, `receipt_sha256`, `receipt`,
+`raw_blob_paths`, and `canonical_blob_paths`. Kind order is `github_signature`,
+`tag_ruleset_observation`, `t0_creation_suite`, then `t1_creation_suite`; repeated observations
+sort by `(observed_at,receipt_sha256)`. Path arrays have equal cardinality and index `i` maps
+one-to-one to receipt raw/canonical hash array index `i`; singular creation fields are normalized
+to one-element arrays only by this wrapper. Every path occurs exactly once globally; no blob is
+unreferenced, multiply referenced, missing, or keyed by an undefined observation ID. Raw bytes are
+exact safe response-body bytes, excluding HTTP headers, authorization, cookies, and query secrets;
+a secret-bearing blob is invalid.
 Offline replay recomputes every receipt hash from these bytes and the canonical projection, but API
 bytes remain platform observation evidence, not independent cryptographic provenance or proof of
 GitHub origin.
@@ -778,6 +799,7 @@ attestation root. Preflight instead builds a `CampaignRegistryPayloadV1` contain
 `campaign_input_package_sha256`, both reviewer-registry digests, `workflow_root`, the complete
 `ProtocolAttestationTagBindingV1`, `tag_operator_registry_sha256`, `tag_ruleset_policy_root`,
 `invalid_event_dismissal_policy_sha256`,
+`main_fallback_liveness_policy_sha256`,
 `protocol_attestations_root`, and
 `protocol_attestation_bundle_sha256`. `campaign_registry_sha256` is the SHA-256 with separator
 `laconian-campaign-registry-v1` over the canonical payload. `campaign_id` is exactly
@@ -794,6 +816,14 @@ registry, its members, signatures, approvals, statements, envelopes, tags, nor r
 for the other.
 
 ### 6.6 Frozen workflow inventory
+
+The C0 workflow endpoint policy includes strict `MainFallbackLivenessPolicyV1` with exactly
+`schema_version`, `repository_id`, `protected_ref: "refs/heads/main"`, `required_check_name`,
+`workflow_root`, `member_paths`, and `main_fallback_liveness_policy_sha256`; member paths are the
+exact ordered 15-member inventory. Its digest is SHA-256 of
+`UTF8("laconian-main-fallback-liveness-policy-v1\n") || CanonicalJSONV1(policy without exactly
+main_fallback_liveness_policy_sha256)`. The input registry and campaign registry bind it, and
+main ruleset/admission receipts bind the exact required check and policy digest.
 
 The protocol freezes this exact 15-member workflow path inventory, in this literal UTF-8 byte
 order:
@@ -1148,6 +1178,8 @@ artifact_inventory_root
 active_phase_plan_root
 unresolved_hold_root
 credential_exposure_pending_sha256
+consumed_active_pending_root
+terminal_effect_receipts_root
 concurrent_protocol_authority_drift_evidence_sha256
 secret_kind
 affected_artifacts
@@ -1169,7 +1201,9 @@ substring, authorization header, environment dump, or raw provider/GitHub respon
 `credexp-[0-9a-f]{32}` and is single-use within the campaign.
 `unresolved_hold_root` is the exact current hold root or literal null only when absence is proven.
 `credential_exposure_pending_sha256` must name the unique unresolved pending record consumed by
-this final event. `concurrent_protocol_authority_drift_evidence_sha256` is the exact drift root when
+this final event. `consumed_active_pending_root` equals the predecessor state's active progress root
+and `terminal_effect_receipts_root` equals its completed effect chain.
+`concurrent_protocol_authority_drift_evidence_sha256` is the exact drift root when
 drift coexists and is literal null only when the pending record's fresh check proved no drift.
 `affected_artifacts` is a nonempty array in ascending numeric artifact-ID order. Each element has
 exactly `artifact_id`, `artifact_sha256`, `upload_service_digest`, `source_workflow_ref`,
@@ -1213,15 +1247,18 @@ authenticated absence receipt proves deletion. `failed_predicates` is a nonempty
 subset of `input_ref_moved`, `input_ref_deleted`, `companion_ref_moved`,
 `companion_ref_deleted`, `object_oid_mismatch`, `raw_object_sha256_mismatch`, `closure_mismatch`,
 `ruleset_drift`, `tag_creator_mismatch`, `creation_authorization_mismatch`, `signature_identity_mismatch`, `topology_mismatch`, and
-`cross_campaign_replay`. Its digest uses separator
-`laconian-protocol-authority-drift-evidence-v1`. The event changes no external object, cannot adopt
+`cross_campaign_replay`. Its digest is SHA-256 of
+`UTF8("laconian-protocol-authority-drift-evidence-v1\n") || CanonicalJSONV1(evidence without
+exactly protocol_authority_drift_evidence_sha256)`. The event changes no external object, cannot adopt
 restored refs, and enters `STOPPED_INVALID`. The close-receipt field is nonnull only at
 `COMPLETE_PUBLICATION_PR_OPEN`, where it proves publisher-App closure of that exact PR before STOP,
 and is literal null at every other parent. After merge the existing release-invalidation or
 correction path applies instead of a new prepublication STOP.
+When `unresolved_hold_root` is nonnull, drift evidence binds that consumed root and the STOP
+successor sets it null; null means proven absence, never “not checked.”
 
 `InvalidEventDismissalEvidenceV1` has exactly `schema_version`, `campaign_id`, `hold_id`,
-`hold_sha256`, `parent_authority_oid`, `parent_state`, `proof_kind`, `no_effects_root`,
+`hold_sha256`, `invalid_event_dismissal_plan_sha256`, `parent_authority_oid`, `parent_state`, `proof_kind`, `no_effects_root`,
 `dismissal_reviewer_account_id`, `dismissal_reviewer_login`, `dismissal_signature_root`,
 `dismissed_at`, and `invalid_event_dismissal_evidence_sha256`, using
 `laconian-invalid-event-dismissal-v1`. `proof_kind` is exactly `authenticated_noop` or
@@ -1237,7 +1274,9 @@ Before that workflow requests a mutation it seals `InvalidEventDismissalPlanV1` 
 `schema_version`, `campaign_id`, `campaign_registry_sha256`,
 `invalid_event_dismissal_policy_sha256`, `hold_id`, `hold_sha256`, `parent_state`,
 `parent_authority_oid`, `eligible_dismisser_account_id`, `eligible_dismisser_login`, `proof_kind`,
-`expected_no_effects_root`, `planned_at`, and `invalid_event_dismissal_plan_sha256`. The selected
+`authorized_dispatcher_workflow`, `authorized_dispatcher_ref`, `expected_no_effects_root`,
+`planned_at`, and `invalid_event_dismissal_plan_sha256`. The dispatcher fields are exactly
+`benchmark-dismiss-hold.yml` and the plan-bound protected-main ref. The selected
 identity is one frozen eligible projection and is distinct from the rejected request actor. Its
 digest is SHA-256 of `UTF8("laconian-invalid-event-dismissal-plan-v1\n") || CanonicalJSONV1(plan
 without exactly invalid_event_dismissal_plan_sha256)`. Dismissal evidence binds this plan root and
@@ -1263,11 +1302,29 @@ events. The pending event requires exactly `CredentialExposurePendingV1`,
 the two active pending fields. The effect event requires exactly one next ordinal
 `CredentialExposureEffectReceiptV1` at
 `incidents/<incident-id>/effects/<8-digit-ordinal>.json`; that schema has exactly
-`schema_version`, `campaign_id`, `incident_id`, `pending_root`, `effect_ordinal`, `effect_kind`,
+`schema_version`, `campaign_id`, `incident_id`, `pending_root`,
+`predecessor_active_pending_root`, `effect_ordinal`, `effect_kind`,
 `external_object_id`, `idempotency_key`, `requested_state_root`, `observed_terminal_state`,
 `request_receipts_root`, `recorded_at`, and `credential_exposure_effect_receipt_sha256`, whose digest
-uses `laconian-credential-exposure-effect-receipt-v1` with exactly its self field removed. The event
+is SHA-256 of `UTF8("laconian-credential-exposure-effect-receipt-v1\n") ||
+CanonicalJSONV1(receipt without exactly credential_exposure_effect_receipt_sha256)`. The event
 is a self-loop that advances transition and pending-progress root without changing campaign state.
+
+`CredentialExposureProgressRootV1` is a calculated projection, not a stored self-containing
+record. Its exact fields are `schema_version`, `campaign_id`, `incident_id`,
+`credential_exposure_pending_sha256`, `last_effect_ordinal`, and `effect_chain_root`.
+The initial projection uses `last_effect_ordinal: null` and
+`effect_chain_root = SHA256(UTF8("laconian-credential-exposure-effect-chain-empty-v1\n") ||
+CanonicalJSONV1({campaign_id,incident_id,credential_exposure_pending_sha256}))`.
+`active_credential_exposure_pending_root` is
+`SHA256(UTF8("laconian-credential-exposure-progress-root-v1\n") ||
+CanonicalJSONV1(the exact six-field projection))`; it has no stored self field. Effect ordinals
+start at integer 1, advance by exactly one, and path-format as eight zero-padded decimal digits.
+Each successor `effect_chain_root` is
+`SHA256(UTF8("laconian-credential-exposure-effect-chain-link-v1\n") ||
+CanonicalJSONV1({predecessor_active_pending_root,effect_ordinal,
+credential_exposure_effect_receipt_sha256}))`; the next progress root is then computed from that
+chain root and ordinal. `terminal_effect_receipts_root` is exactly the final `effect_chain_root`.
 
 Both events are permitted from exactly `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`,
 `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`,
@@ -1279,6 +1336,9 @@ the exact incident and current pending root. The final credential-exposure `PERM
 successor. If an invalid-event hold was current when exposure began, pending/final evidence binds
 it and that final event also consumes and clears `unresolved_hold_root`; progress preserves it. All
 other events require both active exposure fields null.
+Final validation requires every `pending_effect_inventory` item and ordinal exactly once,
+`consumed_active_pending_root` equal to the predecessor state's current progress root, and
+`terminal_effect_receipts_root` equal to its completed chain before both active fields clear.
 
 The allowed durable transitions are:
 
@@ -1306,15 +1366,15 @@ The allowed durable transitions are:
 | `COMPLETE_PUBLICATION_PR_OPEN` | `COMPLETE_PUBLICATION_PLAN_INVALIDATED`: exact complete-bundle PR closed, sealed complete-bundle root unchanged | `BUNDLE_COLLECTED` | prepare a new complete publication plan |
 | `RESULT_MERGED` | `RESULT_RELEASE_INTENT_AUTHORIZED`: deterministic tag/draft-release/asset/publish identities, roots, actors, and idempotency keys | `RESULT_MERGED` | create or adopt exact initial release effects |
 | `RESULT_MERGED` | `RESULT_RELEASED`: exact prior release intent, protected annotated result tag, immutable published release, checksum-bound assets, and create/adopt receipts | `RELEASED` | documentation/social follow-up |
-| `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
-| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, and idempotency keys | same campaign state | execute or recover exact correction publication effect |
+| `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect; if held, evidence binds consumed hold root and successor clears it | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
+| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, idempotency keys, and at `RELEASED` any consumed hold root cleared by successor | same campaign state | execute or recover exact correction publication effect |
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_TAG_RECORDED`, or `CORRECTION_RELEASE_RECORDED`: exact next correction phase and adopted/created effect receipt | same campaign state | execute or recover exact next phase |
 | `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`: exact absent/closed PR and publication failure evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent, observed merged PR, and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)`: exact `PostMergeAdmissionFailureV1`, contaminated merge/exposure, and no-later-effects evidence | same campaign state | correction lineage terminal; a new correction ID must explicitly supersede the failed correction and contaminated merge |
 | `RELEASE_BLOCKED` or `RELEASED` with active correction valid `merge-receipt.json`, `tag-receipt.json`, or `release-receipt.json` parent | `CORRECTION_INVALIDATED(kind=correction_release_invalidation)`: exact release-phase failure and external-object evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
-| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason/evidence; `credential_exposure` requires `CredentialExposureIncidentEvidenceV1`; `protocol_authority_drift` requires `ProtocolAuthorityDriftEvidenceV1`; either reason at an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
+| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason/evidence; nondismissible/credential/drift evidence binds any consumed hold root and successor clears it; credential exposure also consumes completed active progress root; open complete PR requires exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix; unresolved hold and active pending incident are both null | `INVALID_FINALIZED` | publish registry/incident only |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
@@ -1323,8 +1383,8 @@ The allowed durable transitions are:
 | `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PREFIX_MERGED`: approved invalid-prefix PR, exact sealed-prefix lineage, merge receipt, and `PostMergeAdmissionEvidenceV1` | `INVALID_PREFIX_MERGED` | terminal registry/incident publication only |
 | `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PREFIX_MERGE_INVALIDATED`: intent-bound invalid-prefix PR is already merged but exact post-merge admission fails; immutable merge/exposure evidence | `INVALID_PREFIX_MERGED_INVALID` | terminal disclosed invalid-prefix merge; no release, correction, or promotion |
 | `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: exact invalid-prefix PR closed, sealed prefix root unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
-| any state with `unresolved_hold_root=null` | `INVALID_EVENT_HELD`: exact `InvalidEventHoldV1`, authenticated hold-worthy rejection, expected-OID CAS | same state | block ordinary effects pending dismissal or STOP |
-| any state with one current unresolved invalid-event hold | `INVALID_EVENT_DISMISSED`: exact `InvalidEventDismissalEvidenceV1`, expected-OID CAS | same state | clear exactly that hold and resume only the unchanged state's ordinary edge |
+| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, `COMPLETE_PUBLICATION_PR_OPEN`, `RESULT_MERGED`, or `RELEASED`, with both roots null | `INVALID_EVENT_HELD`: exact broker-owned `InvalidEventHoldV1`, authenticated hold-worthy rejection, expected-OID CAS | same state | exact consumer only |
+| the same enumerated states with one current hold and active pending null | `INVALID_EVENT_DISMISSED`: exact plan/evidence, expected-OID CAS | same state | clear exactly that hold and resume only unchanged-state authority |
 | any exact exposure-eligible state with no active pending incident | `CREDENTIAL_EXPOSURE_PENDING`: exact pending record plus provisional denylist, expected-OID CAS | same state | containment only |
 | any exact exposure-eligible state with matching active pending incident | `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`: next inventoried effect receipt, expected-OID CAS | same state | next containment effect or final event only |
 | `STOPPED_INVALID` with matching active exposure incident | `CREDENTIAL_EXPOSURE_SUPPLEMENT_RECORDED`: terminal `CredentialExposureSupplementV1` after pending record and containment receipts; consumes active root | `STOPPED_INVALID` | unblock safe invalid-prefix finalization only |
@@ -1351,7 +1411,8 @@ otherwise ambiguity emits `PERMANENT_STOP`. Audit nonparticipation or an unrevea
 a reason-specific `PERMANENT_STOP`; an explicitly signed unresolved adjudication is instead a valid
 `AUDIT_SEALED` event whose affected model outcome is inconclusive. No dispatcher may jump from a
 partial, STOP, budget, or release-blocked state into live execution or complete collection. An
-unresolved `InvalidEventHoldV1` blocks every otherwise allowed transition.
+unresolved `InvalidEventHoldV1` blocks every ordinary transition; only the exact consuming edges
+enumerated above or the exposure emergency pending/progress/final flow are admitted.
 
 `RESULT_MERGED` is accepted only from `COMPLETE_PUBLICATION_PR_OPEN`. Its event must reproduce
 `bundle_kind=complete`, the exact `COMPLETE_BUNDLE_SEALED` root, `BUNDLE_COLLECTED` root,
@@ -2082,8 +2143,12 @@ projection containing `repository`, `repository_id`, `repository_owner`, `reposi
 `actor`, `actor_id`, `ref`, `ref_type`, `sha`, `event_name`, `workflow`, `workflow_ref`,
 `workflow_sha`, `job_workflow_ref`, `job_workflow_sha`, `run_id`, `run_attempt`,
 `check_run_id`, and `runner_environment`. The projection requires every listed field; `actor` and
-`actor_id` must be the same plan-authorized human dispatcher in the frozen operator registry, and
-the `environment` claim must be absent because the reusable state-writer job does not use a GitHub
+`actor_id` are caller-discriminated. Every normal caller requires the same plan-authorized human
+dispatcher in the frozen operator registry. Only `benchmark-dismiss-hold.yml` instead requires the
+exact `eligible_dismisser_account_id/login` in the current strict dismissal plan and C0 dismissal
+policy, distinct from the rejected source actor. Its plan also binds the exact dispatcher workflow
+and ref. A rerun's REST `triggering_actor` must satisfy the same caller-specific rule; it cannot
+fall back to the initial actor or the tag operator. The `environment` claim must be absent because the reusable state-writer job does not use a GitHub
 environment. Standard JOSE/time claims remain raw token metadata. Any missing, duplicate, unknown
 identity field in the signed broker request, or value inconsistent with the JWT, GitHub API run,
 campaign plan, or frozen registry is denied; extra raw GitHub claims are retained but never confer
@@ -2109,7 +2174,7 @@ performs the expected-OID CAS itself; no installation token is returned to any A
 protected input tag `refs/tags/<campaign-input-tag>`, with `ref_type=tag`, `sha=C0`, and both
 workflow SHA claims equal to C0; or exact `refs/heads/main`, with `ref_type=branch`, `sha` and both
 workflow SHA claims equal to the dispatch's current main commit. Except for the six post-merge
-events defined below, that main commit must be the single SHA already bound by the
+events and three current-main containment classes enumerated immediately below, that main commit must be the single SHA already bound by the
 applicable audit, analysis, collection, publication, release, dismissal, or correction plan. For
 every main run the broker reads both workflow members at that commit and requires their bytes to
 equal the corresponding C0-derived member hashes in the common workflow root. All caller rows require
@@ -2122,18 +2187,28 @@ continuation for any already sealed STOP or BUDGET lineage. Each uses fresh curr
 double-reads refs/policy, authenticates the run, and requires caller and reusable workflow blobs at
 `H` to byte-equal their sealed C0 workflow-root members. They authorize no other main-ref event.
 
+Reachability of those classes is conditional on an enforced main-liveness invariant. While any
+campaign is nonterminal, the existing protected-main validation check rejects a merge that changes,
+deletes, or renames any of the 15 C0-frozen workflow members or changes their ordered root; the
+existing state-writer App also refuses authority after such a merge. The check itself runs from
+protected current main, compares the proposed tree to the sealed campaign registry/root, and needs
+no tag trigger, so this introduces no circular dependency and no new workflow, App, environment, or
+secret. Each fallback still verifies current bytes. A platform administrator can bypass/disable
+GitHub protection; that is an explicit trust limitation, and “reachable from every state” means
+only while this invariant is enforced.
+
 | Caller workflow | Required triggering ref | Allowed event types |
 |---|---|---|
 | `benchmark-preflight.yml` | exact campaign input tag | `PREFLIGHT_SEALED` |
-| `benchmark-batch.yml` | exact campaign input tag | `BATCH_RECEIPT_CONSUMED`, `NO_DISPATCH_PROVED`, `VERIFIED_PARTIAL`, `GENERATION_SET_SEALED`, `JUDGE_SET_SEALED`, `PERMANENT_STOP`, `BUDGET_EXHAUSTED` |
-| `benchmark-hard-score.yml` | exact campaign input tag | `HARD_SCORE_SET_SEALED`, `PERMANENT_STOP` |
+| `benchmark-batch.yml` | exact campaign input tag | `BATCH_RECEIPT_CONSUMED`, `NO_DISPATCH_PROVED`, `VERIFIED_PARTIAL`, `GENERATION_SET_SEALED`, `JUDGE_SET_SEALED`, `PERMANENT_STOP`, `BUDGET_EXHAUSTED`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
+| `benchmark-hard-score.yml` | exact campaign input tag | `HARD_SCORE_SET_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
 | `benchmark-evidence.yml` | exact campaign input tag; protected current `main` only for drift containment, exposure pending/progress/final handling under proven drift, or an exposure supplement after drift STOP | `EVIDENCE_INVENTORY_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, `CREDENTIAL_EXPOSURE_SUPPLEMENT_RECORDED`; on main, `PERMANENT_STOP` is only drift or final credential exposure from its matching pending root |
-| `benchmark-audit.yml` | exact plan-bound `main` | `AUDIT_SEALED`, `PERMANENT_STOP` |
-| `benchmark-analysis.yml` | exact plan-bound `main` | `ANALYSIS_SEALED`, `PERMANENT_STOP` |
-| `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP` |
+| `benchmark-audit.yml` | exact plan-bound `main` | `AUDIT_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
+| `benchmark-analysis.yml` | exact plan-bound `main` | `ANALYSIS_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
+| `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
 | `benchmark-finalize-invalid.yml` | exact campaign input tag or protected current `main` under the safe-invalid exception | `INVALID_PREFIX_SEALED` |
-| `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP` |
-| `benchmark-publish.yml` | exact plan-bound `main`, except the exact post-merge rule for its three merge-recording, two ordinary merge-invalidation, and one correction merged-invalid event | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)` |
+| `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
+| `benchmark-publish.yml` | exact plan-bound `main`, except the exact post-merge rule for its three merge-recording, two ordinary merge-invalidation, and one correction merged-invalid event | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)` |
 | `benchmark-release.yml` | exact plan-bound `main` | `RESULT_RELEASE_INTENT_AUTHORIZED`, `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
 
 `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, and `CORRECTION_MERGE_RECORDED` are the only successful
@@ -2309,6 +2384,14 @@ separate exhaustive caller/parent matrix; every cell also requires the exact
 | `benchmark-publish.yml` | `BUNDLE_COLLECTED`, `COMPLETE_PUBLICATION_PR_OPEN` | affected artifact is publication-plan bound; the open-PR parent additionally requires publisher-App closure of that exact PR and its close receipt |
 | `benchmark-dismiss-hold.yml` | every allowed `credential_exposure` parent except `COMPLETE_PUBLICATION_PR_OPEN` | only with the exact current nondismissible hold root and incident evidence independently verified under dismissal approval |
 
+Every matrix row grants its caller exactly `CREDENTIAL_EXPOSURE_PENDING`, zero or more ordered
+`CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, and final
+`PERMANENT_STOP(reason=credential_exposure)` at the same exact parent/ref; the STOP consumes the
+completed active root. The `STOPPED_INVALID` row ends with the supplement instead. At
+`COMPLETE_PUBLICATION_PR_OPEN`, `benchmark-publish` first seals pending, then the publisher App
+alone closes the exact PR, then the workflow records that inventoried effect, and only then emits
+final STOP with the close receipt. No cross-workflow delegation or implied event grant exists.
+
 `benchmark-preflight.yml`, `benchmark-finalize-invalid.yml`, `benchmark-release.yml`, both PR
 validators, and the docs validator have no credential-incident authority. The matrix grants no
 caller a different STOP reason, parent, event, ref, artifact, or App operation. A phase workflow
@@ -2376,7 +2459,8 @@ object. It independently canonicalizes every schema record, recomputes its SHA-2
 verifies the exact predecessor tree when one exists, and constructs the candidate Git objects.
 
 `AuthorityTreeSchemaV1` permits exactly root blob `campaign-state.json` and the optional root trees
-`events`, `evidence`, `holds`, `receipts`, `corrections`, `publication`, and `incidents`. Event files are
+`events`, `evidence`, `holds`, `receipts`, `corrections`, `publication`, `incidents`, and
+`denylist`. Event files are
 `events/<20-digit-transition>-<schema-event-name>.json`; content-addressed evidence is
 `evidence/<schema-name>/<lowercase-sha256>.json`; hold, effect-receipt, correction, publication,
 and incident
@@ -2524,6 +2608,9 @@ uses only the allowlisted public corpus and treats every uploaded checkpoint as 
 Typed records and an allowlist-by-construction package projection are the primary boundary. A
 fail-closed defense-in-depth scan then checks exact known credential values, credential patterns,
 environment dumps, private paths, and disallowed provider metadata.
+The universal pending gate applies here in full: a pending incident blocks every ordinary authority
+mutation, credential, artifact access/download, publication/release/correction, documentation/social
+action, and external effect, not merely provider dispatch and campaign download.
 
 Headers, the API key, raw SDK exception bodies, environment contents, and unrestricted diagnostics
 never enter an artifact. The exact key is scanned only inside its ephemeral provider step and is
@@ -2579,13 +2666,16 @@ effects, and appends strict `CredentialExposureSupplementV1` via
 `CREDENTIAL_EXPOSURE_SUPPLEMENT_RECORDED` self-loop. The supplement has exactly `schema_version`,
 `campaign_id`, `incident_id`, `credential_exposure_pending_sha256`,
 `credential_exposure_incident_evidence_sha256`, `original_protocol_authority_drift_stop_root`,
-`terminal_effect_receipts_root`, `recorded_at`, and
+`consumed_active_pending_root`, `terminal_effect_receipts_root`, `recorded_at`, and
 `credential_exposure_supplement_sha256`. Safe invalid-prefix finalization is
 blocked until this supplement resolves. Neither ordering permits live resume, provider access,
 complete publication, release, correction promotion, or documentation/social effects.
 The supplement digest is SHA-256 of `UTF8("laconian-credential-exposure-supplement-v1\n") ||
 CanonicalJSONV1(supplement without exactly credential_exposure_supplement_sha256)`; the pending and final incident
 roots are ordinary already-computed inputs and no root is circular.
+In `STOPPED_INVALID`, the incident evidence is embedded as supplement evidence; constructing it
+does not create a second `PERMANENT_STOP` or another state transition. The supplement alone consumes
+the exact active progress root and clears it.
 
 If the parent is `COMPLETE_PUBLICATION_PR_OPEN`, the separately approved `benchmark-publish` job
 uses only the publisher App to close that exact PR after the pending CAS and includes the close receipt; no other
@@ -2864,6 +2954,9 @@ Implementation is test-driven and includes:
   `TagCreationRuleSuiteReceiptV1` vectors require one unique historical create suite for each exact
   T0/T1 after OID and reject receipt replay, delete/recreate, zero/nonzero-before mismatch,
   different after OID, wrong/extra actor, ambiguous/multiple suites, or update/delete operation;
+  raw-suite mapping vectors require top-level `bypass`/`fail`, matching actor, one active creation
+  rule with per-rule `fail`, exclude volatile source name/details, derive rather than invent the
+  `User/always` grant, and reject invented per-rule actor/bypass fields;
   digest-preimage vectors remove exactly each named self field and reject circular, wrong-domain,
   or ambient-field hashing; tag lexical vectors reject angle brackets, controls, non-ASCII,
   whitespace ambiguity, signed/zero-padded/out-of-range epochs, alternate timezone, or registry/tag
@@ -2945,8 +3038,13 @@ Implementation is test-driven and includes:
   finalization remains blocked until the pending incident/supplement resolves;
   state-schema reachability includes `CREDENTIAL_EXPOSURE_PENDING` and every ordinal
   `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` self-loop for all eligible parents, exact authority paths
-  and predecessor/successor roots, protected-main handling under moved/deleted/drifted tags, final
+  including only provisional/permanent members under the exact `denylist` root tree, and
+  predecessor/successor roots, protected-main handling under moved/deleted/drifted tags, final
   pending-root consumption, and denial of every ordinary mutation/effect while pending;
+  progress-root golden vectors cover empty initialization, ordinal 1, multi-link successors,
+  zero-padded paths, predecessor mismatch, gap/reorder/replay, terminal chain equality, exact final
+  consumption/clear, and supplement construction without a second STOP event; every incident caller
+  row including open-PR close is reachable in pending/effect/final order;
 - exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
   provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
   human/App authority separation, OIDC state-broker exact identity projection, fully qualified
@@ -2966,6 +3064,9 @@ Implementation is test-driven and includes:
   publisher, security attestor, and release finalizer, temporary-read no-token/no-effect/no-state,
   step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
   policy tests;
+  main-fallback liveness tests prove the existing protected-main check preserves all 15 frozen
+  members for every nonterminal campaign, the validator runs without a tag trigger, fallback bytes
+  match C0 at current `H`, and admin-bypassed protection fails closed as the documented limitation;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
   credential-incident schema/canonicalization/quarantine/deletion/revocation/rotation/expiry and
   safe-record publication, `PublicationPlanV1` ancestor/base/head movement and closed-PR replan,
@@ -3098,7 +3199,8 @@ phase scans its exact inputs and proposed outputs before its success transition;
 inventory. A credential-exposure finding immediately takes the caller/state-specific incident path,
 first CAS-installs `CREDENTIAL_EXPOSURE_PENDING` and the provisional denylist, then executes only
 the inventoried idempotent effects with one `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` receipt per
-effect, and only after terminal evidence consumes the pending root through final STOP or supplement.
+effect and advances the deterministic predecessor-linked progress root, and only after the terminal
+chain equals the inventory consumes the exact active root through final STOP or supplement.
 It then uses only the safe prefix/incident publication path and never resumes the numbered success sequence. A finding after
 `RESULT_MERGED` or `RELEASED` follows release invalidation or correction instead.
 
@@ -3210,7 +3312,8 @@ The system is ready for the full campaign only when:
   has only the literal `invalid_event_nondismissible` STOP route;
   dismissal uses only the C0-frozen identity policy and strict plan, every nondismissible exit
   consumes its exact hold root, and safe finalization requires no unresolved hold or pending
-  credential incident;
+  credential incident; dismissal OIDC/rerun actors are caller-discriminated from normal operator
+  dispatch and bind the exact authorized dispatcher fields;
   complete and invalid publication PRs occupy distinct states, only a complete sealed-root lineage
   can reach `RESULT_MERGED`, both invalid-prefix merged outcomes are terminal and cannot release or
   promote, and an already-merged complete PR that fails admission reaches `RELEASE_BLOCKED`;
@@ -3242,7 +3345,9 @@ The system is ready for the full campaign only when:
   postmerge invalidation/correction, concurrent drift is recorded while exposure containment wins,
   and exposure after drift STOP uses the two-phase terminal supplement that blocks invalid-prefix
   finalization until resolved; pending/progress are explicit expected-OID self-loop events with
-  append-only authority members, crash-adoptable receipts, and final exact-root consumption;
+  append-only authority members, deterministic predecessor-linked progress roots, crash-adoptable
+  receipts, complete-inventory terminal chain, and final exact-root consumption; every incident
+  caller/ref row reaches pending, progress, and final handling, including publisher-only PR close;
 - the exact two-entry audit registry and exact three-entry ordered protocol registry bind numeric
   IDs, logins, closed verification modes and fingerprints, the security-evidence fingerprint is
   non-null, every role has exactly its ordered required subject inventory and no forbidden field,
@@ -3302,7 +3407,9 @@ The system is ready for the full campaign only when:
   post-merge drift uses only release invalidation or correction; moved/deleted-tag containment is
   reachable from every live prepublication state through the existing main-trigger evidence
   workflow, and only the frozen-closure safe-invalid matrix may continue after any sealed STOP or
-  budget invalidity, with no new App, workflow, environment, or secret;
+  budget invalidity, with no new App, workflow, environment, or secret; reachability assumes the
+  existing protected-main check preserves all 15 C0 workflow members while campaigns are live and
+  fails closed if platform administration bypasses that invariant;
 - serial protocol-reviewer statement commits, audit-reviewer commits/PRs, tag-operator acts,
   maintainer validations/approvals, and protected human merges remain distinct human authorities
   and cannot be replaced by any automated App or workflow;
