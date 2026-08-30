@@ -1,4 +1,5 @@
 import re
+import struct
 from pathlib import Path
 
 import pytest
@@ -465,3 +466,12 @@ def test_social_launch_copy_is_explicitly_experimental() -> None:
         assert f"- {prohibited}" in prohibited_block
         assert prohibited not in publishable_claims
     assert re.search(r"\b\d+(?:[.,]\d+)?\s*%", text) is None
+
+
+def test_social_card_has_exact_copy_and_dimensions() -> None:
+    svg = _read("assets/social/laconian-alpha.svg")
+    for text in ("if", "The shortest complete answer.", "Experimental alpha"):
+        assert text in svg
+    png = (ROOT / "assets/social/laconian-alpha.png").read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24]) == (1200, 630)
