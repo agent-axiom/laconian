@@ -54,23 +54,99 @@ assets, κλήσεις δικτύου ή οδηγίες εργαλείων ει�
 
 ## Εγκατάσταση και απεγκατάσταση
 
-Αντιγράψτε το μοναδικό αρχείο της δεξιότητας στον κατάλογο `if` ενός συστήματος πρακτόρων που
-υποστηρίζει δεξιότητες Markdown:
+Η προτεινόμενη μέθοδος είναι η εγκατάσταση του πρόσθετου από το αποθετήριο, σε συγκεκριμένη έκδοση:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Για απεγκατάσταση, αφαιρέστε το αρχείο που αντιγράψατε:
+Καλέστε την εγκατεστημένη δεξιότητα ως `$laconian:if`. Αν δεν εμφανιστεί αμέσως, ξεκινήστε νέα
+εργασία ή επανεκκινήστε το Codex. Επαληθεύστε τον εντοπισμό της με:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-Η θέση του placeholder εξαρτάται από το σύστημα. Ο λειτουργικός σκελετός δεν ισχυρίζεται ακόμη ότι
-καλύπτει την εγκατάσταση σε συγκεκριμένα συστήματα πρακτόρων.
+Απεγκατάσταση πρόσθετου:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+Για αυτόνομη εγκατάσταση του ενός αρχείου, σε συγκεκριμένη έκδοση:
+
+```bash
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
+  test ! -e "$skill_target"
+  test ! -L "$skill_target"
+  skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
+  trap 'rm -f "$skill_tmp"' EXIT
+  curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" -o "$skill_tmp"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_tmp")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_tmp")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  chmod 0644 "$skill_tmp"
+  ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
+)
+```
+
+Το πρόγραμμα εγκατάστασης αρνείται να χρησιμοποιήσει συμβολικό σύνδεσμο είτε στον κατάλογο της
+δεξιότητας είτε στον προορισμό και δεν αντικαθιστά καμία υπάρχουσα διαδρομή προορισμού.
+
+Καλέστε την αυτόνομη δεξιότητα ως `$if`. Επαληθεύστε το αντίγραφο με:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Η αυτόνομη απεγκατάσταση δέχεται μόνο το αμετάβλητο κανονικό αρχείο. Αρνείται συμβολικό σύνδεσμο
+είτε στον κατάλογο της δεξιότητας είτε στο αρχείο προορισμού, καθώς και τροποποιημένο ή
+αντικατεστημένο αρχείο· αυτές οι περιπτώσεις απαιτούν χειροκίνητο έλεγχο. Ο κατάλογος αφαιρείται
+μόνο αν είναι κενός:
+
+```bash
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
+  test -f "$skill_target"
+  test ! -L "$skill_target"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_target")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_target")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  rm "$skill_target"
+  rmdir "$skill_dir" 2>/dev/null || true
+)
+```
 
 ## Benchmark τεσσάρων σκελών
 

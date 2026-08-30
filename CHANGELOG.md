@@ -1,9 +1,10 @@
 # Changelog
 
-All notable project changes will be recorded here. The project is pre-release; this file does not
-assign a release date to work still under review.
+All notable project changes will be recorded here.
 
 ## [Unreleased]
+
+## [0.1.0-alpha.1] - 2026-08-30
 
 ### Added
 
@@ -23,4 +24,4 @@ assign a release date to work still under review.
   benchmark materials, and the MIT Caveman fixture.
 - Public philosophy, methodology, case-contribution, contributor, and security documentation.
 
-No public benchmark result is included in this walking skeleton.
+No public benchmark result is included in this experimental walking skeleton.

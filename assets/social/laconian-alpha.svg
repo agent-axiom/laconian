@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Laconian experimental alpha</title>
+  <desc id="desc">if — The shortest complete answer. Experimental alpha.</desc>
+  <!-- Canonical PNG render: magick -background none assets/social/laconian-alpha.svg -strip assets/social/laconian-alpha.png -->
+  <rect width="1200" height="630" fill="#F1E9DB"/>
+  <rect width="430" height="630" fill="#171512"/>
+  <rect x="430" width="12" height="630" fill="#8A2F2B"/>
+  <circle cx="1080" cy="102" r="43" fill="#8A2F2B"/>
+  <circle cx="1080" cy="102" r="33" fill="#F1E9DB"/>
+  <text x="80" y="410" fill="#F1E9DB" font-family="Georgia, serif" font-size="300" font-weight="700">if</text>
+  <text x="520" y="250" fill="#171512" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700">The shortest</text>
+  <text x="520" y="326" fill="#171512" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700">complete answer.</text>
+  <rect x="520" y="378" width="540" height="8" fill="#8A2F2B"/>
+  <text x="520" y="452" fill="#171512" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700">Experimental alpha</text>
+</svg>

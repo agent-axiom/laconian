@@ -210,7 +210,7 @@ def test_run_rejects_empty_plan_configuration_before_result_artifacts(
     monkeypatch.chdir(REPOSITORY_ROOT)
     document: dict[str, object] = {
         "schema_version": "1",
-        "runner_version": "0.1.0.dev0",
+        "runner_version": "0.1.0a1",
         "run_name": "empty-plan",
         "provider": {"kind": "fake", "model": "fake-v1"},
         "case_files": ["evals/cases/response-smoke.yaml"],
@@ -564,7 +564,7 @@ def test_missing_openai_key_fails_before_results_and_fake_runs_as_offline_error_
     fake_manifest = tmp_path / "fake.yaml"
     fake_manifest.write_text(
         """schema_version: \"1\"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: fake-example
 provider:
   kind: fake
@@ -704,7 +704,7 @@ def test_score_rejects_raw_manifest_coherence_conflicts_before_outputs(
     manifest_path = tmp_path / "baseline-replay.yaml"
     manifest_path.write_text(
         """schema_version: \"1\"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: integrity-replay
 provider:
   kind: replay

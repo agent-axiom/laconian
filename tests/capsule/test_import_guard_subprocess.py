@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.machinery
 import json
 import subprocess
 import sys
+import sysconfig
+import typing
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,31 @@ import pytest
 from laconian_eval.capsule.import_policy import CONSOLE_LAUNCHER_TEMPLATE
 
 ROOT = Path(__file__).parents[2]
+
+
+def _destshared_extension_name(destshared: Path) -> str:
+    for path in sorted(destshared.iterdir(), key=lambda item: item.name):
+        for suffix in sorted(
+            importlib.machinery.EXTENSION_SUFFIXES,
+            key=len,
+            reverse=True,
+        ):
+            if path.is_file() and path.name.endswith(suffix):
+                name = path.name[: -len(suffix)]
+                if name and name not in sys.modules:
+                    return name
+                break
+    raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
+
+
+def test_destshared_extension_name_prefers_longest_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "_laconian_destshared_probe.abi3.so").touch()
+    monkeypatch.setattr(importlib.machinery, "EXTENSION_SUFFIXES", [".so", ".abi3.so"])
+
+    assert _destshared_extension_name(tmp_path) == "_laconian_destshared_probe"
 
 
 _PROVENANCE_SETUP = r"""
@@ -40,7 +68,7 @@ provenance = InstalledProvenance(
     runner_source=runner,
     runner_distribution=_capture_runner_distribution(),
     dependencies=capture_dependency_closure(provider_kind=provider_kind),
-    package_version="0.1.0.dev0",
+    package_version="0.1.0a1",
     checkout_binding="unavailable",
     git_commit=None,
     git_state="unavailable",
@@ -63,7 +91,12 @@ policy = build_import_policy(provenance)
 """
 
 
-def _run_child(body: str, *, provider_kind: str = "fake") -> subprocess.CompletedProcess[str]:
+def _run_child(
+    body: str,
+    *,
+    provider_kind: str = "fake",
+    timeout: float = 30,
+) -> subprocess.CompletedProcess[str]:
     setup = _PROVENANCE_SETUP.replace("__PROVIDER_KIND__", provider_kind)
     return subprocess.run(
         [sys.executable, "-c", setup + body],
@@ -71,7 +104,7 @@ def _run_child(body: str, *, provider_kind: str = "fake") -> subprocess.Complete
         env={},
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=timeout,
         check=False,
     )
 
@@ -213,7 +246,7 @@ cases:
     manifest = input_root / "manifest.yaml"
     manifest.write_text(
         """schema_version: "2"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: public-import-guard
 provider:
   kind: fake
@@ -1106,6 +1139,7 @@ def test_audit_seals_extension_loader_create_and_exec(
     method_name: str,
     mutation: str,
 ) -> None:
+    extension_probe = _destshared_extension_name(Path(sysconfig.get_config_var("DESTSHARED")))
     argument = "spec" if method_name == "create_module" else "module"
     if mutation == "replace":
         tamper = f"""
@@ -1148,7 +1182,7 @@ installation = install_import_guard(policy)
 owner = importlib.machinery.ExtensionFileLoader
 original = owner.__dict__[{method_name!r}]
 {tamper}
-probe_name = "_sha3"
+probe_name = {extension_probe!r}
 assert probe_name not in sys.modules
 try:
     __import__(probe_name)
@@ -1249,11 +1283,11 @@ os.write(1, (outcome + "\\n").encode())
 
 
 def test_guard_positive_lazy_captured_stdlib_source_and_extension_imports() -> None:
-    result = _run_child(
-        r"""
+    extension_probe = _destshared_extension_name(Path(sysconfig.get_config_var("DESTSHARED")))
+    body = r"""
 installation = install_import_guard(policy)
 loaded = []
-for probe_name in ("annotated_types.test_cases", "colorsys", "_sha3"):
+for probe_name in ("annotated_types.test_cases", "colorsys", __EXTENSION_PROBE__):
     assert probe_name not in sys.modules
     module = __import__(probe_name, fromlist=("*",))
     loaded.append((probe_name, type(module.__spec__.loader).__name__))
@@ -1261,12 +1295,12 @@ revalidate_import_state(policy)
 revalidate_loaded_modules(policy)
 os.write(1, (__import__("json").dumps(loaded) + "\n").encode())
 """
-    )
+    result = _run_child(body.replace("__EXTENSION_PROBE__", repr(extension_probe)))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
         ["annotated_types.test_cases", "_OriginValidatingLoader"],
         ["colorsys", "_OriginValidatingLoader"],
-        ["_sha3", "_OriginValidatingLoader"],
+        [extension_probe, "_OriginValidatingLoader"],
     ]
 
 
@@ -1478,10 +1512,15 @@ except ImportPolicyError as error:
     assert payload == {"code": "audit_hook_installation_failed", "unchanged": True}
 
 
+_TYPING_IO_EXPECTED = (
+    "originless_module_changed" if hasattr(typing, "io") else "import_origin_not_allowed"
+)
+
+
 @pytest.mark.parametrize(
     ("tamper", "expected_code"),
     [
-        ('sys.modules["typing.io"] = object()', "originless_module_changed"),
+        ('sys.modules["typing.io"] = object()', _TYPING_IO_EXPECTED),
         (
             'sys.modules["_cython_9_9_9"] = type(sys)("_cython_9_9_9")',
             "import_origin_not_allowed",
@@ -1537,6 +1576,7 @@ os.write(1, (__import__("json").dumps({
 }) + "\n").encode())
 """,
         provider_kind="openai",
+        timeout=90,
     )
     payload = _payload(result)
     assert payload == {

@@ -124,8 +124,8 @@ def test_v1_provider_serialization_characterization(
     )
 
     expected = (
-        b'{"schema_version":"1","runner_version":"0.1.0.dev0","run_id":"run-1",'
-        b'"manifest_sha256":"8c59a5068daf57c29d42925d820d2526f89b396dbfd1cc84bdc201b98e8829dd",'
+        b'{"schema_version":"1","runner_version":"0.1.0a1","run_id":"run-1",'
+        b'"manifest_sha256":"5b3dfb1e8524dea8056c6cbe9c9a87c6f12cf8a071bfcd434c40003bc2f12dad",'
         b'"case_id":"direct-answer-en","case_definition_sha256":"2c0d9527837eb7a0aa1a9fe22584889e828bbb5bd5552513b009f27727810dc8",'
         b'"arm":"baseline","repetition":0,"attempt":1,"terminal":true,'
         b'"retry_of_attempt":null,"backoff_ms":null,'
@@ -137,8 +137,8 @@ def test_v1_provider_serialization_characterization(
         b'"output_text":"Done.","usage":{"input_tokens":4,"output_tokens":1,'
         b'"total_tokens":5,"cached_input_tokens":0},"request_id":"request-success",'
         b'"finish_reason":"stop","error":null}\n'
-        b'{"schema_version":"1","runner_version":"0.1.0.dev0","run_id":"run-1",'
-        b'"manifest_sha256":"8c59a5068daf57c29d42925d820d2526f89b396dbfd1cc84bdc201b98e8829dd",'
+        b'{"schema_version":"1","runner_version":"0.1.0a1","run_id":"run-1",'
+        b'"manifest_sha256":"5b3dfb1e8524dea8056c6cbe9c9a87c6f12cf8a071bfcd434c40003bc2f12dad",'
         b'"case_id":"direct-answer-en","case_definition_sha256":"2c0d9527837eb7a0aa1a9fe22584889e828bbb5bd5552513b009f27727810dc8",'
         b'"arm":"concise","repetition":0,"attempt":1,"terminal":true,'
         b'"retry_of_attempt":null,"backoff_ms":null,'

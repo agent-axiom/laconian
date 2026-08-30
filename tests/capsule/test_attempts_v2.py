@@ -73,7 +73,7 @@ class EvilInt(int):
 def valid_attempt_payload() -> dict[str, Any]:
     return {
         "schema_version": "2",
-        "runner_version": "0.1.0.dev0",
+        "runner_version": "0.1.0a1",
         "run_id": str(RUN_ID),
         "manifest_sha256": "4" * 64,
         "plan_item_id": "1" * 64,

@@ -1748,7 +1748,7 @@ def test_runner_distribution_accepts_wheel_and_private_editable_path_metadata(
     assert (
         captured.direct_url_bytes
         == (
-            tmp_path / "editable/site-packages/laconian_eval-0.1.0.dev0.dist-info/direct_url.json"
+            tmp_path / "editable/site-packages/laconian_eval-0.1.0a1.dist-info/direct_url.json"
         ).read_bytes()
     )
 
@@ -1897,7 +1897,7 @@ def test_runner_distribution_rejects_metadata_mutation_after_discovery(
 
     def mutate_after_discovery(name: str):  # type: ignore[no-untyped-def]
         candidates = original_discover(name)
-        (tmp_path / "site-packages/laconian_eval-0.1.0.dev0.dist-info/METADATA").write_bytes(
+        (tmp_path / "site-packages/laconian_eval-0.1.0a1.dist-info/METADATA").write_bytes(
             candidates[0].metadata_bytes + b"X-Mutated: true\n"
         )
         return candidates
@@ -1923,7 +1923,7 @@ def test_runner_distribution_rejects_record_mutation_after_initial_check(
         version=__version__,
         external_script="laconian",
     )
-    record = site / "laconian_eval-0.1.0.dev0.dist-info/RECORD"
+    record = site / "laconian_eval-0.1.0a1.dist-info/RECORD"
     monkeypatch.setattr(metadata, "distributions", lambda **_context: iter((runner_dist,)))
     original = provenance.read_regular_file_snapshot
     mutated = False

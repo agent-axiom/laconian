@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -8,6 +9,7 @@ import stat
 import sys
 import sysconfig
 import zipimport
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
@@ -61,6 +63,31 @@ from laconian_eval.capsule.schema import CONSOLE_LAUNCHER_TEMPLATE_SHA256 as SCH
 ROOT = Path(__file__).parents[2]
 
 
+def _destshared_extension_name(destshared: Path) -> str:
+    for path in sorted(destshared.iterdir(), key=lambda item: item.name):
+        for suffix in sorted(
+            importlib.machinery.EXTENSION_SUFFIXES,
+            key=len,
+            reverse=True,
+        ):
+            if path.is_file() and path.name.endswith(suffix):
+                name = path.name[: -len(suffix)]
+                if name and name not in sys.modules:
+                    return name
+                break
+    raise AssertionError(f"no unloaded DESTSHARED extension under {destshared}")
+
+
+def test_destshared_extension_name_prefers_longest_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "_laconian_destshared_probe.abi3.so").touch()
+    monkeypatch.setattr(importlib.machinery, "EXTENSION_SUFFIXES", [".so", ".abi3.so"])
+
+    assert _destshared_extension_name(tmp_path) == "_laconian_destshared_probe"
+
+
 class _NamedLookupOnlyEnvironment:
     def __init__(self, values: dict[str, str]) -> None:
         self._values = values
@@ -101,7 +128,7 @@ def _installed_provenance(*, provider_kind: str = "fake") -> InstalledProvenance
         runner_source=runner,
         runner_distribution=_capture_runner_distribution(),
         dependencies=dependencies,
-        package_version="0.1.0.dev0",
+        package_version="0.1.0a1",
         checkout_binding="unavailable",
         git_commit=None,
         git_state="unavailable",
@@ -127,6 +154,9 @@ def provenance() -> InstalledProvenance:
 
 
 def _module_runtime(provenance: InstalledProvenance) -> RuntimeImportState:
+    import _collections_abc
+    import collections.abc
+
     state = capture_runtime_import_state()
     main_origin = provenance.runner_source.origins["cli.py"].path
     main = SimpleNamespace(
@@ -170,11 +200,15 @@ def _module_runtime(provenance: InstalledProvenance) -> RuntimeImportState:
         *site_roots,
         os.fspath(provenance.runner_source._package_parent),
     )
+    modules: dict[str, object] = {"__main__": main, "sys": sys}
+    if collections.abc is _collections_abc:
+        modules["collections.abc"] = _collections_abc
+        modules["_collections_abc"] = _collections_abc
     return replace(
         state,
         sys_path=exact_sys_path,
         meta_path=exact_meta_path,
-        modules=MappingProxyType({"__main__": main, "sys": sys}),
+        modules=MappingProxyType(modules),
         importer_cache=MappingProxyType({}),
         environ=MappingProxyType({}),
         argv0=os.fspath(main_origin),
@@ -192,6 +226,19 @@ def _assert_error(code: str, operation: Any) -> None:
     assert caught.value.code == code
     assert str(caught.value) == "import policy failed"
     assert code not in str(caught.value)
+
+
+def _partial_module_map(
+    policy: ImportPolicy,
+    modules: Mapping[str, object],
+) -> Mapping[str, object]:
+    selected = dict(modules)
+    for alias, module in policy.fixed_alias_modules.items():
+        target = getattr(getattr(module, "__spec__", None), "name", None)
+        assert type(target) is str
+        selected[alias] = module
+        selected[target] = module
+    return MappingProxyType(selected)
 
 
 def test_console_template_is_exact_and_schema_bound() -> None:
@@ -1674,6 +1721,30 @@ def test_console_multiprocessing_main_alias_is_identity_bound(
     )
 
 
+def test_collections_abc_identity_alias_is_pinned_when_runtime_uses_it(
+    policy: ImportPolicy,
+) -> None:
+    import _collections_abc
+    import collections.abc
+
+    if collections.abc is not _collections_abc:
+        pytest.skip("runtime uses distinct collections.abc and _collections_abc modules")
+    assert policy.fixed_alias_modules["collections.abc"] is _collections_abc
+    modules = MappingProxyType(
+        {
+            "collections.abc": _collections_abc,
+            "_collections_abc": _collections_abc,
+        }
+    )
+    revalidate_loaded_modules(policy, modules=modules)
+    forged = dict(modules)
+    forged["collections.abc"] = ModuleType("collections.abc")
+    _assert_error(
+        "fixed_module_alias_changed",
+        lambda: revalidate_loaded_modules(policy, modules=MappingProxyType(forged)),
+    )
+
+
 def test_console_main_revalidation_rechecks_exact_launcher_bytes_in_place(
     provenance: InstalledProvenance,
     tmp_path: Path,
@@ -1805,8 +1876,8 @@ def test_loaded_module_revalidation_allows_owned_stdlib_builtin_and_frozen(
     )
     revalidate_loaded_modules(
         policy,
-        modules=MappingProxyType(
-            {"sys": sys, "stdlib_json": stdlib_json, runner_name: runner, "abc": abc}
+        modules=_partial_module_map(
+            policy, {"sys": sys, "stdlib_json": stdlib_json, runner_name: runner, "abc": abc}
         ),
     )
 
@@ -1846,7 +1917,7 @@ def test_loaded_owned_module_requires_exact_spec_name_and_module_key(
         "import_origin_wrong_distribution",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({module_key: module}),
+            modules=_partial_module_map(policy, {module_key: module}),
         ),
     )
 
@@ -1868,7 +1939,7 @@ def test_loaded_stdlib_origin_revalidates_descriptor_bound_root_identity(
         "import_root_identity_drift",
         lambda: revalidate_loaded_modules(
             forged,
-            modules=MappingProxyType({"json": stdlib_json}),
+            modules=_partial_module_map(forged, {"json": stdlib_json}),
         ),
     )
 
@@ -1890,7 +1961,7 @@ def test_loaded_module_revalidation_rejects_namespace_unowned_and_out_of_root(
     _assert_error(
         "namespace_import_unsupported",
         lambda: revalidate_loaded_modules(
-            policy, modules=MappingProxyType({"namespace": namespace})
+            policy, modules=_partial_module_map(policy, {"namespace": namespace})
         ),
     )
     unowned = SimpleNamespace(
@@ -1903,7 +1974,10 @@ def test_loaded_module_revalidation_rejects_namespace_unowned_and_out_of_root(
     )
     _assert_error(
         "import_origin_not_allowed",
-        lambda: revalidate_loaded_modules(policy, modules=MappingProxyType({"unowned": unowned})),
+        lambda: revalidate_loaded_modules(
+            policy,
+            modules=_partial_module_map(policy, {"unowned": unowned}),
+        ),
     )
 
 
@@ -1918,7 +1992,7 @@ def test_unowned_origin_inside_allowed_site_root_is_rejected(policy: ImportPolic
         "unowned_import_origin",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"pytest_inside_allowed_site": pytest}),
+            modules=_partial_module_map(policy, {"pytest_inside_allowed_site": pytest}),
         ),
     )
 
@@ -1927,8 +2001,11 @@ def test_captured_pyc_and_sourceless_loader_are_rejected_even_inside_runner_root
     policy: ImportPolicy,
     provenance: InstalledProvenance,
 ) -> None:
+    import py_compile
+
     source = provenance.runner_source.origins["cli.py"].path
     pyc = Path(importlib.util.cache_from_source(os.fspath(source)))
+    py_compile.compile(os.fspath(source), doraise=True)
     assert pyc.is_file()
     sourceless = SimpleNamespace(
         __file__=os.fspath(pyc),
@@ -1942,7 +2019,7 @@ def test_captured_pyc_and_sourceless_loader_are_rejected_even_inside_runner_root
         "captured_bytecode_unsupported",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"poison": sourceless}),
+            modules=_partial_module_map(policy, {"poison": sourceless}),
         ),
     )
 
@@ -1965,7 +2042,7 @@ def test_module_spec_origin_and_file_must_identify_the_same_owned_file(
         "module_origin_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"laconian_eval": disagreement}),
+            modules=_partial_module_map(policy, {"laconian_eval": disagreement}),
         ),
     )
 
@@ -1973,14 +2050,17 @@ def test_module_spec_origin_and_file_must_identify_the_same_owned_file(
 def test_loaded_dependency_source_and_destshared_extension_are_allowed(
     policy: ImportPolicy,
 ) -> None:
-    import _hashlib
-
     import packaging.version
 
-    assert Path(_hashlib.__file__).is_relative_to(policy.destshared_root.canonical_path)
+    extension_name = _destshared_extension_name(policy.destshared_root.canonical_path)
+    extension_module = importlib.import_module(extension_name)
+    extension_path = Path(extension_module.__file__).resolve()
+    assert extension_path.is_relative_to(policy.destshared_root.canonical_path)
     revalidate_loaded_modules(
         policy,
-        modules=MappingProxyType({"packaging.version": packaging.version, "_hashlib": _hashlib}),
+        modules=_partial_module_map(
+            policy, {"packaging.version": packaging.version, extension_name: extension_module}
+        ),
     )
 
 
@@ -2063,7 +2143,7 @@ def test_loaded_builtin_and_frozen_claims_require_consistent_fixed_pairs(
         "builtin_frozen_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"forged_runtime_module": forged}),
+            modules=_partial_module_map(policy, {"forged_runtime_module": forged}),
         ),
     )
 
@@ -2092,7 +2172,7 @@ def test_consistent_looking_fixed_module_spec_must_resolve_through_fixed_finder(
         "builtin_frozen_mismatch",
         lambda: revalidate_loaded_modules(
             policy,
-            modules=MappingProxyType({"forged_runtime_module": forged}),
+            modules=_partial_module_map(policy, {"forged_runtime_module": forged}),
         ),
     )
 
@@ -2110,6 +2190,60 @@ def test_guard_resolves_only_fixed_finders_and_rejects_namespace_specs(
         "namespace_import_unsupported",
         lambda: guard.find_spec("synthetic_namespace", None, None),
     )
+
+
+def test_audit_root_identity_transfers_descriptor_ownership_before_close(
+    policy: ImportPolicy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.capsule import import_policy
+
+    close_calls: list[int] = []
+
+    def fake_open(
+        path: str,
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        assert flags >= 0
+        if path == "/":
+            assert dir_fd is None
+            return 10
+        assert path == "component"
+        assert dir_fd == 10
+        return 11
+
+    def fake_close(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        if descriptor == 10:
+            raise OSError(errno.EIO, "close failed")
+
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        raise AssertionError(f"unexpected fstat for descriptor {descriptor}")
+
+    guard = _LaconianImportGuard(policy)
+    snapshot = guard._snapshot_for_install(policy.enforcement_token)
+    monkeypatch.setattr(import_policy.os, "open", fake_open)
+    monkeypatch.setattr(import_policy.os, "close", fake_close)
+    monkeypatch.setattr(import_policy.os, "fstat", fake_fstat)
+
+    audit_hook, _audit_state = import_policy._make_application_audit_hook(snapshot, guard)
+    assert audit_hook.__closure__ is not None
+    audit_cells = dict(zip(audit_hook.__code__.co_freevars, audit_hook.__closure__, strict=True))
+    hidden_validate = audit_cells["hidden_validate"].cell_contents
+    assert hidden_validate.__closure__ is not None
+    validate_cells = dict(
+        zip(
+            hidden_validate.__code__.co_freevars,
+            hidden_validate.__closure__,
+            strict=True,
+        )
+    )
+    root_identity_is_current = validate_cells["root_identity_is_current"].cell_contents
+
+    assert root_identity_is_current("/component", 1, 2) is False
+    assert close_calls == [10, 11]
 
 
 def test_uninstalled_guard_rejects_injected_outside_spec_before_loader_actions(
@@ -2178,7 +2312,7 @@ def test_guard_wraps_independently_returned_owned_spec_before_loader_can_execute
     module.__spec__ = guarded
     guarded.loader.exec_module(module)
     assert executed == []
-    assert module.__version__ == "0.1.0.dev0"  # type: ignore[attr-defined]
+    assert module.__version__ == "0.1.0a1"  # type: ignore[attr-defined]
 
 
 def test_guard_rejects_custom_loader_for_owned_native_extension(

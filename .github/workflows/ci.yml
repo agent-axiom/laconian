@@ -11,6 +11,9 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_DOWNLOADS: never
     strategy:
       fail-fast: false
       matrix:
@@ -26,13 +29,22 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --all-extras --locked
+      - name: Verify Python selection
+        run: >-
+          uv run python -c 'import os, sys; expected = tuple(map(int,
+          os.environ["UV_PYTHON"].split("."))); assert sys.version_info[:2] == expected,
+          (sys.version, expected)'
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src
+      - run: uv run pytest tests/test_skill_contract.py tests/test_plugin_contract.py -q
       - run: uv run pytest -q
 
   macos-capsule:
     runs-on: macos-latest
+    env:
+      UV_PYTHON: "3.14"
+      UV_PYTHON_DOWNLOADS: never
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -44,4 +56,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --all-extras --locked
+      - name: Verify Python selection
+        run: >-
+          uv run python -c 'import os, sys; expected = tuple(map(int,
+          os.environ["UV_PYTHON"].split("."))); assert sys.version_info[:2] == expected,
+          (sys.version, expected)'
       - run: uv run pytest tests/capsule/test_posix.py tests/capsule/test_filesystem.py tests/capsule/test_prepare.py tests/capsule/test_verify_prepared.py tests/capsule/test_cli_plan.py tests/test_cli.py -q

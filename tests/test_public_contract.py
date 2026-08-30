@@ -1,4 +1,9 @@
+import hashlib
+import os
 import re
+import struct
+import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -34,6 +39,78 @@ SOURCE_URLS = (
 )
 CAVEMAN_COMMIT = "781c384cafc28d7ca392014dbab569f985b5b2fd"
 CAVEMAN_SHA256 = "1eddf7055618153869975678d9ff36635602a3aa333f8b4cc0787f12de75b6f8"
+PLUGIN_ADD = "codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json"
+PLUGIN_INSTALL = "codex plugin add laconian@laconian --json"
+PLUGIN_LIST = "codex plugin list --marketplace laconian --json"
+PLUGIN_REMOVE = "codex plugin remove laconian@laconian --json"
+MARKETPLACE_REMOVE = "codex plugin marketplace remove laconian --json"
+STANDALONE_URL = (
+    "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md"
+)
+STANDALONE_SHA256 = "5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+STANDALONE_INSTALL_BLOCK = f"""(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="{STANDALONE_SHA256}"
+  test ! -L "$skill_dir"
+  mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
+  test ! -e "$skill_target"
+  test ! -L "$skill_target"
+  skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
+  trap 'rm -f "$skill_tmp"' EXIT
+  curl -fsSL "{STANDALONE_URL}" -o "$skill_tmp"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_tmp")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_tmp")"
+  fi
+  skill_actual_sha256="${{skill_actual_sha256%% *}}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  chmod 0644 "$skill_tmp"
+  ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${{skill_tmp##*/}}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
+)"""
+STANDALONE_UNINSTALL_BLOCK = f"""(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="{STANDALONE_SHA256}"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
+  test -f "$skill_target"
+  test ! -L "$skill_target"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_target")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_target")"
+  fi
+  skill_actual_sha256="${{skill_actual_sha256%% *}}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  rm "$skill_target"
+  rmdir "$skill_dir" 2>/dev/null || true
+)"""
+UNSAFE_STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
+SOCIAL_CARD_RENDER = (
+    "magick -background none assets/social/laconian-alpha.svg -strip "
+    "assets/social/laconian-alpha.png"
+)
+APPROVED_NEGATED_SOCIAL_CLAIMS = (
+    "not proven",
+    "no numeric token savings",
+    "does not claim numeric token savings",
+    "not a benchmark winner",
+    "not a universal-directory listing",
+)
 
 
 def _read(path: str) -> str:
@@ -42,9 +119,183 @@ def _read(path: str) -> str:
     return full_path.read_text(encoding="utf-8")
 
 
+def _social_claim_scan_text(text: str) -> str:
+    folded = text.casefold()
+    for approved in APPROVED_NEGATED_SOCIAL_CLAIMS:
+        pattern = rf"(?<![\w-]){re.escape(approved)}(?![\w-])"
+        folded = re.sub(pattern, "", folded)
+    return folded
+
+
+def _standalone_test_environment(tmp_path: Path, *, curl_mode: str) -> tuple[Path, dict[str, str]]:
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        """#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+test -n "$output"
+if [ "$STUB_CURL_MODE" = "race-directory" ]; then
+  mkdir "$HOME/.agents/skills/if/SKILL.md"
+fi
+cp "$STUB_SKILL_SOURCE" "$output"
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.defpath)}",
+            "STUB_CURL_MODE": curl_mode,
+            "STUB_SKILL_SOURCE": str(ROOT / "skills/if/SKILL.md"),
+        }
+    )
+    return home, env
+
+
+def _run_standalone_block(block: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", block],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 @pytest.mark.parametrize("filename", README_FILES.values())
 def test_all_six_readme_editions_exist(filename: str) -> None:
     assert (ROOT / filename).is_file(), f"missing README edition: {filename}"
+
+
+@pytest.mark.parametrize("filename", README_FILES.values())
+def test_every_readme_has_pinned_install_paths(filename: str) -> None:
+    text = _read(filename)
+    assert PLUGIN_ADD in text
+    assert PLUGIN_INSTALL in text
+    assert PLUGIN_LIST in text
+    assert PLUGIN_REMOVE in text
+    assert MARKETPLACE_REMOVE in text
+    assert STANDALONE_URL in text
+    assert "$laconian:if" in text
+    assert "$if" in text
+    assert "<agent-skills-directory>" not in text
+    assert text.count(STANDALONE_INSTALL_BLOCK) == 1
+    assert text.count(STANDALONE_UNINSTALL_BLOCK) == 1
+    assert UNSAFE_STANDALONE_REMOVE not in text
+    assert '-o "$HOME/.agents/skills/if/SKILL.md"' not in text
+
+
+def test_standalone_lifecycle_is_collision_safe_and_hash_pinned() -> None:
+    assert hashlib.sha256((ROOT / "skills/if/SKILL.md").read_bytes()).hexdigest() == (
+        STANDALONE_SHA256
+    )
+
+    install = STANDALONE_INSTALL_BLOCK
+    directory_guards = [
+        match.start()
+        for match in re.finditer(r'^  test ! -L "\$skill_dir"$', install, re.MULTILINE)
+    ]
+    assert len(directory_guards) == 2
+    mkdir_position = install.index('mkdir -p "$skill_dir"')
+    assert directory_guards[0] < mkdir_position < directory_guards[1]
+    for guard in ('test ! -e "$skill_target"', 'test ! -L "$skill_target"'):
+        assert guard in install
+    assert 'mktemp "$skill_dir/.SKILL.md.XXXXXX"' in install
+    assert "trap 'rm -f \"$skill_tmp\"' EXIT" in install
+    assert "EXIT HUP INT TERM" not in install
+    assert f'curl -fsSL "{STANDALONE_URL}" -o "$skill_tmp"' in install
+    assert '-o "$skill_target"' not in install
+    link_and_verify = (
+        'ln "$skill_tmp" "$skill_target"\n  if ! test "$skill_tmp" -ef "$skill_target"; then'
+    )
+    assert link_and_verify in install
+    assert 'test -f "$skill_misdirected"' in install
+    assert 'test ! -L "$skill_misdirected"' in install
+    assert 'test "$skill_tmp" -ef "$skill_misdirected"' in install
+    assert 'mv "$skill_tmp" "$skill_target"' not in install
+
+    uninstall = STANDALONE_UNINSTALL_BLOCK
+    directory_guard = 'test ! -L "$skill_dir"'
+    directory_check = 'test -d "$skill_dir"'
+    assert uninstall.index(directory_guard) < uninstall.index(directory_check)
+    assert uninstall.index(directory_check) < uninstall.index('test -f "$skill_target"')
+    assert 'test -f "$skill_target"' in uninstall
+    assert 'test ! -L "$skill_target"' in uninstall
+    hash_guard = 'test "$skill_actual_sha256" = "$skill_expected_sha256"'
+    assert uninstall.index(hash_guard) < uninstall.index('rm "$skill_target"')
+    assert 'rmdir "$skill_dir" 2>/dev/null || true' in uninstall
+    for block in (install, uninstall):
+        assert "command -v sha256sum" in block
+        assert "shasum -a 256" in block
+
+    plan = _read("docs/superpowers/plans/2026-08-29-alpha-launch-readiness.md")
+    assert STANDALONE_INSTALL_BLOCK in plan
+    assert STANDALONE_UNINSTALL_BLOCK in plan
+    assert UNSAFE_STANDALONE_REMOVE not in plan
+    assert '-o "$HOME/.agents/skills/if/SKILL.md"' not in plan
+    assert "/Users/if/" not in plan
+    assert "${CODEX_HOME:-$HOME/.codex}/skills/.system/" in plan
+
+
+def test_standalone_install_refuses_an_existing_target(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="copy")
+    skill_dir = home / ".agents/skills/if"
+    skill_dir.mkdir(parents=True)
+    target = skill_dir / "SKILL.md"
+    target.write_text("user content\n", encoding="utf-8")
+
+    result = _run_standalone_block(STANDALONE_INSTALL_BLOCK, env)
+
+    assert result.returncode != 0
+    assert target.read_text(encoding="utf-8") == "user content\n"
+
+
+def test_standalone_uninstall_refuses_a_symlinked_skill_directory(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="copy")
+    external = tmp_path / "external"
+    external.mkdir()
+    external_target = external / "SKILL.md"
+    canonical = (ROOT / "skills/if/SKILL.md").read_bytes()
+    external_target.write_bytes(canonical)
+    skill_parent = home / ".agents/skills"
+    skill_parent.mkdir(parents=True)
+    (skill_parent / "if").symlink_to(external, target_is_directory=True)
+
+    result = _run_standalone_block(STANDALONE_UNINSTALL_BLOCK, env)
+
+    assert result.returncode != 0
+    assert external_target.read_bytes() == canonical
+
+
+def test_standalone_install_cleans_a_directory_race_hardlink(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="race-directory")
+
+    result = _run_standalone_block(STANDALONE_INSTALL_BLOCK, env)
+
+    target = home / ".agents/skills/if/SKILL.md"
+    assert result.returncode != 0
+    assert target.is_dir()
+    assert list(target.iterdir()) == []
+
+
+def test_greek_readme_describes_a_specific_pinned_version() -> None:
+    text = _read("README.el.md")
+    assert "με σταθερή έκδοση" not in text
+    assert text.count("σε συγκεκριμένη έκδοση") == 2
 
 
 @pytest.mark.parametrize("filename", README_FILES.values())
@@ -171,6 +422,8 @@ def test_notice_maps_new_public_documentation_to_cc_by() -> None:
         "CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, and evals/README.md: CC-BY-4.0."
         in notice.splitlines()
     )
+    assert ".codex-plugin/, .agents/, and tools/: Apache-2.0." in notice.splitlines()
+    assert "assets/social/ and docs/social/: CC-BY-4.0." in notice.splitlines()
 
 
 def test_core_public_document_files_exist() -> None:
@@ -345,9 +598,93 @@ def test_security_uses_private_reporting_and_names_scope() -> None:
         assert phrase.casefold() in text.casefold()
 
 
-def test_changelog_starts_unreleased_without_a_release_date() -> None:
+def test_changelog_keeps_unreleased_and_records_the_alpha_boundary() -> None:
     text = _read("CHANGELOG.md")
     assert "## [Unreleased]" in text
+    assert "## [0.1.0-alpha.1] - 2026-08-30" in text
     assert "walking skeleton" in text
     assert "No public benchmark result" in text
-    assert re.search(r"^## \[v?\d[^]]*\]", text, flags=re.MULTILINE) is None
+
+
+def test_alpha_release_notes_describe_only_the_experimental_release() -> None:
+    text = _read("docs/releases/v0.1.0-alpha.1.md")
+    for phrase in (
+        "one-file skill",
+        "repo plugin",
+        "Python 3.11 and 3.14",
+        "SHA-256",
+        "experimental alpha",
+        "No public benchmark result",
+    ):
+        assert phrase.casefold() in text.casefold()
+
+
+@pytest.mark.parametrize(
+    ("approved", "affirmative", "prohibited"),
+    (
+        ("Not proven.", "Proven.", "proven"),
+        ("No numeric token savings.", "Numeric token savings.", "numeric token savings"),
+        (
+            "Does not claim numeric token savings.",
+            "Claims numeric token savings.",
+            "numeric token savings",
+        ),
+        ("Not a benchmark winner.", "Benchmark winner.", "benchmark winner"),
+        (
+            "Not a universal-directory listing.",
+            "Universal-directory listing.",
+            "universal-directory listing",
+        ),
+    ),
+)
+def test_social_claim_guard_allows_only_approved_negations(
+    approved: str, affirmative: str, prohibited: str
+) -> None:
+    assert prohibited not in _social_claim_scan_text(approved)
+    assert prohibited in _social_claim_scan_text(affirmative)
+
+
+def test_social_launch_copy_is_explicitly_experimental() -> None:
+    text = _read("docs/social/alpha-launch.md")
+    publishable, separator, boundaries = text.partition("## Claim boundaries")
+    assert separator == "## Claim boundaries"
+    _, prohibited_heading, prohibited_block = boundaries.partition("Prohibited claims:")
+    assert prohibited_heading == "Prohibited claims:"
+    assert "Illustrative edit, not benchmark output." in publishable
+    assert "Иллюстративное редактирование, не результат бенчмарка." in publishable
+    assert "No public benchmark result" in text
+    assert "one-file workflow" in text
+    assert "experimental alpha" in text
+    assert "open benchmark under development" in text
+    publishable_claims = _social_claim_scan_text(publishable)
+    for prohibited in (
+        "proven",
+        "numeric token savings",
+        "benchmark winner",
+        "universal-directory listing",
+    ):
+        assert f"- {prohibited}" in prohibited_block
+        assert prohibited not in publishable_claims
+    assert re.search(r"\b\d+(?:[.,]\d+)?\s*%", text) is None
+
+
+def test_social_card_has_exact_copy_and_dimensions() -> None:
+    svg = _read("assets/social/laconian-alpha.svg")
+    root = ET.fromstring(svg)
+    visible_text = [
+        "".join(node.itertext()) for node in root.findall("{http://www.w3.org/2000/svg}text")
+    ]
+    assert visible_text == [
+        "if",
+        "The shortest",
+        "complete answer.",
+        "Experimental alpha",
+    ]
+    assert " ".join(visible_text[1:3]) == "The shortest complete answer."
+    assert f"Canonical PNG render: {SOCIAL_CARD_RENDER}" in svg
+    png = (ROOT / "assets/social/laconian-alpha.png").read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24]) == (1200, 630)
+    assert hashlib.sha256(png).hexdigest() == (
+        "53edc82ed51ce4dfd16280de39b0c6285dbbd0b7e1c7dfa94de817a0918b47f9"
+    )

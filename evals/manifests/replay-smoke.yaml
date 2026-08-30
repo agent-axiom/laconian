@@ -1,5 +1,5 @@
 schema_version: "1"
-runner_version: 0.1.0.dev0
+runner_version: 0.1.0a1
 run_name: replay-smoke
 provider:
   kind: replay
