@@ -76,6 +76,12 @@ def test_every_readme_has_pinned_install_paths(filename: str) -> None:
     assert rmdir_lines == [STANDALONE_RMDIR]
 
 
+def test_greek_readme_describes_a_specific_pinned_version() -> None:
+    text = _read("README.el.md")
+    assert "με σταθερή έκδοση" not in text
+    assert text.count("σε συγκεκριμένη έκδοση") == 2
+
+
 @pytest.mark.parametrize("filename", README_FILES.values())
 def test_each_readme_links_to_the_other_five(filename: str) -> None:
     text = _read(filename)
@@ -399,14 +405,22 @@ def test_alpha_release_notes_describe_only_the_experimental_release() -> None:
 
 def test_social_launch_copy_is_explicitly_experimental() -> None:
     text = _read("docs/social/alpha-launch.md")
-    assert "Illustrative edit, not benchmark output." in text
-    assert "Иллюстративное редактирование, не результат бенчмарка." in text
+    publishable, separator, boundaries = text.partition("## Claim boundaries")
+    assert separator == "## Claim boundaries"
+    _, prohibited_heading, prohibited_block = boundaries.partition("Prohibited claims:")
+    assert prohibited_heading == "Prohibited claims:"
+    assert "Illustrative edit, not benchmark output." in publishable
+    assert "Иллюстративное редактирование, не результат бенчмарка." in publishable
     assert "No public benchmark result" in text
     assert "one-file workflow" in text
     assert "experimental alpha" in text
     assert "open benchmark under development" in text
-    assert "proven" in text
-    assert "numeric token savings" in text
-    assert "benchmark winner" in text
-    assert "universal-directory listing" in text
+    for prohibited in (
+        "proven",
+        "numeric token savings",
+        "benchmark winner",
+        "universal-directory listing",
+    ):
+        assert f"- {prohibited}" in prohibited_block
+        assert prohibited not in publishable.casefold()
     assert re.search(r"\b\d+(?:[.,]\d+)?\s*%", text) is None
