@@ -37,6 +37,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src
+      - run: uv run pytest tests/test_skill_contract.py tests/test_plugin_contract.py -q
       - run: uv run pytest -q
 
   macos-capsule:

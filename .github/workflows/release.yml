@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ["v0.1.0-alpha.1"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Build deterministic plugin assets
+        run: python tools/build_plugin_release.py --output-dir dist
+      - name: Verify checksum
+        working-directory: dist
+        run: sha256sum -c "laconian-plugin-${GITHUB_REF_NAME}.zip.sha256"
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/laconian-plugin-${GITHUB_REF_NAME}.zip" \
+            "dist/laconian-plugin-${GITHUB_REF_NAME}.zip.sha256" \
+            --verify-tag \
+            --prerelease \
+            --title "Laconian ${GITHUB_REF_NAME}" \
+            --notes-file docs/releases/v0.1.0-alpha.1.md
