@@ -347,7 +347,8 @@ order:
 3. `security_evidence`.
 
 Each ordered protocol entry binds its numeric GitHub account ID, exact GitHub login,
-signing-verification mode, and signing fingerprint. The `security_evidence` fingerprint is
+signing-verification mode, signing fingerprint, and canonical ASCII Git author/committer name and
+email used by its reviewer commit. The `security_evidence` fingerprint is
 non-null regardless of the other roles' allowed modes. The protocol registry has canonical bytes
 and a digest distinct from the audit registry.
 
@@ -427,6 +428,49 @@ repository's 40-lowercase-hex SHA-1 object ID. Both values are required wherever
 bound. Re-encoding JSON, stripping a signature header, changing a tag message, or hashing only
 object content cannot reproduce this digest.
 
+The frozen operator registry supplies one exact `TagOperatorProjectionV1` with positive numeric
+GitHub account ID, case-sensitive login, canonical ASCII tagger name/email, and its digest. The
+same registered operator creates T0 and T1. The operator may also be one or more of the three
+registered reviewers only when that overlap is explicit in the frozen registries; the tag-creation
+act never substitutes for any required reviewer statement or commit signature. A stable tag
+ruleset policy admits creation only by that exact numeric account/login for both exact target
+patterns, separately forbids every actor and bypass path from updating or deleting either tag, and
+records authenticated creation-actor and passing rule-suite observation receipts for both creates.
+A namespace squat, pre-existing unbound ref, wrong creator, bypassed creation, or different operator
+for T0 and T1 invalidates the pair.
+
+Raw Git object grammar is closed. T0 and T1 are unsigned annotated tags whose content contains, in
+order, exactly `object <40-lowercase-hex-oid>`, `type commit`, `tag <exact-basename>`, and
+`tagger <frozen-name> <frozen-email> <whole-second-epoch> +0000`, followed by one blank line, exact
+strict CanonicalJSON message bytes, and one LF. T0 uses `InputTagMessageV1` with exactly
+`schema_version`, `input_tag_ref`, `companion_tag_ref`, `peeled_c0_oid`,
+`protocol_reviewer_registry_sha256`, and `workflow_root`; it may name the deterministic future T1
+ref but contains no future commit, object, envelope, bundle, root, or receipt. T1 uses
+`ProtocolAttestationTagMessageV1` with exactly `schema_version`, `input_tag_ref`, `input_tag_oid`,
+`input_tag_object_sha256`, `companion_tag_ref`, `bundle_commit_oid`,
+`bundle_commit_object_sha256`, `protocol_attestation_bundle_sha256`, and
+`protocol_attestations_root`; it binds T0 and B0 but contains no T1 OID, T1 raw-object digest, or
+self-digest. An embedded tag signature or any fifth header is forbidden.
+
+Each R* commit contains, in order, exactly `tree`, one `parent`, frozen reviewer `author` and
+`committer` headers with identical whole-second epoch and `+0000`, and one mode-compatible `gpgsig`
+header with Git continuation lines, followed by one blank line and the exact ASCII message
+`laconian protocol review <T0> <role>: <statement_sha256>` plus one LF. Each protocol-registry entry
+therefore also freezes its canonical ASCII author/committer name and email. B0 contains exactly
+`tree`, one `parent`, frozen `ProtocolBundleBuilderGitIdentityV1` author and committer with identical
+whole-second epoch and `+0000`, one blank line, and
+`laconian protocol attestation bundle <T0>: <protocol_attestation_bundle_sha256>` plus one LF; it
+has no signature header. The builder identity has exactly `schema_version`, literal
+`name_ascii="Laconian Protocol Bundle Builder"`, literal
+`email_ascii="laconian-protocol-bundle-builder@users.noreply.github.com"`, and its domain-separated
+digest using `laconian-protocol-bundle-builder-git-identity-v1`. Every identity comes from verified C0 data. `encoding`, `mergetag`, a
+second/unknown/duplicate header, multiple signatures, tag signatures, CR, NUL, non-NFC or ambiguous
+Unicode, alternate timezone, extra blank line, alternate message, and any system/global/local Git
+configuration or author/committer environment influence are rejected. Golden vectors fix the
+complete raw bytes, SHA-1 OID, and `GitObjectSHA256V1` of both tags, all three reviewer commits, and
+B0; negative vectors cover every forbidden header, identity, timestamp, message, signature, config,
+namespace, creator, and bypass variant.
+
 ### 6.5.2 Statements, verified envelopes, and bundle
 
 Every object described here uses strict `CanonicalJSONV1`: UTF-8, NFC strings, bytewise-sorted
@@ -497,15 +541,37 @@ and registry rather than from the envelope. The two keyed variants additionally 
 `fingerprint`, `keyring_sha256`, and `local_signature_verification`; those fields are forbidden in
 the GitHub-only variant.
 
-`github_rest_verification` contains exactly `verified: true`, `reason: "valid"`, `payload`,
-`signature`, `verified_at`, `request_id`, and `response_sha256`, copied from and bound to the REST
-commit-verification response for the exact repository and commit OID. `payload` must byte-equal the
-signed commit payload reconstructed from the raw commit object, and `signature` must byte-equal its
-embedded signature. `github_graphql_signature` contains exactly `is_valid: true`, `state: "VALID"`,
-`signer_numeric_account_id`, `signer_login`, `request_id`, and `response_sha256`; the signer fields
-must byte-match the registry identity. A null signer, mismatched REST/GraphQL commit, stale response,
-missing field, extra field, or GitHub status accepted without the independently fetched raw Git
-object is invalid.
+`github_rest_verification` is stable allowlisted `GitHubCommitVerificationProjectionV1` and
+contains exactly `schema_version`, positive numeric `repository_id`, `commit_oid`, literal
+`api_version`, literal `endpoint`, `verified: true`, `reason: "valid"`, `payload`, `signature`,
+`verified_at`, and `rest_projection_sha256`. The API version and endpoint are fixed protocol
+constants: `X-GitHub-Api-Version: 2022-11-28` and
+`GET /repos/{owner}/{repo}/git/commits/{commit_oid}` with no alternate endpoint. The digest uses
+separator `laconian-github-commit-verification-projection-v1` over the
+canonical projection with only its digest omitted. `payload` byte-equals the signed commit payload
+reconstructed from the raw commit object and `signature` byte-equals its embedded signature.
+
+`github_graphql_signature` is stable allowlisted `GitHubSignatureProjectionV1` and contains exactly
+`schema_version`, the same numeric `repository_id`, `commit_oid`, fixed `query_sha256`, positive
+numeric `signer_database_id`, `signer_login`, `is_valid: true`, `state: "VALID"`, and
+`graphql_projection_sha256`. Its digest uses separator
+`laconian-github-signature-projection-v1` with only its digest omitted. The signer database ID/login
+are exact projections of GraphQL `signer.databaseId`/`signer.login` and byte-match the registry;
+the boolean/enum values are exact projections of `isValid`/`state`. Online freeze and preflight obtain both projections over
+authenticated TLS from GitHub for the exact repository/commit and compare them to the independently
+fetched raw commit. A null signer, mismatched repository/commit/projection, missing or extra field,
+or GitHub status accepted without the raw object is invalid.
+
+Variable transport evidence is forbidden from envelopes, B0, `ProtocolAttestationTagBindingV1`,
+`CampaignRegistryV1`, campaign ID, seeds, and plans. Instead each online observation writes a
+separate `GitHubSignatureObservationReceiptV1` containing exactly `schema_version`,
+`repository_id`, `commit_oid`, `rest_projection_sha256`, `graphql_projection_sha256`,
+`observed_at`, `request_ids`, `etags`, `raw_response_sha256s`, `canonical_response_sha256s`,
+`tls_endpoint_identity`, and `github_signature_observation_receipt_sha256`. These receipts are
+preflight/stage evidence only. Fresh observations may have different transport metadata but must
+reconstruct byte-identical stable projections. Offline replay verifies the frozen projection/raw
+Git-object relation and keyed signatures, but cannot independently authenticate GitHub as the
+origin of a `github_verified_commit` projection.
 
 For `ssh_sha256` and `openpgp_fingerprint`, `fingerprint` byte-matches the registry and statement,
 and `keyring_sha256` identifies the frozen public-key material included in the
@@ -523,7 +589,7 @@ or a self-asserted verification result are forbidden in the envelope.
 `protocol_attestations_root`, and `protocol_attestation_bundle_sha256`. `attestations` embeds the
 three complete verified envelopes in registry role order and each is byte-identical to its separate
 attestation blob. `protocol_attestations_root` uses separator
-`laconian-protocol-attestations-root-v1` over that canonical ordered array. The bundle digest uses
+`laconian-verified-protocol-attestations-root-v1` over that canonical ordered array. The bundle digest uses
 separator `laconian-protocol-attestation-bundle-v1` over the canonical bundle with only its final
 digest omitted. No B0 or T1 identity appears in the bundle.
 
@@ -550,7 +616,7 @@ workflow_root
 protocol_attestations_root
 protocol_attestation_bundle_sha256
 object_closure_root
-tag_ruleset_snapshot_root
+tag_ruleset_policy_root
 protocol_attestation_tag_binding_sha256
 ```
 
@@ -558,11 +624,37 @@ protocol_attestation_tag_binding_sha256
 commit_object_sha256}`. `object_closure_root` is the domain-separated digest of the canonical
 OID/type/size/raw-object-SHA-256 inventory for T0, C0, all tree and blob objects needed to reconstruct
 C0 and the four exact deltas, Rstat, Rjudge, Rsecurity, B0, and T1. C0 parent OIDs are recorded as
-boundary links but pre-C0 ancestry is outside this campaign closure. `tag_ruleset_snapshot_root`
-binds exact API receipts and canonical active rule evaluations for both full refs, including the
-update/delete prohibitions and every observed actor/bypass setting. The binding digest uses
+boundary links but pre-C0 ancestry is outside this campaign closure.
+
+`TagRulesetPolicyV1` is the closed stable semantic projection containing exactly `schema_version`,
+numeric `repository_id`, ordered `ruleset_ids`, `enforcement_states`, exact `target_patterns`,
+ordered `rules`, `creation_control`, `update_delete_control`, and `tag_ruleset_policy_root`.
+The closed nested projections bind rule types/canonical parameters, T0/T1 exact includes/excludes,
+the allowed tag-operator numeric ID/login, and the no-bypass update/delete actor sets. Its
+`tag_ruleset_policy_root` uses separator `laconian-tag-ruleset-policy-v1`. It explicitly excludes
+request IDs, `observed_at`, ETags, response/list ordering, headers, pagination, and all other
+transport metadata. The binding digest uses
 separator `laconian-protocol-attestation-tag-binding-v1` over the canonical object with only its
 final digest omitted.
+
+Every online check separately emits one `TagRulesetObservationReceiptV1` per ruleset read and one
+creation receipt per tag. Each contains exactly `schema_version`, `repository_id`, `ruleset_ids`,
+`ref`, nullable `actor_id`/`actor_login`, `rule_suite_result`, `bypass_state`,
+`tag_ruleset_policy_root`, `observed_at`, `request_ids`, `etags`, `raw_response_sha256s`,
+`canonical_response_sha256s`, `pagination_root`, and `tag_ruleset_observation_receipt_sha256`.
+Receipts are preflight/stage evidence and are excluded
+from `ProtocolAttestationTagBindingV1`, `CampaignRegistryV1`, campaign ID, seeds, and plans. A fresh
+receipt must project to the sealed policy root. Rechecking an unchanged pair and unchanged semantic
+policy therefore derives byte-identical tag binding, registry, campaign identity, seeds, and plans
+regardless of observation time or transport metadata.
+
+The durable archive is `ProtocolReviewObjectArchiveV1`, containing schema version, the
+`object_closure_root`, and the same canonical object order with each entry exactly `{oid, type,
+size, git_object_sha256, raw_content_base64}`, plus `protocol_review_object_archive_sha256`. It
+stores exact raw content bytes for every object in the closure, not merely an inventory. A
+network-free importer decodes every entry, reconstructs `type SP decimal-size NUL content`, verifies
+both hashes, reconstructs all trees/commits/tags and exact deltas, and rejects a missing, extra,
+duplicate, reordered, or byte-mismatched object before replay.
 
 The post-tag binding is first persisted only in secret-free preflight evidence and the append-only
 campaign authority; those are its only live authority sources. Downstream records and the final
@@ -580,7 +672,7 @@ attestation root. Preflight instead builds a `CampaignRegistryPayloadV1` contain
 `benchmark-` followed by the first 32 lowercase hex characters of that digest.
 `CampaignRegistryV1` contains exactly `schema_version`, `campaign_id`, `payload`, and
 `campaign_registry_sha256`; it rejects any ID not derived from its payload. Thus T1, B0, all three
-review commits, their verified signatures, and both ruleset snapshots bind campaign identity
+review commits, their verified signatures, and the stable tag-ruleset policy bind campaign identity
 without requiring any containing Git object to hash itself.
 
 Cardinality, order, numeric account ID, login, verification mode, fingerprint, canonical bytes,
@@ -647,9 +739,10 @@ A secret-free preflight:
 3. verifies T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 topology, fixed paths, canonical statements,
    envelopes, bundle, role order, subject roots, REST and GraphQL signature receipts, and required
    local keyed-signature checks;
-4. reads both refs again and requires byte-identical ref/OID pairs, then freezes both tag-ruleset
-   observations and constructs `ProtocolAttestationTagBindingV1`; any movement, deletion, creation
-   race, peel change, or ruleset mismatch discards the candidate preflight;
+4. reads both refs again and requires byte-identical ref/OID pairs, reconstructs the closed stable
+   `TagRulesetPolicyV1`, verifies separate creation-actor/rule-suite and current observation receipts,
+   and constructs `ProtocolAttestationTagBindingV1`; any movement, deletion, creation race, peel
+   change, wrong creator, bypass, or semantic policy mismatch discards the candidate preflight;
 5. validates the three static manifests and all captured C0-only inputs;
 6. constructs the canonical `CampaignRegistryV1`, derives `campaign_id` from
    `campaign_registry_sha256`, and uses that digest as the common downstream campaign binding;
@@ -765,7 +858,8 @@ The execution contract also uses:
 - `contents: read` and only the additional read permission needed to retrieve exact artifacts;
 - checkout of preflight-recorded detached C0 without persisted credentials, followed before each
   credential-bearing step by a fresh double-read of both exact refs and verification of the sealed
-  `campaign_registry_sha256`, T0/C0 and T1/B0 object bindings, ruleset snapshots, and no-drift
+  `campaign_registry_sha256`, T0/C0 and T1/B0 object bindings, stable ruleset policy root with fresh
+  observation receipts, and no-drift
   condition; and
 - timestamps for every provider attempt.
 
@@ -906,18 +1000,20 @@ contain the suspected credential bytes.
 The same closed reason enum contains `protocol_authority_drift`. It is allowed from every
 post-seal prepublication state, including `PREFLIGHTED`, and requires
 `ProtocolAuthorityDriftEvidenceV1` with exactly `schema_version`, `campaign_id`,
-`campaign_registry_sha256`, `parent_state`, `parent_authority_oid`,
+`campaign_registry_sha256`, `parent_state`, `parent_authority_oid`, `unresolved_hold_root`,
 `protocol_attestation_tag_binding_sha256`, `observed_input_ref_oid`,
-`observed_companion_ref_oid`, `observed_tag_ruleset_snapshot_root`, `failed_predicates`,
-`verification_receipts_root`, `observed_at`, and
+`observed_companion_ref_oid`, `observed_tag_ruleset_policy_root`, `failed_predicates`,
+`verification_receipts_root`, `complete_publication_pr_close_receipt_sha256`, `observed_at`, and
 `protocol_authority_drift_evidence_sha256`. An observed ref OID is null only when an exact
 authenticated absence receipt proves deletion. `failed_predicates` is a nonempty canonical ordered
 subset of `input_ref_moved`, `input_ref_deleted`, `companion_ref_moved`,
 `companion_ref_deleted`, `object_oid_mismatch`, `raw_object_sha256_mismatch`, `closure_mismatch`,
-`ruleset_drift`, `signature_identity_mismatch`, `topology_mismatch`, and
+`ruleset_drift`, `tag_creator_mismatch`, `creation_bypass`, `signature_identity_mismatch`, `topology_mismatch`, and
 `cross_campaign_replay`. Its digest uses separator
 `laconian-protocol-authority-drift-evidence-v1`. The event changes no external object, cannot adopt
-restored refs, and enters `STOPPED_INVALID`; after merge the existing release-invalidation or
+restored refs, and enters `STOPPED_INVALID`. The close-receipt field is nonnull only at
+`COMPLETE_PUBLICATION_PR_OPEN`, where it proves publisher-App closure of that exact PR before STOP,
+and is literal null at every other parent. After merge the existing release-invalidation or
 correction path applies instead of a new prepublication STOP.
 
 A secret-free `INVALID_EVENT_DISMISSED` proof may clear a benign hold in every state, including
@@ -929,9 +1025,9 @@ trigger actor, verifies and signs the dismissal; clearing the hold does not crea
 transition.
 
 For a nondismissible verified defect before merge, a valid `PERMANENT_STOP` cites the hold and takes
-the enumerated invalid path. The sole no-prior-hold exception is `credential_exposure`, whose
-incident evidence must instead prove the exact current hold root or proven absence as specified
-above. At `RESULT_MERGED`, the defect uses `RELEASE_PLAN_INVALIDATED`; at `RELEASED`, the state
+the enumerated invalid path. The only two no-prior-hold exceptions are `credential_exposure` and
+`protocol_authority_drift`; their typed evidence must prove the exact current hold root or proven
+absence as specified above. At `RESULT_MERGED`, the defect uses `RELEASE_PLAN_INVALIDATED`; at `RELEASED`, the state
 remains terminal and the defect starts a new correction lineage with an explicit `supersedes` hash.
 Correction invalidations have exactly two distinct kinds:
 `correction_publication_invalidation` and `correction_release_invalidation`. Their schemas,
@@ -971,7 +1067,7 @@ The allowed durable transitions are:
 | `RELEASE_BLOCKED` or `RELEASED` with active correction valid `merge-receipt.json`, `tag-receipt.json`, or `release-receipt.json` parent | `CORRECTION_INVALIDATED(kind=correction_release_invalidation)`: exact release-phase failure and external-object evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
-| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason and evidence; `credential_exposure` requires `CredentialExposureIncidentEvidenceV1`; an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
+| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason/evidence; `credential_exposure` requires `CredentialExposureIncidentEvidenceV1`; `protocol_authority_drift` requires `ProtocolAuthorityDriftEvidenceV1`; either reason at an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix | `INVALID_FINALIZED` | publish registry/incident only |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
@@ -1653,11 +1749,26 @@ release, uploads release assets, approves, or merges.
 
 Self-review and admin bypass are disabled where GitHub supports those controls. Deployment refs
 are restricted to the protected input-tag pattern; the paired attestation-tag pattern is separately
-protected against update and deletion and is never accepted as a workflow trigger. Both exact
-ruleset snapshots enter `ProtocolAttestationTagBindingV1`. Approval actors and deployment
+protected against update and deletion and is never accepted as a workflow trigger. The exact
+stable semantic ruleset policy root enters `ProtocolAttestationTagBindingV1`; variable observations
+remain separate receipts. Approval actors and deployment
 identities are retained in provenance. A platform administrator may technically bypass or later
 change a ruleset, so a ref name or ruleset is not immutable authority: exact Git OIDs,
 `GitObjectSHA256V1` values, the double-read receipts, and post-seal drift checks are mandatory.
+
+One universal gate applies immediately before **any** provider/App/OIDC credential mint, mapping,
+or use and before any external effect other than the read-only verification calls themselves. The
+responsible workflow, broker, or fixed tool freshly double-reads both exact refs, verifies both tag
+and peeled-object identities/raw hashes, reconstructs the stable `TagRulesetPolicyV1` projection
+from fresh `TagRulesetObservationReceiptV1` evidence, and matches the sealed companion binding and
+`campaign_registry_sha256`. A temporary inability to complete any read produces no token, effect,
+or state mutation. Proven drift before merge uses exactly the closed drift STOP matrix; after merge
+it uses only the existing release-invalidation/correction path. No cached preflight result,
+environment approval, durable intent, prior receipt, or idempotent retry bypasses this gate.
+On proven premerge drift the requested credential/effect remains forbidden; the only credentials
+that may then be minted are the state-writer token for the exact typed STOP CAS and, only at
+`COMPLETE_PUBLICATION_PR_OPEN`, the publisher token solely to close that exact PR and produce the
+required receipt before the STOP CAS. No other recovery or containment effect is allowed.
 
 All automated benchmark-workflow writes use exactly three installed, pairwise-distinct,
 repository-scoped GitHub Apps with actor IDs frozen in the security protocol and receipts:
@@ -1673,8 +1784,8 @@ repository-scoped GitHub Apps with actor IDs frozen in the security protocol and
 
 The companion-tag amendment adds no GitHub App, workflow, environment, credential, or secret. The
 existing 15-member workflow inventory and three-App topology remain exact; protocol reviewers and
-the operator create the serial review commits and paired annotated tags through protected human Git
-operations before preflight.
+the registered operator respectively create the serial review commits and paired annotated tags
+through protected human Git operations before preflight.
 
 The release-finalizer App installation also has `Administration: read`, but this does not add a
 fourth App or a write authority. A separate fixed `security_attestor` job in
@@ -1848,7 +1959,33 @@ only from one of those already enumerated predecessor states after proving a cit
 `InvalidEventHoldV1` whose source evidence matches the same phase-specific reason. No other
 predecessor, reason discriminator, caller, or wildcard STOP authority exists.
 
-Those ordinary reason grants do not subsume `credential_exposure`. That discriminator has this
+Those ordinary reason grants do not subsume either no-prior-hold exception.
+`protocol_authority_drift` has this literal exhaustive caller/current-parent/ref/reason matrix;
+every row requires `reason=protocol_authority_drift`, the exact current authority parent, stable
+policy projection, fresh double-read/observation receipts, and `ProtocolAuthorityDriftEvidenceV1`:
+
+| Drift caller | Exact current parent | Required triggering ref | Closed reason |
+|---|---|---|---|
+| `benchmark-batch.yml` | `PREFLIGHTED` | exact T0 | `protocol_authority_drift` |
+| `benchmark-batch.yml` | `GENERATION_RESUMABLE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-batch.yml` | `GENERATION_ACTIVE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-hard-score.yml` | `GENERATION_COMPLETE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-batch.yml` | `HARD_SCORE_COMPLETE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-batch.yml` | `JUDGE_RESUMABLE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-batch.yml` | `JUDGE_ACTIVE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-evidence.yml` | `JUDGE_COMPLETE` | exact T0 | `protocol_authority_drift` |
+| `benchmark-audit.yml` | `PROVIDER_EVIDENCE_VERIFIED` | exact plan-bound `main` | `protocol_authority_drift` |
+| `benchmark-analysis.yml` | `AUDIT_COMPLETE` | exact plan-bound `main` | `protocol_authority_drift` |
+| `benchmark-collect-complete.yml` | `ANALYSIS_COMPLETE` | exact plan-bound `main` | `protocol_authority_drift` |
+| `benchmark-publish.yml` | `BUNDLE_COLLECTED` | exact plan-bound `main` | `protocol_authority_drift` |
+| `benchmark-publish.yml` | `COMPLETE_PUBLICATION_PR_OPEN` | exact plan-bound `main` | `protocol_authority_drift`; exact PR close receipt required |
+
+No dismiss-hold caller, alternate scanner, other parent/ref/reason, or wildcard may emit drift
+STOP. The generated broker matrix contains each row exactly once so every edge is reachable. At
+`RESULT_MERGED` or later, the same proof authorizes only the existing release invalidation or
+correction path.
+
+`credential_exposure` has this
 separate exhaustive caller/parent matrix; every cell also requires the exact
 `CredentialExposureIncidentEvidenceV1` roots and receipts above:
 
@@ -1871,8 +2008,12 @@ that merely receives an unbound artifact ID or scanner assertion is denied.
 Pull-request refs, branches other than exact `main`, any other tag, a tag/object/commit mismatch,
 unlisted callers or called workflows, caller/callee SHA or byte mismatch, an unexpected
 `environment`, a different event/job/check-run/actor, and a stale expected OID are denied before
-token minting. The broker obtains a single-repository, short-lived installation token for one fixed
-state-writer invocation; the token never leaves the broker, expires within five minutes, and is
+token minting. For every authority mutation, including transition one, the broker itself performs
+the universal fresh pair/policy/registry gate immediately before OIDC exchange or App-token mint
+and again before receive-pack; a read failure yields no token/ref request/receipt/state, and drift
+uses only the exact current-parent matrix. The broker then obtains a single-repository, short-lived
+installation token for one fixed state-writer invocation; the token never leaves the broker,
+expires within five minutes, and is
 discarded immediately after the one expected-OID CAS. Its request ID, raw OIDC
 subject/claims, canonical identity projection, App actor, expiry, event kind and STOP reason,
 authority ref, expected/new OIDs, and broker decision are recorded in the state receipt. Policy
@@ -1908,7 +2049,7 @@ fields fail closed.
 The installed App account ID/login are therefore not obtained from an undefined “App registry.”
 Preflight reads this exact member from verified C0, matches its account ID/login against the
 repository installation and `StateBrokerCallerPolicyV1`, and requires its digest in the input
-registry and as the ordered `security_evidence` protocol-attestation subject. `PREFLIGHT_SEALED`,
+registry and as the ordered `security_evidence` protocol-review statement subject. `PREFLIGHT_SEALED`,
 every `CampaignEventV1`, publication/correction authority intent, `AuthorityMutationRequestV1`, and
 `AuthorityMutationReceiptV1` binds the same digest. A different identity requires a new input tag,
 paired companion tag, three new signed statements, bundle, and campaign; no authority ref may mix
@@ -2153,10 +2294,12 @@ The bundle includes:
   reviewer attestations;
 - both independent identity registries; all three canonical protocol-review statements; all three
   ordered verified envelopes; the bundle, attestation root, and bundle digest; frozen REST,
-  GraphQL, local-signature, double-read, and ruleset verification receipts; the 15-member workflow
-  inventory, derived member hashes, and common workflow root;
-- exact raw T0, C0, Rstat, Rjudge, Rsecurity, B0, and T1 objects plus the canonical campaign object
-  closure inventory needed to reconstruct every tree delta, Git SHA-1 OID, and
+  GraphQL and local-signature projections plus separate signature, double-read, creation-actor, and
+  ruleset observation receipts; the 15-member workflow inventory, derived member hashes, and common
+  workflow root;
+- exact `ProtocolReviewObjectArchiveV1` raw bytes for every T0, C0, tree/blob, Rstat, Rjudge,
+  Rsecurity, B0, and T1 closure object plus its deterministic manifest, sufficient for a
+  network-free importer to reconstruct every object, tree delta, Git SHA-1 OID, and
   `GitObjectSHA256V1` value offline;
 - exact cases, arm hashes, Caveman provenance, protocol hashes, and runner provenance;
 - all terminal and retry attempts, errors, exact applied-cache-control evidence, separate
@@ -2223,7 +2366,8 @@ base SHA, rechecks both protected tag refs against the sealed companion binding,
 `campaign_registry_sha256`, bundle digest, workflow root, and inventory, copies
 fixed allowlisted paths byte-for-byte, and verifies the exact expected tree diff and sealed commit
 root. It first persists the initial publication intent under section 7.6. Only then does its fixed
-byte-blind publisher step map the publisher-App credential; that step accepts only the intent,
+byte-blind publisher step reruns the universal fresh pair/policy/registry gate and maps the
+publisher-App credential; that step accepts only the intent,
 object roots, ref, and PR metadata and creates or adopts only the bound branch and pull request.
 Every missing receipt is reconciled before state advances. For an invalidated publication it may
 instead close only that exact plan-bound PR and must record the typed
@@ -2237,14 +2381,16 @@ resolution, exact-head validation, and human review apply. The publication contr
 maintainer with write access to verify the exact PR head SHA and sealed bundle digest and authorize
 the secret-free `publication-pr-validate` check required by branch protection. The publisher App
 cannot approve or merge its own PR. After human merge, a protected `ResultReleasePlanV1` binds the
-campaign, `campaign_registry_sha256`, both protocol tag bindings, bundle digest, exact publication
-PR and approved head, merge commit and result-tree digest, result tag name, release workflow SHA,
+campaign, `campaign_registry_sha256`, the single companion binding containing both tag identities,
+bundle digest, exact publication PR and approved head, merge commit and result-tree digest, result tag name, release workflow SHA,
 common workflow root, and asset digests.
 A separately approved `benchmark-publish` release-finalizer job rechecks the plan and prepares the
 annotated-tag object and sealed opaque assets before any write token is mapped. The separate
-downscoped security-attestor job first fetches the supported immutable-Releases setting through
+downscoped security-attestor job first passes the universal fresh pair/policy/registry gate before
+its OIDC/App-token request, then fetches the supported immutable-Releases setting through
 `GET /repos/{owner}/{repo}/immutable-releases`; a false/missing response fails closed. The fixed
-byte-blind finalizer step then persists `RESULT_RELEASE_INTENT_AUTHORIZED`, maps only the
+byte-blind finalizer step then persists `RESULT_RELEASE_INTENT_AUTHORIZED`, repeats the universal
+gate immediately before mapping only the
 release-finalizer App write token, accepts the bound intent/tag/release/asset roots, and creates or
 adopts the protected annotated `benchmark-result-<campaign-id>` tag at exactly the merge commit,
 checksum-bound draft GitHub Release, and exact assets. It reconciles receipts and performs or adopts
@@ -2333,14 +2479,19 @@ Implementation is test-driven and includes:
   Rsecurity, B0, and T1 Git SHA-1 OID and `GitObjectSHA256V1` value; strict
   `ProtocolReviewStatementV1`, mode-discriminated `VerifiedProtocolAttestationV1`,
   `ProtocolAttestationBundleV1`, and post-tag `ProtocolAttestationTagBindingV1` canonical-byte,
-  self-digest, ordered-root, path, delta, object-closure, REST/GraphQL signer, and local SSH/OpenPGP
-  verification vectors; malformed CanonicalJSON vectors explicitly reject floats, booleans where
+  self-digest, new noncolliding ordered-root domain, path, delta, exact raw-header/message grammar,
+  `ProtocolReviewObjectArchiveV1` network-free reconstruction, stable ruleset policy, stable
+  REST/GraphQL projections, separate observation receipts, signer, and local SSH/OpenPGP
+  verification vectors; repeated observations with different times/request IDs/ETags/orderings
+  derive identical tag binding/campaign ID/seeds/plans; malformed CanonicalJSON vectors explicitly reject floats, booleans where
   integers are required, numeric strings, non-NFC strings, duplicate keys, reordered arrays, and
   extra or missing fields; negative DAG vectors reject any attestation in C0, any envelope in its
-  own reviewer commit, wrong parent, path, role order or companion suffix, extra tree entry,
+  own reviewer commit, wrong parent, path, role order or companion suffix, extra tree entry/header,
   lightweight/nested/moved/deleted ref, mixed campaign, signature/identity/mode/fingerprint
-  mismatch, malformed or noncanonical JSON, ruleset drift, missing object, raw-object mismatch, or
-  cross-campaign replay;
+  mismatch, tag signature, encoding/mergetag/duplicate header, alternate timezone/config/message,
+  wrong/changed tag operator, namespace squat, creation/update/delete bypass, malformed or
+  noncanonical JSON, semantic ruleset drift, missing/archive-inventory-only object,
+  raw-object mismatch, or cross-campaign replay;
 - exact call-count, default-tier price-snapshot attestation, non-null cache-write rates,
   `BatchPlanV1`, single-use job receipt, distinct cache-read/cache-write
   reservation/reconciliation/evidence, duplicate/rerun rejection, STOP propagation, and
@@ -2371,6 +2522,9 @@ Implementation is test-driven and includes:
   parent, current roots, source upload, scanner and containment receipts, artifact denylist, and
   open-PR close receipt where applicable, and reject every reason alias, secret-bearing field,
   excluded parent, or incomplete receipt;
+  protocol-authority-drift vectors cover every literal caller/current-parent/ref/reason matrix row,
+  both no-prior-hold exceptions, null-versus-required complete-publication-PR close receipts, and
+  prove no wildcard, alternate caller, unreachable edge, restored-ref resume, or post-merge STOP;
 - campaign-binding golden and substitution tests proving `PREFLIGHT_SEALED`, authority genesis,
   every `CampaignEventV1`, `BatchPlanV1`, generation context, provider attachment, collector,
   publication/correction/release plan and receipt accept only the one sealed
@@ -2409,6 +2563,8 @@ Implementation is test-driven and includes:
   closed phase-specific `PERMANENT_STOP` caller/parent/reason allow and deny vector, including every
   allowed and forbidden credential-incident caller/state pair, per-batch environment approval,
   campaign concurrency, batch-controller ordering,
+  universal precredential/preeffect fresh-pair/policy/registry gate for state broker, provider,
+  publisher, security attestor, and release finalizer, temporary-read no-token/no-effect/no-state,
   step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
   policy tests;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
@@ -2446,10 +2602,12 @@ dependencies, but it has read-only repository permission and cannot make live mo
 
 Before constructing the confirmatory pair, the provider-offline synthetic run first constructs and
 replays the complete T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 DAG. The repository then configures and
-records active rulesets for both pilot tag patterns. On the frozen pilot C0, the operator creates an
+records the stable policy and active rulesets for both pilot tag patterns. On the frozen pilot C0,
+the registered tag operator creates an
 annotated pilot T0; the three registry reviewers add and sign their one-statement commits serially;
 the verifier creates B0 with only the three envelopes and bundle; and the operator creates the
-paired annotated pilot T1. Pilot preflight double-reads the two refs, verifies the exact closure and
+paired annotated pilot T1. Authenticated actor/rule-suite receipts prove the same registered
+operator and non-bypassed creation for both. Pilot preflight double-reads the two refs, verifies the exact closure and
 signatures, seals its own `CampaignRegistryV1`, and only then may a separately labeled operational
 pilot run one shared scenario in both languages, all four arms, one repetition, and all three
 generation models. At most 24 generation and 24 judge attempts are permitted, under the USD 5 cap.
@@ -2462,7 +2620,9 @@ and STOP behavior; returned-model and usage capture; rate behavior; checkpoint t
 schema; and cost accounting. It is never benchmark evidence. The corpus and decision thresholds
 cannot be tuned to make the observed pilot effect favorable. A required protocol or implementation
 fix creates a new pilot pair, three new reviewer statements and signatures, a new bundle, and a new
-pilot campaign identity; no object or attestation from the failed pair is reused. The confirmatory
+pilot campaign identity. Pair-specific statements, reviewer commits, envelopes, B0, T1, and the
+post-tag binding from the failed pair are never reused; unchanged content-addressed C0 subobjects
+may naturally recur under their identical object IDs. The confirmatory
 pair is created only after the implementation is frozen and reverified.
 
 ### 14.3 Confirmatory sequence
@@ -2481,13 +2641,16 @@ After that exact reapproval and the still-required implementation, the release s
 2. the live operational pilot in section 14.2 is green under its own non-reusable pair;
 3. final code, manifests, methods, settings, seeds, price snapshot, both identity registries, exact
    protocol subjects, and `StateWriterGitIdentityV1` are frozen in C0;
-4. both final tag-pattern rulesets are active and their exact trust-boundary snapshot is recorded;
-5. the operator creates final annotated T0 on C0;
+4. both final tag-pattern rulesets are active, their stable semantic policy root is frozen, and
+   separate trust-boundary observation receipts are recorded;
+5. the registered tag operator creates final annotated T0 on C0 and records its authenticated
+   non-bypassed creation actor/rule-suite receipt;
 6. Rstat, Rjudge, and Rsecurity each add exactly their fixed-path statement and commit-sign it in
    registry order; the verifier requires workflow security, judge/audit, and statistical review to
    be green against the common workflow root;
 7. the verifier creates B0 with only the three verified envelopes and bundle delta, and the
-   operator creates deterministic paired annotated T1 on B0;
+   same registered operator creates deterministic paired annotated T1 on B0 and records the second
+   authenticated non-bypassed creation receipt;
 8. preflight double-reads both refs, verifies the exact object closure, tag rulesets, registry,
    statements, signatures, envelopes, roots, and bundle, constructs
    `ProtocolAttestationTagBindingV1` and `CampaignRegistryV1`, verifies
@@ -2584,6 +2747,11 @@ collection, or complete-publication stage.
   Serialized exact pre-read/effect/post-read adoption closes ordinary and correction crash retries,
   but a conflicting external object terminates through the typed invalidation path and remains
   disclosed evidence rather than being rewritten.
+- `github_verified_commit` deliberately trusts the authenticated online GitHub REST/GraphQL
+  observations frozen by preflight. Offline replay can prove that the stable projections match the
+  archived raw commit and preserved observation receipts, but cannot independently authenticate
+  GitHub as their historical origin. SSH/OpenPGP modes additionally retain locally verifiable
+  cryptographic evidence and do not have this particular limitation.
 - Historical repository rule suites are retained by GitHub for a bounded period, so the read-only
   attestor must persist the exact suite promptly; delayed recovery without that record fails closed.
   GitHub's immutable-Releases feature locks the published tag and assets, but this design does not
@@ -2673,17 +2841,21 @@ The system is ready for the full campaign only when:
 - C0 and `CampaignInputPackageV1` contain no protocol-review statement, envelope, attestation root,
   or companion binding; T0 and T1 are annotated-only protected deterministic pairs; the exact
   serial C0/Rstat/Rjudge/Rsecurity/B0 topology, one-parent fixed-path reviewer deltas, B0-only
-  three-envelope/bundle delta, strict CanonicalJSON schemas, REST/GraphQL and local keyed-signature
-  verification, and every Git SHA-1/raw-object SHA-256 golden vector verify; preflight double-reads
-  both refs and exact closure, freezes both ruleset snapshots, and rejects movement, deletion,
+  three-envelope/bundle delta, exact raw tag/commit header and canonical-message grammar, strict
+  CanonicalJSON schemas, stable REST/GraphQL projections, separate transport receipts, local
+  keyed-signature verification, same frozen tag operator with non-bypassed create receipts, and
+  every Git SHA-1/raw-object SHA-256 golden vector verify; preflight double-reads both refs and exact
+  closure, verifies the stable policy root with fresh separate receipts, and rejects movement, deletion,
   substitution, mixed campaigns, wrong identity/path/parent/order, malformed bytes, missing objects,
   or repair in place;
 - `ProtocolAttestationTagBindingV1` originates only in preflight/authority evidence as live
   authority and is copied downstream only through the sealed registry; canonical
   `CampaignRegistryV1` derives campaign ID from its payload and binds T0/C0, all three reviewer
-  commits, B0/T1, signatures, bundle/root, workflow and rulesets; `campaign_registry_sha256` is
+  commits, B0/T1, signatures, bundle/root, workflow and stable ruleset policy; observation metadata
+  cannot change identity; `campaign_registry_sha256` is
   unchanged in authority genesis, every event and `BatchPlanV1`, generation context, provider/audit/
-  analysis evidence, collector, publication/correction/release records, and offline archive;
+  analysis evidence, collector, publication/correction/release records, and exact-byte
+  `ProtocolReviewObjectArchiveV1`, whose network-free importer reconstructs every closure object;
 - the exact ordered 15-path workflow inventory derives its member hashes and common root only from
   verified C0 bytes, and protocol statements/envelopes, generation context, provider projection, and
   publication all verify that same root;
@@ -2708,7 +2880,10 @@ The system is ready for the full campaign only when:
   provider-key/model-output overlap; the same exactly-three-App topology supplies a separately
   downscoped, read-only Administration/Metadata/Contents security-attestor token whose returned
   permissions and exact rule-suite/immutable-setting reads are receipt-bound and contain no write
-  scope;
+  scope; every provider/App/OIDC credential and external effect is preceded by the universal fresh
+  pair/policy/registry gate, temporary read failure creates no token/effect/state, and every
+  premerge drift edge uses the literal exhaustive matrix and typed evidence/close receipt while
+  post-merge drift uses only release invalidation or correction;
 - serial protocol-reviewer statement commits, audit-reviewer commits/PRs, tag-operator acts,
   maintainer validations/approvals, and protected human merges remain distinct human authorities
   and cannot be replaced by any automated App or workflow;
@@ -2771,7 +2946,7 @@ the integrity, coverage, quality, audit, and publication gates in this specifica
 - [Git receive-pack protocol](https://git-scm.com/docs/gitprotocol-pack.html)
 - [GitHub Git references API](https://docs.github.com/en/rest/git/refs)
 - [GitHub Git commits and verification object](https://docs.github.com/en/rest/git/commits)
-- [GitHub GraphQL `GitSignature`](https://docs.github.com/en/graphql/reference/git-objects#gitsignature)
+- [GitHub GraphQL `GitSignature`](https://docs.github.com/en/graphql/reference/git#gitsignature)
 - [GitHub rules available for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 - [GitHub repository rule suites](https://docs.github.com/en/rest/repos/rule-suites)
 - [GitHub immutable-Releases setting](https://docs.github.com/en/rest/repos/repos#check-if-immutable-releases-are-enabled-for-a-repository)
