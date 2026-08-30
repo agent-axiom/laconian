@@ -68,10 +68,31 @@ codex plugin marketplace remove laconian --json
 如需单独安装固定版本的单文件技能：
 
 ```bash
-mkdir -p "$HOME/.agents/skills/if"
-curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
-  -o "$HOME/.agents/skills/if/SKILL.md"
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  mkdir -p "$skill_dir"
+  test ! -e "$skill_target"
+  test ! -L "$skill_target"
+  skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
+  trap 'rm -f "$skill_tmp"' EXIT
+  curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" -o "$skill_tmp"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_tmp")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_tmp")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  chmod 0644 "$skill_tmp"
+  ln "$skill_tmp" "$skill_target"
+)
 ```
+
+安装程序会拒绝覆盖目标位置已有的任何路径。
 
 单文件技能以 `$if` 调用。验证复制结果：
 
@@ -79,11 +100,27 @@ curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-卸载单文件版本时，只删除复制的目标文件，再删除已空的目录：
+卸载单文件版本时，只接受未经修改的常规文件，并拒绝符号链接以及被修改或替换的文件；
+这些情况必须手动检查。目录只有在为空时才会删除：
 
 ```bash
-rm "$HOME/.agents/skills/if/SKILL.md"
-rmdir "$HOME/.agents/skills/if"
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test -f "$skill_target"
+  test ! -L "$skill_target"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_target")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_target")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  rm "$skill_target"
+  rmdir "$skill_dir" 2>/dev/null || true
+)
 ```
 
 ## 四组对照基准

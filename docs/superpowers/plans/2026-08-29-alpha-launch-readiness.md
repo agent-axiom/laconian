@@ -821,12 +821,33 @@ codex plugin remove laconian@laconian --json
 codex plugin marketplace remove laconian --json
 ```
 
-Provide the standalone path:
+Provide the hardened standalone path. It refuses a symlinked skill directory or any existing target,
+downloads to a same-directory temporary file, verifies the canonical digest, and installs with a
+no-clobber hard link:
 
 ```bash
-mkdir -p "$HOME/.agents/skills/if"
-curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
-  -o "$HOME/.agents/skills/if/SKILL.md"
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  mkdir -p "$skill_dir"
+  test ! -e "$skill_target"
+  test ! -L "$skill_target"
+  skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
+  trap 'rm -f "$skill_tmp"' EXIT
+  curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" -o "$skill_tmp"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_tmp")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_tmp")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  chmod 0644 "$skill_tmp"
+  ln "$skill_tmp" "$skill_target"
+)
 ```
 
 State that standalone invocation is `$if`, and verify the copy with:
@@ -835,11 +856,27 @@ State that standalone invocation is `$if`, and verify the copy with:
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-Under a separate uninstall label, remove only the exact copied target:
+Under a separate uninstall label, remove only an unchanged canonical regular file. Refuse symlinks
+and modified or replaced files for manual inspection, and leave any nonempty directory intact:
 
 ```bash
-rm "$HOME/.agents/skills/if/SKILL.md"
-rmdir "$HOME/.agents/skills/if"
+(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test -f "$skill_target"
+  test ! -L "$skill_target"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_target")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_target")"
+  fi
+  skill_actual_sha256="${skill_actual_sha256%% *}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  rm "$skill_target"
+  rmdir "$skill_dir" 2>/dev/null || true
+)
 ```
 
 - [ ] **Step 4: Add alpha release notes and changelog boundary**

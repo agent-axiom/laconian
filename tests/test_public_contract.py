@@ -45,8 +45,47 @@ MARKETPLACE_REMOVE = "codex plugin marketplace remove laconian --json"
 STANDALONE_URL = (
     "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md"
 )
-STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
-STANDALONE_RMDIR = 'rmdir "$HOME/.agents/skills/if"'
+STANDALONE_SHA256 = "5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+STANDALONE_INSTALL_BLOCK = f"""(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="{STANDALONE_SHA256}"
+  test ! -L "$skill_dir"
+  mkdir -p "$skill_dir"
+  test ! -e "$skill_target"
+  test ! -L "$skill_target"
+  skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
+  trap 'rm -f "$skill_tmp"' EXIT
+  curl -fsSL "{STANDALONE_URL}" -o "$skill_tmp"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_tmp")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_tmp")"
+  fi
+  skill_actual_sha256="${{skill_actual_sha256%% *}}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  chmod 0644 "$skill_tmp"
+  ln "$skill_tmp" "$skill_target"
+)"""
+STANDALONE_UNINSTALL_BLOCK = f"""(
+  set -eu
+  skill_dir="$HOME/.agents/skills/if"
+  skill_target="$skill_dir/SKILL.md"
+  skill_expected_sha256="{STANDALONE_SHA256}"
+  test -f "$skill_target"
+  test ! -L "$skill_target"
+  if command -v sha256sum >/dev/null 2>&1; then
+    skill_actual_sha256="$(sha256sum "$skill_target")"
+  else
+    skill_actual_sha256="$(shasum -a 256 "$skill_target")"
+  fi
+  skill_actual_sha256="${{skill_actual_sha256%% *}}"
+  test "$skill_actual_sha256" = "$skill_expected_sha256"
+  rm "$skill_target"
+  rmdir "$skill_dir" 2>/dev/null || true
+)"""
+UNSAFE_STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
 SOCIAL_CARD_RENDER = (
     "magick -background none assets/social/laconian-alpha.svg -strip "
     "assets/social/laconian-alpha.png"
@@ -91,11 +130,44 @@ def test_every_readme_has_pinned_install_paths(filename: str) -> None:
     assert "$laconian:if" in text
     assert "$if" in text
     assert "<agent-skills-directory>" not in text
+    assert text.count(STANDALONE_INSTALL_BLOCK) == 1
+    assert text.count(STANDALONE_UNINSTALL_BLOCK) == 1
+    assert UNSAFE_STANDALONE_REMOVE not in text
+    assert '-o "$HOME/.agents/skills/if/SKILL.md"' not in text
 
-    rm_lines = [line for line in text.splitlines() if line.startswith("rm ")]
-    rmdir_lines = [line for line in text.splitlines() if line.startswith("rmdir ")]
-    assert rm_lines == [STANDALONE_REMOVE]
-    assert rmdir_lines == [STANDALONE_RMDIR]
+
+def test_standalone_lifecycle_is_collision_safe_and_hash_pinned() -> None:
+    assert hashlib.sha256((ROOT / "skills/if/SKILL.md").read_bytes()).hexdigest() == (
+        STANDALONE_SHA256
+    )
+
+    install = STANDALONE_INSTALL_BLOCK
+    assert install.index('test ! -L "$skill_dir"') < install.index('mkdir -p "$skill_dir"')
+    for guard in ('test ! -e "$skill_target"', 'test ! -L "$skill_target"'):
+        assert guard in install
+    assert 'mktemp "$skill_dir/.SKILL.md.XXXXXX"' in install
+    assert "trap 'rm -f \"$skill_tmp\"' EXIT" in install
+    assert "EXIT HUP INT TERM" not in install
+    assert f'curl -fsSL "{STANDALONE_URL}" -o "$skill_tmp"' in install
+    assert '-o "$skill_target"' not in install
+    assert 'ln "$skill_tmp" "$skill_target"' in install
+    assert 'mv "$skill_tmp" "$skill_target"' not in install
+
+    uninstall = STANDALONE_UNINSTALL_BLOCK
+    assert 'test -f "$skill_target"' in uninstall
+    assert 'test ! -L "$skill_target"' in uninstall
+    hash_guard = 'test "$skill_actual_sha256" = "$skill_expected_sha256"'
+    assert uninstall.index(hash_guard) < uninstall.index('rm "$skill_target"')
+    assert 'rmdir "$skill_dir" 2>/dev/null || true' in uninstall
+    for block in (install, uninstall):
+        assert "command -v sha256sum" in block
+        assert "shasum -a 256" in block
+
+    plan = _read("docs/superpowers/plans/2026-08-29-alpha-launch-readiness.md")
+    assert STANDALONE_INSTALL_BLOCK in plan
+    assert STANDALONE_UNINSTALL_BLOCK in plan
+    assert UNSAFE_STANDALONE_REMOVE not in plan
+    assert '-o "$HOME/.agents/skills/if/SKILL.md"' not in plan
 
 
 def test_greek_readme_describes_a_specific_pinned_version() -> None:
