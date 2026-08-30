@@ -1324,6 +1324,10 @@ the two active pending fields. The effect event requires exactly one next ordina
 is SHA-256 of `UTF8("laconian-credential-exposure-effect-receipt-v1\n") ||
 CanonicalJSONV1(receipt without exactly credential_exposure_effect_receipt_sha256)`. The event
 is a self-loop that advances transition and pending-progress root without changing campaign state.
+Every receipt's `campaign_id` and `incident_id` byte-equal its unique originating
+`CredentialExposurePendingV1`, and `pending_root` equals that record's
+`credential_exposure_pending_sha256`; a cross-campaign, cross-incident, or cross-pending value is
+invalid even when the predecessor progress root and ordinal otherwise verify.
 
 `CredentialExposureProgressRootV1` is a calculated projection, not a stored self-containing
 record. Its exact fields are `schema_version`, `campaign_id`, `incident_id`,
@@ -2229,7 +2233,7 @@ only while this invariant is enforced.
 | `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
 | `benchmark-finalize-invalid.yml` | exact campaign input tag or protected current `main` under the safe-invalid exception | `INVALID_PREFIX_SEALED` |
 | `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
-| `benchmark-publish.yml` | exact plan-bound `main`; current protected `main` additionally only at `COMPLETE_PUBLICATION_PR_OPEN` under proven drift for credential handling; plus exact six post-merge rules | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, both typed publication `CORRECTION_INVALIDATED` outcomes; the current-main credential exception admits only `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, publisher-only close, and final `PERMANENT_STOP(reason=credential_exposure)` |
+| `benchmark-publish.yml` | exact plan-bound `main`; current protected `main` additionally only at `COMPLETE_PUBLICATION_PR_OPEN` under proven drift for credential handling; plus exact six post-merge rules | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, both typed publication `CORRECTION_INVALIDATED` outcomes; the current-main credential exception admits only the two credential events, publisher-only close, and final `PERMANENT_STOP(reason=credential_exposure)` |
 | `benchmark-release.yml` | exact plan-bound `main` | `RESULT_RELEASE_INTENT_AUTHORIZED`, `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
 
 `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, and `CORRECTION_MERGE_RECORDED` are the only successful
@@ -3074,9 +3078,10 @@ Implementation is test-driven and includes:
   ordered close/effect, and final credential STOP from byte-identical frozen workflows, and reject
   every other publish event under that exception;
   progress-root golden vectors cover empty initialization, ordinal 1, multi-link successors,
-  zero-padded paths, predecessor mismatch, gap/reorder/replay, terminal chain equality, exact final
-  consumption/clear, and supplement construction without a second STOP event; every incident caller
-  row including open-PR close is reachable in pending/effect/final order;
+  zero-padded paths, predecessor mismatch, pending-root/campaign/incident mismatch and cross-pending
+  replay, gap/reorder/replay, terminal chain equality, exact final consumption/clear, and supplement
+  construction without a second STOP event; every incident caller row including open-PR close is
+  reachable in pending/effect/final order;
 - exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
   provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
   human/App authority separation, OIDC state-broker exact identity projection, fully qualified
