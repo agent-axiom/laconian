@@ -72,23 +72,48 @@ calls`, οὐ `minify` ποιεῖ τὸν `code`, οὐ συμπιέζει τ�
 
 ## Ἐγκατάστασις καὶ ἀφαίρεσις
 
-Τὸ ἓν ἀρχεῖον τοῦ `skill` εἰς τὸν κατάλογον `if` τοῦ `agent host` ὃς
-`Markdown skills` δέχεται ἀντίγραψον:
+Ἁ προτιμητὰ ἐγκατάστασις διὰ τοῦ ἀπὸ τοῦ ἀποθετηρίου `plugin`, τᾶς ἐκδόσιος
+ὡρισμένας ἐούσας:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Τὸ ἀντίγραφον ἄφελε, εἰ ἀφαιρεῖν βούλει:
+Τὸ ἐγκατασταθὲν `skill` τῷ `$laconian:if` κάλει. Αἴκα μὴ παραχρῆμα φαίνηται,
+καινὸν `task` ἄρξαι ἢ τὸν Codex ἀναστᾶσαι χρῄζει. Τὰν εὕρεσιν δοκίμασον:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-Ὁ `placeholder` καθ’ ἕκαστον `host` ἴδιος ἐστίν. Τὸ `walking skeleton` οὔπω
-φάσκει πᾶσι τοῖς ὀνομαζομένοις `agent hosts` τὰν ἐγκατάστασιν δεδοκιμακέναι.
+Ἀφαίρεσις τοῦ `plugin`:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+Εἰ δὲ τὸ ἓν ἀρχεῖον, τᾶς ἐκδόσιος ὡρισμένας, αὐτὸ μόνον ἐγκαθιστάμεν:
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Τὸ καθ᾽ αὑτὸ `skill` τῷ `$if` κάλει. Τὸ ἀντίγραφον τῷδε δοκίμασον:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Ἁ καθ᾽ αὑτὸ ἀφαίρεσις μόνον τὸ ἀντίγραφον, εἶτα τὸν κενὸν κατάλογον ἀφαιρεῖ:
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## `Benchmark` τεσσάρων `arms`
 

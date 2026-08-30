@@ -54,23 +54,47 @@ assets, κλήσεις δικτύου ή οδηγίες εργαλείων ει�
 
 ## Εγκατάσταση και απεγκατάσταση
 
-Αντιγράψτε το μοναδικό αρχείο της δεξιότητας στον κατάλογο `if` ενός συστήματος πρακτόρων που
-υποστηρίζει δεξιότητες Markdown:
+Η προτεινόμενη μέθοδος είναι η εγκατάσταση του πρόσθετου από το αποθετήριο, με σταθερή έκδοση:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Για απεγκατάσταση, αφαιρέστε το αρχείο που αντιγράψατε:
+Καλέστε την εγκατεστημένη δεξιότητα ως `$laconian:if`. Αν δεν εμφανιστεί αμέσως, ξεκινήστε νέα
+εργασία ή επανεκκινήστε το Codex. Επαληθεύστε τον εντοπισμό της με:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-Η θέση του placeholder εξαρτάται από το σύστημα. Ο λειτουργικός σκελετός δεν ισχυρίζεται ακόμη ότι
-καλύπτει την εγκατάσταση σε συγκεκριμένα συστήματα πρακτόρων.
+Απεγκατάσταση πρόσθετου:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+Για αυτόνομη εγκατάσταση του ενός αρχείου, με σταθερή έκδοση:
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Καλέστε την αυτόνομη δεξιότητα ως `$if`. Επαληθεύστε το αντίγραφο με:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Η αυτόνομη απεγκατάσταση αφαιρεί μόνο το αντιγραμμένο αρχείο και έπειτα τον κενό κατάλογο:
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## Benchmark τεσσάρων σκελών
 

@@ -44,21 +44,47 @@ URL、标识符、引文和机器可读结构。
 
 ## 安装与卸载
 
-将这一个技能文件复制到支持 Markdown 技能的智能体宿主的 `if` 目录中：
+推荐从仓库安装已固定版本的插件：
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-卸载时，删除复制的文件：
+安装后以 `$laconian:if` 调用该技能。如果没有立即显示，请新建任务或重启 Codex。
+可用以下命令验证发现结果：
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-占位符的具体值取决于宿主。这个基础骨架目前尚未宣称覆盖任何具名智能体宿主的安装方式。
+卸载插件：
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+如需单独安装固定版本的单文件技能：
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+单文件技能以 `$if` 调用。验证复制结果：
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+卸载单文件版本时，只删除复制的目标文件，再删除已空的目录：
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## 四组对照基准
 

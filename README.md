@@ -48,22 +48,47 @@ required length. It makes no promise that every agent or model will respond iden
 
 ## Install and uninstall
 
-Copy the one skill file into the `if` directory of an agent host that supports Markdown skills:
+The recommended route is the pinned repository plugin:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Remove that copied file to uninstall it:
+Invoke the installed skill as `$laconian:if`. Start a new task or restart Codex if it does not
+appear immediately. Verify discovery with:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-The placeholder is host-specific. The walking skeleton does not yet claim installation coverage
-across named agent hosts.
+Plugin uninstall:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+For a standalone, pinned one-file installation:
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Invoke the standalone skill as `$if`. Verify the copied file with:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Standalone uninstall removes only the copied target and then its now-empty directory:
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## Four-arm benchmark
 

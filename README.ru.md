@@ -54,23 +54,47 @@ smoke-тесты, четыре варианта сравнения, офлайн
 
 ## Установка и удаление
 
-Скопируйте единственный файл навыка в каталог `if` среды агента, поддерживающей навыки в
-формате Markdown:
+Рекомендуемый способ — установить плагин из репозитория, закрепив версию:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Чтобы удалить навык, удалите скопированный файл:
+Установленный навык вызывается как `$laconian:if`. Если он появился не сразу, откройте новую
+задачу или перезапустите Codex. Проверить обнаружение можно так:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-Подстановка зависит от среды. Минимальный каркас пока не заявляет поддержку установки во
-всех перечисленных средах агентов.
+Удаление плагина:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+Для отдельной установки закреплённого однофайлового навыка:
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Отдельный навык вызывается как `$if`. Проверьте скопированный файл:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+При удалении отдельной установки удаляется только скопированный файл, а затем пустой каталог:
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## Бенчмарк с четырьмя вариантами
 

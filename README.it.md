@@ -53,23 +53,47 @@ promette che ogni agente o modello risponda allo stesso modo.
 
 ## Installazione e disinstallazione
 
-Copiare l'unico file della skill nella directory `if` di un host per agenti che supporti skill
-in Markdown:
+La modalità consigliata consiste nell'installare il plugin dal repository con una versione fissata:
 
 ```bash
-mkdir -p "<agent-skills-directory>/if"
-cp skills/if/SKILL.md "<agent-skills-directory>/if/SKILL.md"
+codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json
+codex plugin add laconian@laconian --json
 ```
 
-Per disinstallarla, rimuovere il file copiato:
+Invocare la skill installata con `$laconian:if`. Se non appare subito, avviare una nuova attività
+o riavviare Codex. Verificarne il rilevamento con:
 
 ```bash
-rm "<agent-skills-directory>/if/SKILL.md"
-rmdir "<agent-skills-directory>/if"
+codex plugin list --marketplace laconian --json
 ```
 
-Il segnaposto dipende dall'host. Lo scheletro funzionante non dichiara ancora una copertura
-dell'installazione su host per agenti specifici.
+Disinstallazione del plugin:
+
+```bash
+codex plugin remove laconian@laconian --json
+codex plugin marketplace remove laconian --json
+```
+
+Per un'installazione autonoma del singolo file con versione fissata:
+
+```bash
+mkdir -p "$HOME/.agents/skills/if"
+curl -fsSL "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md" \
+  -o "$HOME/.agents/skills/if/SKILL.md"
+```
+
+Invocare la skill autonoma con `$if`. Verificare il file copiato con:
+
+```bash
+test -s "$HOME/.agents/skills/if/SKILL.md"
+```
+
+La disinstallazione autonoma rimuove soltanto il file copiato e poi la directory rimasta vuota:
+
+```bash
+rm "$HOME/.agents/skills/if/SKILL.md"
+rmdir "$HOME/.agents/skills/if"
+```
 
 ## Benchmark a quattro bracci
 

@@ -34,6 +34,16 @@ SOURCE_URLS = (
 )
 CAVEMAN_COMMIT = "781c384cafc28d7ca392014dbab569f985b5b2fd"
 CAVEMAN_SHA256 = "1eddf7055618153869975678d9ff36635602a3aa333f8b4cc0787f12de75b6f8"
+PLUGIN_ADD = "codex plugin marketplace add agent-axiom/laconian --ref v0.1.0-alpha.1 --json"
+PLUGIN_INSTALL = "codex plugin add laconian@laconian --json"
+PLUGIN_LIST = "codex plugin list --marketplace laconian --json"
+PLUGIN_REMOVE = "codex plugin remove laconian@laconian --json"
+MARKETPLACE_REMOVE = "codex plugin marketplace remove laconian --json"
+STANDALONE_URL = (
+    "https://raw.githubusercontent.com/agent-axiom/laconian/v0.1.0-alpha.1/skills/if/SKILL.md"
+)
+STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
+STANDALONE_RMDIR = 'rmdir "$HOME/.agents/skills/if"'
 
 
 def _read(path: str) -> str:
@@ -45,6 +55,25 @@ def _read(path: str) -> str:
 @pytest.mark.parametrize("filename", README_FILES.values())
 def test_all_six_readme_editions_exist(filename: str) -> None:
     assert (ROOT / filename).is_file(), f"missing README edition: {filename}"
+
+
+@pytest.mark.parametrize("filename", README_FILES.values())
+def test_every_readme_has_pinned_install_paths(filename: str) -> None:
+    text = _read(filename)
+    assert PLUGIN_ADD in text
+    assert PLUGIN_INSTALL in text
+    assert PLUGIN_LIST in text
+    assert PLUGIN_REMOVE in text
+    assert MARKETPLACE_REMOVE in text
+    assert STANDALONE_URL in text
+    assert "$laconian:if" in text
+    assert "$if" in text
+    assert "<agent-skills-directory>" not in text
+
+    rm_lines = [line for line in text.splitlines() if line.startswith("rm ")]
+    rmdir_lines = [line for line in text.splitlines() if line.startswith("rmdir ")]
+    assert rm_lines == [STANDALONE_REMOVE]
+    assert rmdir_lines == [STANDALONE_RMDIR]
 
 
 @pytest.mark.parametrize("filename", README_FILES.values())
@@ -171,6 +200,8 @@ def test_notice_maps_new_public_documentation_to_cc_by() -> None:
         "CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, and evals/README.md: CC-BY-4.0."
         in notice.splitlines()
     )
+    assert ".codex-plugin/, .agents/, and tools/: Apache-2.0." in notice.splitlines()
+    assert "assets/social/ and docs/social/: CC-BY-4.0." in notice.splitlines()
 
 
 def test_core_public_document_files_exist() -> None:
@@ -345,9 +376,37 @@ def test_security_uses_private_reporting_and_names_scope() -> None:
         assert phrase.casefold() in text.casefold()
 
 
-def test_changelog_starts_unreleased_without_a_release_date() -> None:
+def test_changelog_keeps_unreleased_and_records_the_alpha_boundary() -> None:
     text = _read("CHANGELOG.md")
     assert "## [Unreleased]" in text
+    assert "## [0.1.0-alpha.1] - 2026-08-30" in text
     assert "walking skeleton" in text
     assert "No public benchmark result" in text
-    assert re.search(r"^## \[v?\d[^]]*\]", text, flags=re.MULTILINE) is None
+
+
+def test_alpha_release_notes_describe_only_the_experimental_release() -> None:
+    text = _read("docs/releases/v0.1.0-alpha.1.md")
+    for phrase in (
+        "one-file skill",
+        "repo plugin",
+        "Python 3.11 and 3.14",
+        "SHA-256",
+        "experimental alpha",
+        "No public benchmark result",
+    ):
+        assert phrase.casefold() in text.casefold()
+
+
+def test_social_launch_copy_is_explicitly_experimental() -> None:
+    text = _read("docs/social/alpha-launch.md")
+    assert "Illustrative edit, not benchmark output." in text
+    assert "Иллюстративное редактирование, не результат бенчмарка." in text
+    assert "No public benchmark result" in text
+    assert "one-file workflow" in text
+    assert "experimental alpha" in text
+    assert "open benchmark under development" in text
+    assert "proven" in text
+    assert "numeric token savings" in text
+    assert "benchmark winner" in text
+    assert "universal-directory listing" in text
+    assert re.search(r"\b\d+(?:[.,]\d+)?\s*%", text) is None
