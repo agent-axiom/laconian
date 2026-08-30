@@ -148,7 +148,8 @@ All three models use the Responses API with explicit, captured settings:
 - no tools;
 - no conversation carry-over or prior response;
 - `store: false`;
-- explicit cache mode that has no breakpoint and cannot write;
+- literal `prompt_cache_options: {"mode": "explicit", "ttl": "30m"}` and no cache
+  breakpoint;
 - no temperature value sent; and
 - the existing `system_suffix` instruction placement.
 
@@ -184,19 +185,99 @@ returned-tier evidence is `missing`; any non-`default` evidence is `mismatch`. E
 full worst-case exposure, durably appends STOP, and permits zero later provider calls.
 
 Cache reads and cache writes are distinct request, evidence, usage, pricing, reservation,
-reconciliation, and accounting dimensions. The tagged API contract uses an explicit
-no-breakpoint/no-write cache mode. Every frozen model alias has a reviewed, non-null cache-write
-rate even though writes are forbidden. `price_snapshot.service_tier` and
-`price_attestation.requested_service_tier` are both exactly `"default"`; a mismatch stops before
-key access. The price snapshot binds separate uncached-input, cache-read-input, cache-write-input,
-visible-output, and reasoning-output prices and their source evidence. Every attempt records
-separate cache-read and cache-write token usage and separate closed accounting statuses. A
-nonzero cache-write observation is first reconciled and charged at the frozen cache-write rate,
-then appends STOP and permits zero later calls. Missing cache-write detail is never interpreted as
-zero: it retains the conservative cache-write reservation and, after any response or unknown
-delivery, appends STOP. Here and in section 8, “response” means a Responses API result, not a
-structured definitely-rejected transport response independently proven to have no result and no
-usage.
+reconciliation, and accounting dimensions. For every generation and judge request, the tagged
+wire contract has exactly this cache-control member:
+
+```json
+"prompt_cache_options": {"mode": "explicit", "ttl": "30m"}
+```
+
+`prompt_cache_key` and deprecated `prompt_cache_retention` are absent. The canonical `instructions`
+and recursively every object inside canonical `input` contain no `prompt_cache_breakpoint` key;
+the verifier rejects that key at any depth before serialization. No other cache-control member is
+allowed. The [Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+defines these GPT-5.6+ fields, and the dated
+[prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) states that
+explicit mode with no explicit breakpoint neither uses prompt caching nor creates cache writes.
+The request bytes, provider kwargs, and captured projection must be byte-equivalent on these
+members; SDK defaults or omission cannot satisfy the contract.
+
+The tagged live protocol also binds OpenAI Python SDK version `3.3.1` and the exact C0-derived
+`uv.lock` member hash. Preflight imports that pinned distribution, verifies that its typed request
+and response models expose every frozen field/path, and rejects a different installed version,
+lock member, serializer projection, or response model before credentials.
+
+The canonical raw-response paths are exactly:
+
+```text
+response.service_tier
+response.prompt_cache_options.mode
+response.prompt_cache_options.ttl
+response.usage.input_tokens
+response.usage.input_tokens_details.cached_tokens
+response.usage.input_tokens_details.cache_write_tokens
+response.usage.output_tokens
+response.usage.output_tokens_details.reasoning_tokens
+response.usage.total_tokens
+```
+
+No alternate, flattened, inferred, billing-dashboard, or SDK convenience path is response
+evidence. A Responses result must echo applied options exactly as
+`response.prompt_cache_options.mode == "explicit"` and
+`response.prompt_cache_options.ttl == "30m"`; missing or different applied-option evidence is a
+request-contract mismatch that retains worst-case exposure, appends STOP, and permits zero later
+calls. The separate applied-cache-control status has exactly this closed vocabulary:
+
+```text
+reported_exact | not_applicable_definitely_not_sent |
+not_applicable_definitely_rejected | missing | mismatch | invalid
+```
+
+The exact two strings map to `reported_exact`; a proven no-dispatch or definitely rejected/no-usage
+attempt maps to its corresponding `not_applicable_*`; absent/null evidence maps to `missing`; any
+different well-formed value maps to `mismatch`; and wrong types or source-digest failure map to
+`invalid`. Unknown delivery maps to `missing`. Every attempt stores `cache_read_tokens` only from
+`response.usage.input_tokens_details.cached_tokens` and `cache_write_tokens` only from
+`response.usage.input_tokens_details.cache_write_tokens`, each with its raw-response source digest.
+For a complete response, both must be nonnegative integers, each must not exceed `input_tokens`,
+their sum must not exceed `input_tokens`, and
+`ordinary_uncached_input_tokens = input_tokens - cache_read_tokens - cache_write_tokens`.
+
+The cache-read status enum and cache-write status enum are separate fields but have the same exact
+closed vocabulary:
+
+```text
+reported_zero | reported_nonzero | not_applicable_definitely_not_sent |
+not_applicable_definitely_rejected | missing | invalid
+```
+
+The evidence-to-status mapping is exhaustive. A proven never-dispatched attempt has null tokens and
+`not_applicable_definitely_not_sent` for both fields. A structured definitely-rejected attempt
+independently proven to have no Responses result and no usage has null tokens and
+`not_applicable_definitely_rejected` for both. For a Responses result, an exact integer zero maps
+to `reported_zero`, a positive integer maps to `reported_nonzero`, an absent or null path maps to
+`missing`, and a wrong type, negative value, bound violation, inconsistent total, or source-digest
+failure maps to `invalid`. Unknown delivery without a trustworthy result maps to `missing` for
+both. No other transition is valid, and the status of one dimension cannot supply or change the
+other.
+
+Only `reported_exact/reported_zero/reported_zero` across applied-control/read/write, or the matching
+triple of independently proven `not_applicable_*` statuses, satisfies the no-read/no-write contract.
+Any nonzero cache read retains the read charge, appends STOP, and permits zero later calls. Any
+nonzero cache write is first reconciled and charged at the frozen cache-write rate, then appends
+STOP and permits zero later calls. `missing`, `mismatch`, or `invalid` retains the affected
+dimension's full conservative reservation; an applied-control failure retains all three input
+components. It appends STOP after a Responses result or unknown delivery and permits zero later
+calls. Missing write detail never becomes zero. Here and in section
+8, “response” means a Responses API result, not a structured definitely-rejected transport response
+independently proven to have no result and no usage.
+
+Every frozen requested model ID has a reviewed, non-null cache-write rate even though writes are
+forbidden.
+`price_snapshot.service_tier` and `price_attestation.requested_service_tier` are both exactly
+`"default"`; a mismatch stops before key access. The price snapshot binds separate
+ordinary-uncached-input, cache-read-input, cache-write-input, visible-output, and reasoning-output
+prices and their source evidence.
 
 The versioned conservative input-exposure rule is frozen and proves an upper bound of at most
 `272_000` input tokens for each request attempt. The price snapshot, batch plan, and ledger reserve
@@ -209,7 +290,7 @@ provider `output_tokens`. The visible-response token count is defined as provide
 minus reasoning tokens. A missing, negative, or inconsistent reasoning-token breakdown makes a
 token-based result unavailable rather than silently treating hidden reasoning as visible prose.
 
-The requested aliases and the public model identifiers returned by the API are both retained.
+The requested model IDs and the public model identifiers returned by the API are both retained.
 Successful responses for one model campaign must resolve consistently. A mixed returned-model
 identifier invalidates that model campaign rather than being silently pooled.
 
@@ -260,10 +341,52 @@ order:
 Each ordered protocol entry binds its numeric GitHub account ID, exact GitHub login,
 signing-verification mode, and signing fingerprint. The `security_evidence` fingerprint is
 non-null regardless of the other roles' allowed modes. The protocol registry has canonical bytes
-and a digest distinct from the audit registry. The three ordered `ProtocolAttestationV1` records
-each bind their role, exact registry digest, protocol bytes and roots reviewed for that role,
-signing evidence, and the common workflow root from section 6.6. Their ordered canonical root is
-`protocol_attestations_root`.
+and a digest distinct from the audit registry.
+
+The verification-mode vocabulary is closed:
+
+- `github_verified_commit` requires a GitHub commit-verification record with `verified: true`,
+  matching numeric account ID/login, and a null `signing_fingerprint`;
+- `ssh_sha256` requires the same identity match and a non-null OpenSSH fingerprint matching
+  `SHA256:<base64>`; and
+- `openpgp_fingerprint` requires the same identity match and a non-null uppercase 40- or 64-hex
+  primary-key fingerprint.
+
+No other mode or fingerprint form is valid. Because `security_evidence` requires a non-null
+fingerprint, that role cannot use `github_verified_commit`. A non-null fingerprint is mandatory for
+either keyed mode and forbidden for `github_verified_commit`; a mode/fingerprint mismatch rejects
+the registry before any attestation is evaluated.
+
+For `github_verified_commit`, `signature_evidence` contains exactly `commit_oid`, `verified: true`,
+`reason: "valid"`, `signer_numeric_account_id`, and `signer_login`. For either keyed mode it contains
+those five fields plus `fingerprint`, which must byte-equal the top-level fingerprint and satisfy
+that mode's grammar. A missing field, extra field, different commit/signer, non-valid verification
+reason, or nested key material is forbidden.
+
+Each `ProtocolAttestationV1` contains exactly these required top-level fields, in schema order:
+`schema_version`, `role`, `protocol_registry_sha256`, `reviewer_numeric_account_id`,
+`reviewer_login`, `verification_mode`, `signing_fingerprint`, `input_tag_object_sha256`,
+`peeled_c0_sha256`, `workflow_root`, `subjects`, `subject_root`, `signed_at`,
+`signature_evidence`, and `attestation_sha256`. Extra fields are forbidden. Canonical bytes use
+`CanonicalJSONV1`: UTF-8, NFC strings, bytewise-sorted object keys, schema-order arrays, JSON
+integers only, no insignificant whitespace, and no terminal newline. `attestation_sha256` is
+SHA-256 over the domain-separated canonical object with only that digest field omitted; no other
+field may be omitted from signed bytes.
+
+The exact role-to-subject inventories are:
+
+| Role | Ordered `subjects` kinds |
+|---|---|
+| `statistical_method` | `corpus_case_root`, `estimand_protocol_sha256`, `statistical_protocol_sha256`, `bootstrap_protocol_sha256`, `outcome_classification_protocol_sha256`, `false_fail_sensitivity_protocol_sha256` |
+| `blind_judge_audit_protocol` | `hard_score_protocol_sha256`, `judge_prompt_sha256`, `judge_schema_sha256`, `audit_sampling_protocol_sha256`, `audit_commit_reveal_protocol_sha256`, `audit_adjudication_protocol_sha256` |
+| `security_evidence` | `provider_request_contract_sha256`, `retry_spend_protocol_sha256`, `campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`, `artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`, `identity_registry_bundle_sha256` |
+
+Each subject is exactly `{kind, sha256}`. A role's attestation must contain every listed subject once
+in that order and may contain no subject assigned to another role, no unlisted subject, and no
+duplicate. Common fields such as registry, C0, and workflow roots remain top-level and are forbidden
+inside `subjects`. `subject_root` is the SHA-256 of the domain-separated canonical ordered subject
+array. The three attestations appear in the registry's exact role order, and their ordered canonical
+root is `protocol_attestations_root`.
 
 Cardinality, order, numeric account ID, login, verification mode, fingerprint, canonical bytes,
 and digest are all security boundaries. A login rename, numeric-ID mismatch, missing required
@@ -467,6 +590,12 @@ event, last valid state and ledger hashes, source workflow/actor, reason, and it
 dispatcher, collector, publisher, and release-finalizer entry first proves that no unresolved hold
 exists.
 
+The versioned `CampaignStateSchemaV1` canonical state/event schema is the single source of truth
+for state names, event names, allowed parent-state and bundle-kind combinations, required evidence,
+and terminality. The table below is a generated human-readable rendering of that schema, and tests
+load the same schema rather than maintaining a second transition list. Any table/schema drift,
+unknown enum value, or event whose evidence discriminator does not match its parent is rejected.
+
 A secret-free `INVALID_EVENT_DISMISSED` proof may clear a benign hold in every state, including
 `RESULT_MERGED` and `RELEASED`. It must establish that the event was either an unauthorized-origin
 no-op or a byte-identical replay of an already applied event, and that it changed no state, ledger,
@@ -500,20 +629,24 @@ The allowed durable transitions are:
 | `PROVIDER_EVIDENCE_VERIFIED` | `AUDIT_SEALED`: both reveal chains and signed adjudication or explicit unresolved records | `AUDIT_COMPLETE` | semantic aggregation/inference |
 | `AUDIT_COMPLETE` | `ANALYSIS_SEALED`: deterministic scores, bootstrap, sensitivity, outcomes | `ANALYSIS_COMPLETE` | run complete collector |
 | `ANALYSIS_COMPLETE` | `COMPLETE_BUNDLE_SEALED`: exact full allowlist and checksum | `BUNDLE_COLLECTED` | prepare publication plan |
-| `BUNDLE_COLLECTED` | `PUBLICATION_PR_OPENED`: exact publication plan, branch, base, head, PR | `PUBLICATION_PR_OPEN` | review and required CI |
+| `BUNDLE_COLLECTED` | `COMPLETE_PUBLICATION_PR_OPENED`: exact `bundle_kind=complete`, sealed complete-bundle root, publication plan, branch, base, head, PR | `COMPLETE_PUBLICATION_PR_OPEN` | review and required CI |
 | `BUNDLE_COLLECTED` | `COMPLETE_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, bundle digest unchanged | `BUNDLE_COLLECTED` | prepare a new complete publication plan |
-| `PUBLICATION_PR_OPEN` | `RESULT_MERGED`: approved PR and exact merge tree | `RESULT_MERGED` | prepare release plan |
-| `PUBLICATION_PR_OPEN` | `COMPLETE_PUBLICATION_PLAN_INVALIDATED`: complete-bundle PR closed, sealed bundle digest unchanged | `BUNDLE_COLLECTED` | prepare a new complete publication plan |
-| `PUBLICATION_PR_OPEN` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: invalid-prefix PR closed, sealed prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
+| `COMPLETE_PUBLICATION_PR_OPEN` | `RESULT_MERGED`: approved complete-bundle PR, exact matching sealed-root lineage and merge tree | `RESULT_MERGED` | prepare release plan |
+| `COMPLETE_PUBLICATION_PR_OPEN` | `COMPLETE_PUBLICATION_PLAN_INVALIDATED`: exact complete-bundle PR closed, sealed complete-bundle root unchanged | `BUNDLE_COLLECTED` | prepare a new complete publication plan |
 | `RESULT_MERGED` | `RESULT_RELEASED`: protected result tag and checksum-bound assets | `RELEASED` | documentation/social follow-up |
 | `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
+| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, and idempotency keys | same campaign state | execute or recover exact correction publication effect |
+| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_TAG_RECORDED`, or `CORRECTION_RELEASE_RECORDED`: exact next correction phase and adopted/created effect receipt | same campaign state | execute or recover exact next phase |
+| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INVALIDATED`: exactly one typed correction invalidation with allowed phase parent and terminal evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
 | any nonterminal pre-publication state | `PERMANENT_STOP`: security, ambiguity, identity, receipt, price-snapshot mismatch, or provenance failure; any open publication PR is closed | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix | `INVALID_FINALIZED` | publish registry/incident only |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
-| `INVALID_FINALIZED` | `INVALID_PUBLICATION_PR_OPENED`: exact safe-prefix publication plan, branch, base, head, PR | `PUBLICATION_PR_OPEN` | review and required CI, no performance claim |
+| `INVALID_FINALIZED` | `INVALID_PUBLICATION_PR_OPENED`: exact `bundle_kind=invalid_prefix`, sealed prefix root, publication plan, branch, base, head, PR | `INVALID_PUBLICATION_PR_OPEN` | review and required CI, no performance claim |
+| `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PREFIX_MERGED`: approved invalid-prefix PR, exact sealed-prefix lineage and merge tree | `INVALID_PREFIX_MERGED` | terminal registry/incident publication only |
+| `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: exact invalid-prefix PR closed, sealed prefix root unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
 
 An active job that exits at the soft deadline is resumable only through `VERIFIED_PARTIAL`. A lost
 job without that event uses `NO_DISPATCH_PROVED` only when durable job and provider evidence proves
@@ -524,22 +657,90 @@ a reason-specific `PERMANENT_STOP`; an explicitly signed unresolved adjudication
 partial, STOP, budget, or release-blocked state into live execution or complete collection. An
 unresolved `InvalidEventHoldV1` blocks every otherwise allowed transition.
 
-`CORRECTION_RESULT_RELEASED` is the sole escape from `RELEASE_BLOCKED`. It binds the correction
-lineage root and exact predecessor/supersedes event; the prior and new latest-result pointers; the
-correction publication plan, branch, PR, approval, validation, head, merge commit, and merge
-receipts; the corrected result tree root; and the correction release plan, protected annotated tag
-object root, release receipt, and complete ordered release-asset root. Every pointer and receipt is
-reconstructed from its authoritative source and proves the explicit lineage from the blocked
-merge. A correction from an already `RELEASED` campaign appends the same terminal correction
-evidence while the campaign state remains `RELEASED`; it cannot overwrite the prior result,
-transition, tag, release, latest pointer history, or any earlier authority bytes.
+`RESULT_MERGED` is accepted only from `COMPLETE_PUBLICATION_PR_OPEN`. Its event must reproduce
+`bundle_kind=complete`, the exact `COMPLETE_BUNDLE_SEALED` root, `BUNDLE_COLLECTED` root,
+`PublicationPlanV1` root, approved head, PR, merge commit, and resulting tree root as one matching
+lineage. An invalid-prefix root, mixed root, absent discriminator, or
+`INVALID_PUBLICATION_PR_OPEN` parent is an invalid event and creates a hold without mutation.
+`INVALID_PREFIX_MERGED` is terminal: it accepts no result-release, correction-release,
+documentation, website, release-note, or social-promotion event. Its only public meaning is that the
+safe registry/incident prefix was human-reviewed and merged. Closing instead of merging either PR
+kind requires its type-specific invalidation event; cross-kind close/merge events and generic
+`PUBLICATION_PR_OPEN` are not schema values and are testable rejection cases. An
+`INVALID_PUBLICATION_PLAN_INVALIDATED` close receipt is terminal for that exact invalid-prefix plan,
+branch, and PR: they cannot be reopened or reused, no release/promotion is authorized, and
+`INVALID_FINALIZED` permits only creation of a new plan with a new branch/PR identity over the same
+unchanged sealed prefix root.
 
-The state writer installs the complete correction evidence and the blocked-release escape event in
-one ordered authority commit, then publishes that commit with one expected-OID, non-force,
-fast-forward remote compare-and-swap. A partial correction install, split authority commits,
-changed expected OID, or generic invalidation kind fails without moving the authority ref.
+### 7.5 Correction side-effect protocol
 
-### 7.5 Public replay CLI is offline and non-evidentiary
+Correction authority is stored only in the append-only tree of
+`refs/heads/benchmark-authority/<campaign-id>`. For correction ID `<correction-id>`, the only
+authoritative paths are the ordered members under
+`corrections/<correction-id>/`: `intent.json`, `publication-receipt.json`, `merge-receipt.json`,
+`tag-receipt.json`, `release-receipt.json`, and exactly one of `finalization.json` or
+`invalidation.json`. Every record binds the campaign ID, correction ID, exact prior campaign-state
+hash, prior authority commit OID, prior correction-phase record hash, monotonically increasing
+phase number, `supersedes` root, and its own canonical digest. Files are append-only; an absent
+later member means the phase has not been durably recorded.
+
+Before any external correction write, `CORRECTION_INTENT_AUTHORIZED` installs `intent.json` by one
+expected-OID, non-force, fast-forward authority compare-and-swap. The intent binds the complete
+correction publication and release plans; exact base/head/result-tree and sealed-bundle roots;
+branch, PR marker, annotated-tag name/message/target, draft-release name/body, ordered asset names
+and digests; prior and proposed latest-result pointers; allowed App actors; and a distinct
+idempotency key for publication, tag, draft/assets, publish, and each receipt CAS. Each key is the
+domain-separated canonical digest of campaign ID, correction ID, phase, plan root, object name, and
+expected target/root. GitHub does not provide one universal idempotency header for these effects,
+so exact names, immutable targets, embedded intent markers, actors, and roots are the semantic
+idempotency boundary; the design makes no stronger platform claim.
+
+The publisher may create or adopt only the intent-bound branch and PR. A key-free state-writer step
+then persists `publication-receipt.json` with `CORRECTION_PUBLICATION_RECORDED` by expected-OID CAS.
+After protected human merge, it reconstructs the PR approvals, required checks, merge actor, merge
+commit, result tree, and sealed-root lineage and persists `merge-receipt.json` with
+`CORRECTION_MERGE_RECORDED`. The release finalizer may then create or adopt only the exact annotated
+tag and persists `tag-receipt.json` with `CORRECTION_TAG_RECORDED`. It creates or adopts the exact
+draft release, reconciles every asset name and digest, performs at most one publish transition, and
+persists `release-receipt.json` with `CORRECTION_RELEASE_RECORDED`. Every receipt CAS has the exact
+previous authority OID and phase record as parent; a competing or skipped parent fails without
+changing authority.
+
+Recovery is mandatory and idempotent. Before retrying an effect, the fixed tool queries the exact
+intent-bound ref, PR marker, tag name, release ID/name, and asset names. If nothing exists, it
+performs the effect once. If an object already exists with the exact actor, immutable target,
+embedded idempotency marker, and content/root, it adopts the object and records the missing receipt
+without duplicating it. A mismatched object is never overwritten, force-updated, deleted, or
+silently orphaned. A crash after tag creation, during draft asset upload, after draft completion,
+or after publish is recovered by adopting all exact existing objects, uploading only absent
+intent-bound assets while the release is still a draft, and performing publish only if it remains
+draft. An immutable published release with exact assets is adopted; any conflicting or incomplete
+immutable object terminates through correction-release invalidation. All retries, queries,
+adoptions, conflicts, and returned object IDs/digests are terminal evidence.
+
+The two invalidation records are closed and phase-specific. A
+`correction_publication_invalidation` is allowed only with `intent.json` or
+`publication-receipt.json` as parent and before a valid merge receipt; it binds the reason, exact
+publisher actor, proof of no PR or the exact PR close receipt, all discovered external objects, and
+the unchanged proposed latest pointer. A `correction_release_invalidation` is allowed only after
+`merge-receipt.json`, with that receipt or a later tag/release receipt as parent; it binds the
+merge/tree roots, every created or adopted tag/release/asset object, failure and reconciliation
+receipts, and proof that prior immutable objects and the latest pointer were not changed. Either is
+installed as `invalidation.json` with `CORRECTION_INVALIDATED` by one expected-OID CAS, makes that
+correction lineage terminal, and leaves the campaign in `RELEASE_BLOCKED` or `RELEASED` as it was.
+Cross-phase use, both kinds, a generic alias, or invalidation after finalization is rejected. A new
+attempt requires a new correction ID and new external names.
+
+Only after all five phase records verify may finalization run. `CORRECTION_RESULT_RELEASED` is the
+sole escape from `RELEASE_BLOCKED`; it binds the correction-lineage root, exact predecessor and
+`supersedes` event, prior/new latest pointers, publication/merge/tag/release receipts, corrected
+result-tree root, annotated-tag object root, and complete ordered release-asset root. The state
+writer installs `finalization.json`, the new latest pointer, the terminal correction evidence root,
+and the escape event in one ordered authority commit and publishes it with one expected-OID,
+non-force, fast-forward CAS. A correction from already `RELEASED` appends the same evidence while
+state remains `RELEASED`; it cannot rewrite prior state, history, pointer events, tags, or releases.
+
+### 7.6 Public replay CLI is offline and non-evidentiary
 
 All seven public `laconian-benchmark` commands are offline replay conveniences and are
 non-evidentiary: `hard-score`, `prepare-judge`, `seal-judge`, `sample-audit`, `seal-audit`,
@@ -549,12 +750,21 @@ live prerequisite, mint a verified context, or enter publication evidence merely
 bytes or hashes match.
 
 Live `hard-score`, `prepare-judge`, and `seal-judge` execute only as Runtime campaign-side stages
-that receive the in-memory verified generation-context capability. Live `sample-audit`,
-`seal-audit`, `analyze`, and `verify` execute only as Publication
-`campaign.evaluation_stage` operations that reconstruct their authorized predecessor state. No
-live workflow invokes the public replay CLI. No verified capability, capability wrapper, or
-capability-bearing context is serialized to an artifact, provider index, command line, workflow
-input, or environment value.
+that receive the in-memory verified generation-context capability. Their exact internal entrypoints
+are `laconian_eval.campaign.runtime.Runtime.hard_score`, `.prepare_judge`, and `.seal_judge`; the
+only constructor is the non-public
+`laconian_eval.campaign.runtime._reconstruct_verified_runtime`, which requires the in-memory
+capability from section 7.1. Live `sample-audit`, `seal-audit`, `analyze`, and `verify` execute only
+as `laconian_eval.campaign.publication.Publication.campaign.evaluation_stage` methods with those
+exact names; the only constructor is the non-public
+`laconian_eval.campaign.publication._reconstruct_verified_publication` from current authority.
+
+The public console entrypoint remains `laconian_eval.cli:main` and may call only modules under
+`laconian_eval.replay`; it cannot import either campaign constructor or capability type. Import- and
+call-graph tests enumerate these seven public command handlers and seven live methods and fail on
+any shared writer entrypoint. No live workflow invokes the public replay CLI. No verified
+capability, capability wrapper, or capability-bearing context is serialized to an artifact,
+provider index, command line, workflow input, or environment value.
 
 ## 8. Provider failures, retries, and spend
 
@@ -568,7 +778,8 @@ reservation no longer fits, the campaign stops incomplete and is reported accord
 
 The committed `PriceSnapshotV1` and each reviewer `PriceAttestationV1` are tier-specific.
 `price_snapshot.service_tier == price_attestation.requested_service_tier == "default"` is required
-for every alias and batch. Each frozen alias has separate non-null reviewed rates for ordinary
+for every requested model ID and batch. Each frozen requested model ID has separate non-null
+reviewed rates for ordinary
 uncached input, cache reads, cache writes, visible output, and reasoning output. In particular, a
 null cache-write rate is forbidden even though the request contract disables writes; any numeric
 rate, including zero, must itself be explicitly sourced and reviewed rather than inferred. The
@@ -578,12 +789,33 @@ long-context schedule is in the authorized price vocabulary.
 An append-only campaign spend ledger tracks both batch and request-attempt exposure. Before a
 provider job can map the key, the secret-free preparation path persists a worst-case reservation
 for every initial call and allowed retry in its frozen `BatchPlanV1`, including input bounds and
-output-token caps. Each reservation independently freezes ordinary-input, cache-read, cache-write,
-visible-output, and reasoning-output exposure and prices; read exposure cannot satisfy or erase the
-write reservation. Its finalized receipt binds the campaign, phase, ordered plan items, price
-snapshot, requested `default` service tier, explicit no-breakpoint/no-write cache mode, predecessor
-ledger, and exact provider-job identity tuple
+output-token caps. Each reservation is a typed vector with distinct
+`ordinary_uncached_input_tokens`, `cache_read_tokens`, `cache_write_tokens`,
+`visible_output_tokens`, and `reasoning_output_tokens` components and their frozen prices; read
+evidence cannot satisfy or erase the write component. Its finalized receipt binds the campaign,
+phase, ordered plan items, price snapshot, requested `default` service tier, literal
+`prompt_cache_options: {"mode": "explicit", "ttl": "30m"}`, the recursive absence of every
+`prompt_cache_breakpoint`, predecessor ledger, and exact provider-job identity tuple
 `(workflow_run_id, run_attempt, job_id, batch_attempt_id)`.
+
+The conservative reservation envelope is versioned and mechanically reproducible. Let `P_u`,
+`P_r`, and `P_w` be the frozen ordinary-input, cache-read, and cache-write USD-per-million rates,
+and let `P_v` and `P_h` be visible- and reasoning-output rates. For generation, one attempt reserves:
+
+```text
+R_attempt = (272_000 * max(P_u, P_r, P_w) +
+             1_024 * max(P_v, P_h)) / 1_000_000
+```
+
+The three input components remain separately recorded with the coupling invariant
+`ordinary_uncached + cache_read + cache_write <= 272_000`; the maximum-rate envelope prevents
+double-counting mutually exclusive input-token partitions while retaining worst-case write
+exposure. The judge substitutes `768` for `1_024`. A confirmatory request permits one initial
+attempt plus five retries, so its worked worst-case chain is exactly `6 * R_attempt`; a full
+40-request shard would be `40 * 6 * R_attempt`. For example, with remaining authorization `B`,
+preflight may schedule at most `floor(B / (6 * R_attempt))` generation requests and schedules none
+if that value is zero. It does not substitute long-context rates or assume cache reads/writes are
+zero to make the USD 75 cap fit.
 
 That identity must consume exactly one unused reservation before key access. A rerun or replacement
 job has a new identity and therefore requires a new additive reservation; it cannot reuse the old
@@ -600,21 +832,22 @@ attempts in a retry chain and the final successful attempt reconcile independent
 erases earlier exposure. The next batch starts only when its predecessor ledger is exact, its new
 worst-case reservation fits, and no STOP marker exists.
 
-Every terminal attempt stores separate provider fields and accounting statuses for total input,
-uncached input, cache-read input, cache-write input, visible output, reasoning output, billed
-output, and total usage, plus source evidence for each. Cache-read evidence and cache-write evidence
-are different typed records and are never derived from one another. `cache_write_input_tokens = 0`
-is accepted only from complete trusted detail that explicitly proves zero under the frozen response
-schema. Absent or incomplete write detail stays unknown, never becomes zero, and retains the full
-cache-write reservation. If delivery is unknown or any Responses API result was received, missing
-cache-write detail also appends STOP and permits zero later calls.
+Every terminal attempt stores the exact response paths and separate applied-cache-control,
+cache-read, and cache-write status enums from section 6.2, plus total input, ordinary-uncached input,
+visible output, reasoning output, billed output, total usage, and a source digest for each.
+Cache-control/read/write records are never derived from one another. `cache_write_tokens = 0` is
+accepted only from the exact canonical path with `reported_zero`; absent or incomplete detail stays
+`missing`, never becomes zero, and retains the full write component. If delivery is unknown or any
+Responses API result was received, `missing`, `mismatch`, or `invalid` appends STOP and permits zero
+later calls.
 
-Any trusted nonzero cache-write usage is reconciled at the frozen non-null cache-write rate and
-included in charged exposure before STOP is appended. The record and cost remain evidence; STOP
-does not discard or relabel the write. Cache-read usage, when present, reconciles only the separate
-read reservation. The same per-attempt record stores exactly one service-tier accounting status
-from section 6.2. `missing` or `mismatch` returned-tier evidence retains all unreconciled worst-case
-components, appends STOP, and permits zero later calls.
+Any trusted `reported_nonzero` cache-write usage is reconciled at the frozen non-null cache-write
+rate and included in charged exposure before STOP is appended. The record and cost remain evidence;
+STOP does not discard or relabel the write. `reported_nonzero` cache-read usage reconciles only the
+separate read component and also stops because it violates the explicit/no-breakpoint contract.
+The same per-attempt record stores exactly one service-tier accounting status from section 6.2.
+`missing` or `mismatch` returned-tier evidence retains all unreconciled worst-case components,
+appends STOP, and permits zero later calls.
 
 The automatic retry taxonomy is closed and versioned:
 
@@ -669,7 +902,9 @@ changes, nests as alleged authority, or substitutes one of these bindings.
 
 Only deterministic hard-pass responses enter semantic judging. The judge is `gpt-5.6-sol` with:
 
-- literal wire `service_tier: "default"` and the same explicit no-breakpoint/no-write cache mode;
+- literal wire `service_tier: "default"`, literal
+  `prompt_cache_options: {"mode": "explicit", "ttl": "30m"}`, and no
+  `prompt_cache_breakpoint` anywhere;
 - `reasoning.effort: low`;
 - low text verbosity and a strict structured-output schema;
 - `max_output_tokens: 768`;
@@ -688,8 +923,8 @@ applicable, any material contradiction, overall semantic pass, and bounded evide
 decision must be derivable from the item decisions; inconsistent or malformed judgments fail
 closed.
 
-Judge requests follow the same service-tier, cache-read/cache-write, input-bound, delivery, retry,
-budget, journaling, and artifact rules as generation. A semantic-gated report requires 100%
+Judge requests follow the same service-tier, applied-cache-control, cache-read/cache-write,
+input-bound, delivery, retry, budget, journaling, and artifact rules as generation. A semantic-gated report requires 100%
 judgment coverage for hard-pass responses. Judge failure does not silently fall back to a
 hard-gated performance claim.
 
@@ -981,8 +1216,8 @@ Self-review and admin bypass are disabled where GitHub supports those controls. 
 are restricted to the protected benchmark tags. Approval actors and deployment identities are
 retained in provenance.
 
-All repository writes use exactly three installed, pairwise-distinct, repository-scoped GitHub Apps
-with actor IDs frozen in the security protocol and receipts:
+All automated benchmark-workflow writes use exactly three installed, pairwise-distinct,
+repository-scoped GitHub Apps with actor IDs frozen in the security protocol and receipts:
 
 - the **state-writer App** performs only expected-OID, non-force, fast-forward updates on
   `benchmark-authority/*`, from fixed hash-verified state-writer steps;
@@ -999,6 +1234,45 @@ rulesets, immutable Releases configuration, expected-object receipts, exact acto
 environment approvals, and postcondition verification. An endpoint, method, ref, actor, asset, or
 state transition outside the frozen policy fails closed and leaves a durable receipt or incident.
 
+The state-writer App private key is held only by an identity-bound external token broker; it is not
+stored in repository, organization, environment, or Actions secrets. The broker accepts GitHub OIDC
+only with the frozen audience and exact repository numeric ID and owner. `job_workflow_ref` must be
+`.github/workflows/benchmark-publication-state.yml@<verified-C0-SHA>`; `workflow_ref` must be an
+allowed caller below at the same C0 SHA. That reusable workflow has exact job ID `state_writer` and
+credential-bearing step ID `state-cas`; callers cannot request a token directly. The closed
+caller/event mapping is:
+
+| Caller workflow | Allowed event types |
+|---|---|
+| `benchmark-preflight.yml` | `PREFLIGHT_SEALED` |
+| `benchmark-batch.yml` | `BATCH_RECEIPT_CONSUMED`, `NO_DISPATCH_PROVED`, `VERIFIED_PARTIAL`, `GENERATION_SET_SEALED`, `JUDGE_SET_SEALED`, `PERMANENT_STOP`, `BUDGET_EXHAUSTED` |
+| `benchmark-hard-score.yml` | `HARD_SCORE_SET_SEALED` |
+| `benchmark-evidence.yml` | `EVIDENCE_INVENTORY_SEALED` |
+| `benchmark-audit.yml` | `AUDIT_SEALED` |
+| `benchmark-analysis.yml` | `ANALYSIS_SEALED` |
+| `benchmark-collect-complete.yml` | `COMPLETE_BUNDLE_SEALED` |
+| `benchmark-finalize-invalid.yml` | `INVALID_PREFIX_SEALED` |
+| `benchmark-dismiss-hold.yml` | `INVALID_EVENT_DISMISSED` |
+| `benchmark-publish.yml` | `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation)` |
+| `benchmark-release.yml` | `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
+
+Paths are implicitly under `.github/workflows/`; no other member of the 15-path inventory may call
+the broker. The broker verifies the run through the GitHub API and requires the exact job ID, common
+workflow root, campaign ID, caller-allowed event type,
+`refs/heads/benchmark-authority/<campaign-id>` target, and expected current OID in the signed token
+request.
+
+The OIDC `ref` is closed to either the protected campaign input-tag ref whose object peels to C0, or
+`refs/heads/main` at the exact SHA already bound by a publication, release, dismissal, or correction
+plan. Pull-request refs, branches other than exact `main`, tag/commit mismatches, unlisted reusable
+workflows, a different job/step, and a stale expected OID are denied before token minting. The broker
+issues a single-repository, short-lived installation token for one fixed state-writer invocation;
+the token is never returned to a caller-controlled shell, expires within five minutes, and is
+discarded immediately after the one expected-OID CAS. Its request ID, OIDC subject/claims, App actor,
+expiry, event kind, authority ref, expected/new OIDs, and broker decision are recorded in the state
+receipt. Policy tests prove an unrelated workflow—even on an otherwise allowed ref—cannot obtain
+the credential.
+
 Publisher and release-finalizer credentials are mapped only in their separately approved
 `benchmark-publish` jobs. State-writer App credentials are mapped only in fixed state-writer steps.
 No App credential is present in provider-controller, model-output parsing, scoring, packaging, or
@@ -1008,6 +1282,15 @@ only already sealed opaque Git objects or release assets whose roots are plan-bo
 decode or select their contents. Provider jobs have read-only repository permissions. Publication
 jobs never receive the provider key. No `pull_request_target`, privileged automatic `workflow_run`,
 untrusted fork code, or model-generated command is used.
+
+Human authorities are separate and are not counted among the three automated Apps. The three
+protocol reviewers author and sign their exact protocol-attestation commits/PRs; the two audit
+reviewers author their commitment and reveal commits/PRs and sign adjudication; and maintainers
+perform environment/deployment approvals, exact-head validation authorization, protected PR review,
+and protected merges. These acts use the humans' own GitHub identities through normal protected
+repository controls; no human token is injected into a workflow. Human authorship or approval
+cannot replace an App receipt or authority CAS, and no App may substitute for a required human
+reviewer, approve its own PR, or merge.
 
 The live secret is a dedicated project-scoped restricted key created for this benchmark campaign,
 not an organization/admin key. The project has no unrelated consumers, exposes only the API
@@ -1090,9 +1373,9 @@ The bundle includes:
 - both independent identity registries, all three ordered protocol attestations and their root,
   the 15-member workflow inventory, derived member hashes, and common workflow root;
 - exact cases, arm hashes, Caveman provenance, protocol hashes, and runner provenance;
-- all terminal and retry attempts, errors, separate cache-read/cache-write usage and accounting,
-  service-tier request/return/accounting evidence, returned models, and request metadata allowed
-  by the publication policy;
+- all terminal and retry attempts, errors, exact applied-cache-control evidence, separate
+  cache-read/cache-write usage and accounting, service-tier request/return/accounting evidence,
+  returned models, and request metadata allowed by the publication policy;
 - generation-context expectation/final roots and the tagged hard-scorer, hard-score, judge,
   statistical, audit, provider-projection, and workflow-root lineage;
 - generation seals and checksums;
@@ -1126,6 +1409,15 @@ missing-stage suffix and cannot invent absent audit merges. The base must be cur
 contain the input commit and every present bound merge SHA as ancestors, and must not already contain
 the result path. Any base movement or proposed-head change invalidates the plan and requires a new
 plan and approval.
+
+The plan's `bundle_kind` and sealed root are mandatory discriminators in every publisher, PR,
+validation, merge, collector, and state event. A complete plan may emit only
+`COMPLETE_PUBLICATION_PR_OPENED` and enter `COMPLETE_PUBLICATION_PR_OPEN`; an invalid-prefix plan may
+emit only `INVALID_PUBLICATION_PR_OPENED` and enter `INVALID_PUBLICATION_PR_OPEN`. Required CI checks
+reconstruct the discriminator and root from the proposed tree rather than trusting PR labels or
+event inputs. Human merge of an invalid-prefix PR emits only `INVALID_PREFIX_MERGED`, the terminal
+safe registry/incident state. Human merge of a complete PR may emit `RESULT_MERGED` only with the
+complete root lineage specified in section 7.4. Neither path can consume the other's event.
 
 A separately approved `benchmark-publish` environment job runs trusted publisher preparation from
 the detached input commit with no App credential. It creates a separate worktree rooted at the
@@ -1167,23 +1459,23 @@ Every started confirmatory input tag gets a registry outcome:
 - suspected credential exposure follows section 12.2 and publishes only the safe invalid-campaign
   incident record.
 
-Corrections create a new result directory, protected annotated tag, release, and append-only latest
-pointer event with an explicit `supersedes` lineage. Existing evidence, states, commits, pointers,
-tags, and releases are not rewritten. A `RELEASE_BLOCKED` lineage creates no original result tag or
-release; its correction binds and supersedes the blocked merge explicitly. Publication-stage
-correction failure records `correction_publication_invalidation`; release-stage correction failure
-records `correction_release_invalidation`; no generic correction invalidation is accepted. A
-successful correction binds the prior/new latest pointers, publication and merge receipts, result
-tree, annotated-tag root, release receipt, and release-asset root and enters authority only through
-the atomic `CORRECTION_RESULT_RELEASED` process in section 7.4.
+Corrections use the durable intent/receipt/adoption/finalization protocol in section 7.5. They create
+a new result directory, protected annotated tag, release, and append-only latest-pointer event with
+an explicit `supersedes` lineage; existing evidence, states, commits, pointers, tags, and releases
+are not rewritten. A `RELEASE_BLOCKED` lineage creates no original result tag or release; its
+correction binds and supersedes the blocked merge explicitly. Publication-stage correction failure
+records `correction_publication_invalidation`; release-stage correction failure records
+`correction_release_invalidation`; no generic correction invalidation is accepted. A successful
+correction binds every persisted publication, merge, tag, and release receipt before the final
+`CORRECTION_RESULT_RELEASED` CAS.
 
 ### 13.3 Documentation and social claims
 
 Only after `CampaignStateV1` reaches `RELEASED` may synchronized result sections be added to the six
 localized READMEs, `evals/README.md`, the website, changelog, a new release note, and a dated social
-package. `RESULT_MERGED` and `RELEASE_BLOCKED` explicitly authorize no documentation, release-note,
-website, or social promotion. The historical `v0.1.0-alpha.1` release note and alpha social package
-remain unchanged.
+package. `RESULT_MERGED`, `RELEASE_BLOCKED`, and `INVALID_PREFIX_MERGED` explicitly authorize no
+documentation, release-note, website, or social promotion. The historical `v0.1.0-alpha.1` release
+note and alpha social package remain unchanged.
 
 Every numeric claim names the exact model, date interval, campaign, quality gate, eligible-pair
 and scenario denominators, interval, and limitation link. Positive `concise - if` direction is
@@ -1200,9 +1492,11 @@ Implementation is test-driven and includes:
 - unit and property tests for delta direction, eligibility, scenario-cluster bootstrap,
   visible-versus-reasoning tokens, non-inferiority, outcome classification, sparse/missing
   records, and deterministic seeds;
-- manifest/request round-trip tests proving literal wire `service_tier: "default"`, exact medium
-  reasoning, medium verbosity, explicit no-breakpoint/no-write cache mode, and the `<= 272_000`
-  versioned input-exposure bound in every request identity and wire payload;
+- manifest/request round-trip tests proving literal wire `service_tier: "default"`, exact
+  `prompt_cache_options` explicit/`30m`, recursive breakpoint absence, forbidden cache keys,
+  returned applied options, canonical read/write paths, all three closed cache-status mappings,
+  pinned OpenAI SDK `3.3.1`/lock identity, exact medium reasoning, medium verbosity, and the
+  `<= 272_000` versioned input-exposure bound in every request identity and wire payload;
 - corpus-neutrality tests proving that only prompt-grounded sentence constraints are gating and
   that critical-warning case IDs are frozen;
 - parent/shard-plan tests proving exactly 36 disjoint 40-row generation projections whose ordered
@@ -1210,7 +1504,8 @@ Implementation is test-driven and includes:
 - hard-score/request-set sealing plus judge-schema, prompt-blinding, injection-resistance,
   attachment-binding, zero-call attachment, and exact coverage tests;
 - audit sampling, certainty-unit coverage, canonicalization, exact two-entry audit identity
-  registry, exact ordered three-entry protocol registry/attestations, numeric-ID/login/signature
+  registry, exact ordered three-entry protocol registry/attestations, closed verification modes,
+  role-specific ordered subject inventories and forbidden fields, numeric-ID/login/signature
   binding and non-null security-evidence fingerprint,
   commitment/reveal PR ordering, adjudication, weighting, agreement, model/arm-indexed false-fail
   sensitivity, quality/brevity extrema, exact-search certificates, and deterministic search-cap
@@ -1220,18 +1515,24 @@ Implementation is test-driven and includes:
   reservation/reconciliation/evidence, duplicate/rerun rejection, STOP propagation, and
   campaign-budget tests, including a definitely-rejected 429-retry-then-success chain whose
   attempts remain separately accounted and every closed service-tier accounting status;
-- `CampaignStateV1` transition-table, parent-hash, atomic invalid-event hold, approved dismissal,
+- schema-generated `CampaignStateV1` transition-table/tests, parent-hash, atomic invalid-event hold,
+  approved dismissal, complete/invalid publication-state separation, terminal
+  `INVALID_PREFIX_MERGED`, cross-kind merge/close rejection,
   post-merge benign-hold dismissal, hold-to-STOP, compare-and-swap race, no-mutation, illegal-jump,
   zero-dispatch recovery, resumable-partial, budget-incomplete, publication-replan,
-  release-blocked, atomic `CORRECTION_RESULT_RELEASED` escape, terminal correction append,
-  distinct correction invalidations, invalid-finalization, and happy-path property tests;
+  release-blocked, correction-intent preauthorization, per-effect receipt CAS, create/adopt retry,
+  PR/merge/tag/draft/asset/publish crash-window reconciliation, atomic
+  `CORRECTION_RESULT_RELEASED` escape, terminal correction append, distinct phase-bound correction
+  invalidations, immutable-orphan evidence, invalid-finalization, and happy-path property tests;
 - closed retry-taxonomy, `Retry-After`, jitter, retry exhaustion, 401/403 stop, ambiguous delivery,
   soft deadline, forced runner loss, and exact-suffix resume tests;
 - tar round-trip, hidden-lock, mode, digest, extraction, traversal, link, overwrite, inventory,
   and secret-scan tests;
 - exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
   provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
-  per-batch environment approval, campaign concurrency, batch-controller ordering,
+  human/App authority separation, OIDC state-broker claim/ref/workflow/job/step/OID restrictions,
+  unrelated-workflow and pull-request-ref denial, token expiry, per-batch environment approval,
+  campaign concurrency, batch-controller ordering,
   step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
   policy tests;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
@@ -1241,9 +1542,9 @@ Implementation is test-driven and includes:
 - authority-bound generation-context expectation reconstruction, no-hash-self-cycle, tagged
   protocol/workflow-root propagation, and rejection of every serialized or supplied capability
   surrogate;
-- tests proving all seven public replay commands are offline and non-evidentiary and that every
-  live hard-score, judge, audit, analysis, and verification workflow uses its required Runtime or
-  Publication campaign stage without invoking the public CLI; and
+- import- and call-graph tests proving all seven public replay commands are offline and
+  non-evidentiary and that every live hard-score, judge, audit, analysis, and verification workflow
+  uses the exact Runtime or Publication entrypoint without invoking the public CLI; and
 - a full synthetic campaign that reconstructs the report from published-style artifacts without a
   provider secret.
 
@@ -1258,11 +1559,12 @@ most 24 generation and 24 judge attempts are permitted, under the USD 5 cap. The
 `max_transient_retries = 0`, so retries cannot raise the actual API-attempt ceiling above 48.
 
 The pilot validates API parameters; literal requested and returned `default` service-tier evidence;
-separate cache-read/cache-write usage, zero-write proof, and STOP behavior; returned-model and usage
-capture; rate behavior; checkpoint transport; judge schema; and cost accounting. It is never
-benchmark evidence. The corpus and decision thresholds cannot be tuned to make the observed pilot
-effect favorable. A required protocol fix creates a new pilot identity; the confirmatory input tag
-is created only after the implementation is frozen and reverified.
+returned explicit/`30m` applied-cache-control evidence; separate zero cache-read/cache-write proof
+and STOP behavior; returned-model and usage capture; rate behavior; checkpoint transport; judge
+schema; and cost accounting. It is never benchmark evidence. The corpus and decision thresholds
+cannot be tuned to make the observed pilot effect favorable. A required protocol fix creates a new
+pilot identity; the confirmatory input tag is created only after the implementation is frozen and
+reverified.
 
 ### 14.3 Confirmatory sequence
 
@@ -1308,9 +1610,9 @@ It does not continue to judge, audit, aggregate, or complete collection.
 - Twelve independent scenario clusters can produce wide intervals. Inconclusive is an expected and
   acceptable outcome.
 - The corpus is a compact response suite, not a universal task distribution.
-- OpenAI aliases and service behavior can change. Requested and returned identifiers, timestamps,
-  settings, and limitations are disclosed, but a hosted API cannot provide perfect future
-  reproducibility.
+- OpenAI model IDs and returned snapshot identifiers or service behavior can change. Requested and
+  returned identifiers, timestamps, settings, and limitations are disclosed, but a hosted API
+  cannot provide perfect future reproducibility.
 - Sol judging Sol is not fully independent. The two-person audit measures disagreement but does
   not remove every judge bias.
 - A public artifact reveals benchmark responses before final publication to anyone who retrieves
@@ -1326,6 +1628,12 @@ It does not continue to judge, audit, aggregate, or complete collection.
 - GitHub App permission grants are broader than the intended state, publisher, and release roles.
   Fixed tools, endpoint tests, rulesets, immutable Releases, receipts, and actor restrictions reduce
   that exposure but do not make it a platform-enforced least-capability boundary.
+- The state-writer broker is an additional trusted availability and identity-verification boundary.
+  A broker outage stops state progress; a claim mismatch cannot fall back to a stored App key.
+- GitHub APIs do not offer one universal idempotency header across refs, PRs, tags, and Releases.
+  Exact-name/root adoption closes ordinary crash retries, but a conflicting immutable external
+  object terminates that correction lineage and remains disclosed evidence rather than being
+  rewritten.
 - API price estimates are not invoices. Cache reads, cache writes, and returned service-tier detail
   remain provider evidence: missing detail retains worst-case exposure and can invalidate the run.
   The campaign intentionally authorizes neither long-context pricing nor a service tier other than
@@ -1351,15 +1659,16 @@ The system is ready for the full campaign only when:
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
 - Runtime and Publication campaign-side stages bind every live hard-score, judge, audit, analysis,
-  verification, and bundle attachment to its exact authority parents, while all seven public replay
-  commands remain offline and non-evidentiary;
+  verification, and bundle attachment to its exact authority parents through the exact internal
+  entrypoints, while all seven public replay commands remain offline and non-evidentiary;
 - manifest/request evidence captures literal wire `service_tier: "default"`, returned-tier evidence
-  and the exact closed accounting vocabulary, explicit no-breakpoint/no-write cache mode, separate
-  cache-read/cache-write evidence and usage, medium reasoning, medium verbosity, and the
-  reasoning-token breakdown required for visible-token scoring;
-- every alias has a reviewed non-null cache-write rate, both tier fields equal `"default"`, the
-  versioned conservative input bound is at most `272_000`, and neither authorization nor reservation
-  can select long-context pricing;
+  and the exact closed accounting vocabulary; literal `prompt_cache_options` explicit/`30m` with
+  forbidden cache keys and no breakpoint; exact returned applied-control/read/write paths and
+  separate exhaustive status enums; pinned SDK/lock identity; medium reasoning; medium verbosity;
+  and the reasoning-token breakdown required for visible-token scoring;
+- every requested model ID has a reviewed non-null cache-write rate, both tier fields equal
+  `"default"`, the versioned conservative input bound is at most `272_000`, and neither
+  authorization nor reservation can select long-context pricing;
 - the corpus-neutrality edit and warning-severity schema are frozen and validated;
 - the workflow can reconstruct, verify, and resume an exact tarred checkpoint including
   `.laconian.lock`;
@@ -1368,10 +1677,15 @@ The system is ready for the full campaign only when:
   `InvalidEventHoldV1` until approved dismissal or the phase-appropriate STOP, release-block, or
   correction path, and permits zero-dispatch recovery only with exact `never_started` reservation
   evidence; every mutation is serialized and compare-and-swapped against the exact state/hold root;
+  complete and invalid publication PRs occupy distinct states, only a complete sealed-root lineage
+  can reach `RESULT_MERGED`, and `INVALID_PREFIX_MERGED` is terminal and cannot release or promote;
   the sole `RELEASE_BLOCKED` escape is an atomic `CORRECTION_RESULT_RELEASED`, a correction from
-  `RELEASED` only appends terminal history, and the two typed correction invalidations cannot alias;
+  `RELEASED` only appends terminal history, every correction external effect is preauthorized and
+  receipt-reconciled/adoptable after crashes, and the two phase-bound correction invalidations
+  cannot alias;
 - the exact two-entry audit registry and exact three-entry ordered protocol registry bind numeric
-  IDs, logins, verification modes and fingerprints, the security-evidence fingerprint is non-null,
+  IDs, logins, closed verification modes and fingerprints, the security-evidence fingerprint is
+  non-null, every role has exactly its ordered required subject inventory and no forbidden field,
   the three ordered attestations/root verify, and neither registry can substitute for the other;
 - the exact ordered 15-path workflow inventory derives its member hashes and common root only from
   verified C0 bytes, and protocol attestations, generation context, provider projection, and
@@ -1382,8 +1696,11 @@ The system is ready for the full campaign only when:
   and workflow root through final provider and publication evidence;
 - the repository `GITHUB_TOKEN` is read-only everywhere; the four-job provider boundary is exact;
   the state-writer, publisher, and release-finalizer Apps are pairwise distinct and repository
-  scoped; and App/provider credentials are mapped only in their fixed, separately authorized steps
-  with no provider-key/model-output overlap;
+  scoped; the state token broker admits only the exact reusable workflow/C0/ref/job/step/event/OID
+  claims and denies unrelated workflows; and App/provider credentials are mapped only in their
+  fixed, separately authorized steps with no provider-key/model-output overlap;
+- protocol/audit reviewer commits and PRs, maintainer validations/approvals, and protected human
+  merges remain distinct human authorities and cannot be replaced by any automated App or workflow;
 - the batch controller proves predecessor-ledger, single-use job receipt, per-attempt reservation,
   permanent STOP, soft-deadline, exact-suffix resume, and zero-subsequent-call behavior for
   authentication, permission, ambiguity, credential exposure, and missing state;
@@ -1407,12 +1724,12 @@ The system is ready for the full campaign only when:
   draft/assets, and one publish transition; base/head movement has an exact closed-PR replan
   transition, and a verified post-merge defect blocks release;
 - documentation, website, release-note, and social updates are impossible before `RELEASED` and
-  remain forbidden for `RESULT_MERGED` or `RELEASE_BLOCKED`;
+  remain forbidden for `RESULT_MERGED`, `RELEASE_BLOCKED`, or `INVALID_PREFIX_MERGED`;
 - endpoint-policy tests, actor restrictions, expected-OID receipts, protected rulesets, and
   immutable Releases constrain the technically broader App permissions, and no workflow token can
   approve or merge a PR;
-- protected input/result tags, all three App installations, actor restrictions, immutable Releases,
-  and both GitHub environments are configured; and
+- protected input/result tags, all three App installations, the state-broker OIDC/claim policy,
+  actor restrictions, immutable Releases, and both GitHub environments are configured; and
 - the maintainer explicitly approves the live workflow deployment.
 
 The project is ready to claim a model-specific result only after the full campaign also satisfies
@@ -1429,6 +1746,8 @@ the integrity, coverage, quality, audit, and publication gates in this specifica
 - [Secure use of GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use)
 - [GitHub `GITHUB_TOKEN` workflow-run behavior](https://docs.github.com/en/actions/concepts/security/github_token)
 - [OpenAI project and restricted-key controls](https://help.openai.com/en/articles/9186755-managing-projects-in-the-api-platform)
+- [OpenAI Responses create API reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+- [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
 - [OpenAI GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - [OpenAI GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
 - [OpenAI GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
