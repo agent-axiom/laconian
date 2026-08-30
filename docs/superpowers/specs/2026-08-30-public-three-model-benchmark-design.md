@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-30
 
-**Status:** Written specification awaiting maintainer review
+**Status:** Approved for implementation planning
+
+**Maintainer approval:** 2026-08-30
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
