@@ -469,8 +469,9 @@ historical rule-suite result is therefore exactly `bypass`, not `pass`. A namesp
 pre-existing unbound ref, missing or differently authorized creation bypass, wrong/extra/exempt actor,
 update/delete bypass, or different operator for T0 and T1 invalidates the pair.
 
-The operator registry and raw tag-object parser share one lexical grammar. `tagger_name` is one or
-more 1–80-byte non-space ASCII tokens from `0x21..0x7e` excluding `<` and `>`, joined by exactly one
+The operator registry and raw tag-object parser share one lexical grammar. Serialized `tagger_name`
+is 1–80 bytes total and consists of one or more nonempty non-space ASCII tokens from `0x21..0x7e`
+excluding `<` and `>`, joined by exactly one
 `0x20`; leading/trailing/repeated whitespace and every tab/control/non-ASCII byte are forbidden.
 `tagger_email` is 3–254 printable non-space ASCII bytes, contains exactly one `@`, has nonempty
 local/domain sides, neither side starts or ends with `.`, neither contains `..`, and `<`, `>`,
@@ -565,8 +566,9 @@ The exact role-to-subject inventories are:
 Each subject is exactly `{kind, sha256}`. A role's statement must contain every listed subject once
 in that order and may contain no subject assigned to another role, no unlisted subject, and no
 duplicate. Common fields such as registry, C0, and workflow roots remain top-level and are forbidden
-inside `subjects`. `subject_root` is the SHA-256 of the domain-separated canonical ordered subject
-array.
+inside `subjects`. `subject_root` is exactly
+`SHA256(UTF8("laconian-protocol-review-subjects-root-v1\n") || CanonicalJSONV1(the exact ordered
+subjects array))`; no statement field or implicit metadata enters that preimage.
 
 `VerifiedProtocolAttestationV1` has exactly `schema_version`, `statement`, `signature_evidence`,
 and `attestation_sha256`. `statement` is the complete canonical `ProtocolReviewStatementV1`,
@@ -636,6 +638,9 @@ commit, verifies the embedded signature against only that frozen keyring, and re
 primary-key fingerprint to match. REST and GraphQL verification remain mandatory; local
 verification is additional and cannot be replaced by GitHub's status. Key material, access tokens,
 or a self-asserted verification result are forbidden in the envelope.
+`verification_receipt_sha256` is exactly
+`SHA256(UTF8("laconian-local-signature-verification-receipt-v1\n") || CanonicalJSONV1(the exact
+five-field local_signature_verification record without exactly verification_receipt_sha256))`.
 
 `ProtocolAttestationBundleV1` at `bundle.json` contains exactly `schema_version`,
 `protocol_registry_sha256`, `input_tag_ref`, `input_tag_oid`, `input_tag_object_sha256`,
@@ -746,6 +751,9 @@ Raw-to-canonical mapping is exact: suite `result` maps to `overall_result`, suit
 Top-level literals must be `bypass` and `fail`; the sole evaluation literals are `ruleset`, the
 sealed ID, `active`, `fail`, and `creation`. Missing, duplicate, differently ordered, extra stable,
 or contradicting values fail closed.
+Receipt `operation: "create"` is a verifier-derived discriminator from the exact new ref, all-zero
+`before_sha`, and nonzero annotated-tag-object `after_sha`; it is not claimed to be a GitHub API
+response field.
 
 Both receipt types are preflight/stage/archive evidence and are excluded from tag binding,
 `CampaignRegistryV1`, campaign ID, seeds, and plans. Rechecking unchanged objects and semantic
@@ -783,6 +791,10 @@ to one-element arrays only by this wrapper. Every path occurs exactly once globa
 unreferenced, multiply referenced, missing, or keyed by an undefined observation ID. Raw bytes are
 exact safe response-body bytes, excluding HTTP headers, authorization, cookies, and query secrets;
 a secret-bearing blob is invalid.
+`receipt_kind` must match the embedded receipt's schema discriminator and `receipt_sha256` must
+equal that receipt's recomputed exact self digest. At every index, the archived raw/canonical blob
+entry's `sha256` must equal the corresponding embedded receipt hash. The wrapper has no self field;
+its exact canonical value is bound only by `protocol_review_object_archive_sha256`.
 Offline replay recomputes every receipt hash from these bytes and the canonical projection, but API
 bytes remain platform observation evidence, not independent cryptographic provenance or proof of
 GitHub origin.
@@ -850,8 +862,11 @@ Only these member paths and their order are source constants. C0 is the fully ve
 commit of the protected input tag used as the campaign code/input authority. For each path, the
 member SHA-256 is derived from the exact bytes read from that verified C0 tree; no member hash is a
 source constant.
-`WorkflowInventoryV1` is the canonical ordered mapping of each literal path to that derived hash,
-and `workflow_root` is the SHA-256 of its domain-separated canonical bytes. The inventory rejects a
+`WorkflowInventoryV1` has exactly `schema_version`, `members`, and `workflow_root`. `members` is
+the exact ordered 15-element array above; each member has exactly `path` and `sha256`.
+`workflow_root` is exactly
+`SHA256(UTF8("laconian-workflow-inventory-v1\n") || CanonicalJSONV1(inventory without exactly
+workflow_root))`. The inventory rejects a
 missing, extra, renamed, reordered, duplicated, nonregular, or byte-mismatched member. The root is
 therefore derived only after C0 and all 15 member bytes have been verified; it is never accepted
 from an input field without reconstruction.
@@ -1367,7 +1382,7 @@ The allowed durable transitions are:
 | `RESULT_MERGED` | `RESULT_RELEASE_INTENT_AUTHORIZED`: deterministic tag/draft-release/asset/publish identities, roots, actors, and idempotency keys | `RESULT_MERGED` | create or adopt exact initial release effects |
 | `RESULT_MERGED` | `RESULT_RELEASED`: exact prior release intent, protected annotated result tag, immutable published release, checksum-bound assets, and create/adopt receipts | `RELEASED` | documentation/social follow-up |
 | `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect; if held, evidence binds consumed hold root and successor clears it | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
-| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, idempotency keys, and at `RELEASED` any consumed hold root cleared by successor | same campaign state | execute or recover exact correction publication effect |
+| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, and idempotency keys; a held `RELEASED` parent is allowed only for exact nondismissible/exposure/invalidation discriminator/evidence, binds the consumed hold, and clears it | same campaign state | execute or recover exact correction publication effect |
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_TAG_RECORDED`, or `CORRECTION_RELEASE_RECORDED`: exact next correction phase and adopted/created effect receipt | same campaign state | execute or recover exact next phase |
 | `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`: exact absent/closed PR and publication failure evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent, observed merged PR, and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)`: exact `PostMergeAdmissionFailureV1`, contaminated merge/exposure, and no-later-effects evidence | same campaign state | correction lineage terminal; a new correction ID must explicitly supersede the failed correction and contaminated merge |
@@ -2084,8 +2099,14 @@ correction, documentation/social action, and external effect. The only admission
 inventoried containment effect, its typed `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` CAS, the final
 credential-exposure STOP or supplement that consumes the root, and protected-main reads/CAS needed
 for those acts. An unresolved invalid-event hold likewise blocks every ordinary edge;
-`INVALID_PREFIX_SEALED` and every publication/promotion/release/correction/safe-finalization edge
-require both roots null.
+the only atomic consumers permitted with a nonnull hold are `INVALID_EVENT_DISMISSED`; premerge
+`PERMANENT_STOP` with `invalid_event_nondismissible`, typed credential-exposure, or typed drift
+evidence; `RESULT_MERGED -> RELEASE_PLAN_INVALIDATED`; and `RELEASED ->
+CORRECTION_INTENT_AUTHORIZED` only with the exact nondismissible/exposure/invalidation discriminator
+and evidence. Each binds the predecessor hold root and its successor clears it. All require the
+active exposure root null except the credential emergency flow's own progress/final consumer.
+Every other publication, promotion, release, correction, invalid-prefix, or safe-finalization edge
+requires both roots null.
 On proven premerge drift the requested ordinary credential/effect remains forbidden. The closed
 exceptions are: state-writer for the typed drift STOP CAS and, at an open complete PR, publisher
 only for its close; the protected-main safe-invalid continuation after an already sealed
@@ -2208,7 +2229,7 @@ only while this invariant is enforced.
 | `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
 | `benchmark-finalize-invalid.yml` | exact campaign input tag or protected current `main` under the safe-invalid exception | `INVALID_PREFIX_SEALED` |
 | `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED` |
-| `benchmark-publish.yml` | exact plan-bound `main`, except the exact post-merge rule for its three merge-recording, two ordinary merge-invalidation, and one correction merged-invalid event | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)` |
+| `benchmark-publish.yml` | exact plan-bound `main`; current protected `main` additionally only at `COMPLETE_PUBLICATION_PR_OPEN` under proven drift for credential handling; plus exact six post-merge rules | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, both typed publication `CORRECTION_INVALIDATED` outcomes; the current-main credential exception admits only `CREDENTIAL_EXPOSURE_PENDING`, `CREDENTIAL_EXPOSURE_EFFECT_RECORDED`, publisher-only close, and final `PERMANENT_STOP(reason=credential_exposure)` |
 | `benchmark-release.yml` | exact plan-bound `main` | `RESULT_RELEASE_INTENT_AUTHORIZED`, `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
 
 `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, and `CORRECTION_MERGE_RECORDED` are the only successful
@@ -2962,6 +2983,10 @@ Implementation is test-driven and includes:
   whitespace ambiguity, signed/zero-padded/out-of-range epochs, alternate timezone, or registry/tag
   disagreement; archived API-blob vectors recompute every raw/canonical response hash including
   both creation suites and reject secret-bearing, missing, reordered, aliased, or mismatched blobs;
+  golden vectors fix the exact subjects-array root, five-field local-signature receipt root, and
+  three-field 15-member `WorkflowInventoryV1` root; negatives reject implicit fields, wrong order,
+  missing/extra member, wrapper/receipt-kind mismatch, embedded self-digest mismatch, or indexed
+  blob-hash mismatch;
 - exact call-count, default-tier price-snapshot attestation, non-null cache-write rates,
   `BatchPlanV1`, single-use job receipt, distinct cache-read/cache-write
   reservation/reconciliation/evidence, duplicate/rerun rejection, STOP propagation, and
@@ -3006,6 +3031,10 @@ Implementation is test-driven and includes:
   `invalid_event_nondismissible` as dismiss-hold's sole STOP reason;
   dismissal policy/plan vectors reject unregistered or source-equal actors and prove exact hold
   consumption by dismissal, premerge STOP, result-merge invalidation, or released correction;
+  gate vectors admit a nonnull hold only for the four exact atomic consumer classes, require each
+  successor to clear the bound predecessor root, restrict held-`RELEASED` correction intent to its
+  typed evidence, and require both roots null for every other publication/promotion/release/
+  correction/safe-finalization edge;
   the closed 23-value STOP enum and strict reason-specific evidence union have a golden vector for
   every literal caller/parent/ref/reason/evidence row and negative vectors for aliases, mixed
   variant fields, missing source roots, and wildcard grants;
@@ -3041,6 +3070,9 @@ Implementation is test-driven and includes:
   including only provisional/permanent members under the exact `denylist` root tree, and
   predecessor/successor roots, protected-main handling under moved/deleted/drifted tags, final
   pending-root consumption, and denial of every ordinary mutation/effect while pending;
+  open-complete-PR drift tests admit current-main `benchmark-publish` only for exposure pending,
+  ordered close/effect, and final credential STOP from byte-identical frozen workflows, and reject
+  every other publish event under that exception;
   progress-root golden vectors cover empty initialization, ordinal 1, multi-link successors,
   zero-padded paths, predecessor mismatch, gap/reorder/replay, terminal chain equality, exact final
   consumption/clear, and supplement construction without a second STOP event; every incident caller
@@ -3313,7 +3345,10 @@ The system is ready for the full campaign only when:
   dismissal uses only the C0-frozen identity policy and strict plan, every nondismissible exit
   consumes its exact hold root, and safe finalization requires no unresolved hold or pending
   credential incident; dismissal OIDC/rerun actors are caller-discriminated from normal operator
-  dispatch and bind the exact authorized dispatcher fields;
+  dispatch and bind the exact authorized dispatcher fields; a nonnull hold is admitted only by the
+  four exact atomic consumer classes, each clears its bound predecessor root, held `RELEASED`
+  correction intent is discriminator-restricted, and every other gated edge requires both roots
+  null;
   complete and invalid publication PRs occupy distinct states, only a complete sealed-root lineage
   can reach `RESULT_MERGED`, both invalid-prefix merged outcomes are terminal and cannot release or
   promote, and an already-merged complete PR that fails admission reaches `RELEASE_BLOCKED`;
@@ -3368,7 +3403,8 @@ The system is ready for the full campaign only when:
   or repair in place;
   every new registry/policy/receipt/archive digest has an exact noncircular domain-separated
   CanonicalJSONV1 preimage, every archived API response hash recomputes offline from safe bytes,
-  and tagger identity/epoch bytes satisfy the one closed lexical grammar;
+  and tagger identity/epoch bytes satisfy the one closed lexical grammar; subjects, local signature
+  verification, and the exact 15-member workflow inventory reproduce their specified roots;
 - `ProtocolAttestationTagBindingV1` originates only in preflight/authority evidence as live
   authority and is copied downstream only through the sealed registry; canonical
   `CampaignRegistryV1` derives campaign ID from its payload and binds T0/C0, all three reviewer
@@ -3410,6 +3446,9 @@ The system is ready for the full campaign only when:
   budget invalidity, with no new App, workflow, environment, or secret; reachability assumes the
   existing protected-main check preserves all 15 C0 workflow members while campaigns are live and
   fails closed if platform administration bypasses that invariant;
+  at an open complete-publication PR under proven drift, current-main `benchmark-publish` admits
+  only exposure pending/effect, publisher-only close, and final credential STOP from byte-identical
+  frozen workflow members;
 - serial protocol-reviewer statement commits, audit-reviewer commits/PRs, tag-operator acts,
   maintainer validations/approvals, and protected human merges remain distinct human authorities
   and cannot be replaced by any automated App or workflow;
