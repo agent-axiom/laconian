@@ -2,15 +2,19 @@
 
 **Date:** 2026-08-30
 
-**Status:** Amendment approved; implementation pending
+**Status:** Attestation-transport amendment pending exact maintainer approval; implementation blocked
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
-**Amendment approval:** On 2026-08-30, the maintainer/user in this Codex task explicitly approved
+**Prior amendment approval:** On 2026-08-30, the maintainer/user in this Codex task explicitly approved
 the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with the exact message
-`Одобряю amendment 46147ef`. This successor records governance metadata only and changes no
-normative protocol or design content. Any later normative amendment requires a new explicit
-maintainer approval.
+`Одобряю amendment 46147ef`. That approval remains historical evidence for the prior normative
+design; it does not approve this later attestation-transport amendment.
+
+**Current amendment approval:** Pending. This amendment removes the input-tag/attestation hash
+self-cycle by introducing a serial reviewer-commit chain and a separate protected companion tag.
+Its exact commit SHA must receive a new explicit maintainer approval, recorded by a later
+governance-only commit, before implementation, pilot execution, or live rollout begins.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -24,7 +28,8 @@ project will not pool the three models into a universal family claim.
 The selected architecture is a staged capsule pipeline:
 
 ```text
-immutable input tag
+protected annotated input tag and serial signed protocol-review chain
+  -> protected annotated attestation-bundle companion tag
   -> secret-free preflight
   -> frozen resumable batch plans
   -> sharded generation capsules
@@ -360,21 +365,106 @@ fingerprint, that role cannot use `github_verified_commit`. A non-null fingerpri
 either keyed mode and forbidden for `github_verified_commit`; a mode/fingerprint mismatch rejects
 the registry before any attestation is evaluated.
 
-For `github_verified_commit`, `signature_evidence` contains exactly `commit_oid`, `verified: true`,
-`reason: "valid"`, `signer_numeric_account_id`, and `signer_login`. For either keyed mode it contains
-those five fields plus `fingerprint`, which must byte-equal the top-level fingerprint and satisfy
-that mode's grammar. A missing field, extra field, different commit/signer, non-valid verification
-reason, or nested key material is forbidden.
+### 6.5.1 Non-self-referential protocol-review topology
 
-Each `ProtocolAttestationV1` contains exactly these required top-level fields, in schema order:
-`schema_version`, `role`, `protocol_registry_sha256`, `reviewer_numeric_account_id`,
-`reviewer_login`, `verification_mode`, `signing_fingerprint`, `input_tag_object_sha256`,
-`peeled_c0_sha256`, `workflow_root`, `subjects`, `subject_root`, `signed_at`,
-`signature_evidence`, and `attestation_sha256`. Extra fields are forbidden. Canonical bytes use
-`CanonicalJSONV1`: UTF-8, NFC strings, bytewise-sorted object keys, schema-order arrays, JSON
-integers only, no insignificant whitespace, and no terminal newline. `attestation_sha256` is
-SHA-256 over the domain-separated canonical object with only that digest field omitted; no other
-field may be omitted from signed bytes.
+The protocol review uses two protected, annotated-only tags and this serial construction order:
+
+```text
+T0 -> C0 -> Rstat -> Rjudge -> Rsecurity -> B0 <- T1
+```
+
+Here `T0` is `refs/tags/benchmark-input-YYYYMMDD.N`, an annotated tag whose target peels exactly to
+the input commit `C0`. `T1` is the deterministically paired
+`refs/tags/benchmark-attestations-YYYYMMDD.N`, an annotated tag whose target peels exactly to the
+bundle commit `B0`. A lightweight tag, tag-of-tag target, different suffix, alternate ref namespace,
+or ambiguous peel is invalid. Both ref patterns are protected against update and deletion by
+rulesets, but authority is conferred only by the verified object identities and raw-object hashes,
+never by a mutable ref name or by the ruleset alone.
+
+For the input-tag basename `<T0>`, the exact campaign review paths are:
+
+```text
+benchmarks/protocol-reviews/<T0>/statements/01-statistical-method.json
+benchmarks/protocol-reviews/<T0>/statements/02-blind-judge-audit-protocol.json
+benchmarks/protocol-reviews/<T0>/statements/03-security-evidence.json
+benchmarks/protocol-reviews/<T0>/attestations/01-statistical-method.json
+benchmarks/protocol-reviews/<T0>/attestations/02-blind-judge-audit-protocol.json
+benchmarks/protocol-reviews/<T0>/attestations/03-security-evidence.json
+benchmarks/protocol-reviews/<T0>/bundle.json
+```
+
+The entire `benchmarks/protocol-reviews/<T0>/` path is absent from `C0`. In particular, `C0` and
+`T0` contain no protocol-review statement, verified attestation envelope,
+`protocol_attestations_root`, companion-tag binding, or claim about a future reviewer, bundle, or
+companion-tag object. `CampaignInputPackageV1`, which is derived only from verified `C0` inputs,
+likewise forbids those values. This absence is an explicit preflight check.
+
+`Rstat` has exactly one parent, `C0`, and its tree delta adds only the first statement path as a
+regular non-executable blob. `Rjudge` has exactly one parent, `Rstat`, and adds only the second
+statement path. `Rsecurity` has exactly one parent, `Rjudge`, and adds only the third statement
+path. Each is authored and commit-signed by the registry identity for its role. It retains every
+parent tree entry byte-for-byte; a modification, deletion, rename, mode change, second path, second
+parent, merge header, or reordered reviewer is invalid. The serial order is normative even if the
+reviews were prepared concurrently.
+
+After all three reviewer commits exist and their signatures have been independently verified, a
+secret-free verifier creates `B0` with exactly one parent, `Rsecurity`. Its tree retains the parent
+unchanged and adds only the three exact attestation-envelope paths and `bundle.json`, all as regular
+non-executable blobs. `B0` contains no reference to its own OID or raw-object hash and no reference
+to `T1`. Only after `B0` exists may the operator create `T1`. Changing any `C0`, reviewer, statement,
+envelope, bundle, tag message, tagger field, or tag object requires a new T0/T1 pair and new
+reviewer commits; repair in place is forbidden.
+
+For every Git object in this protocol, `GitObjectSHA256V1` is SHA-256 over the exact bytes:
+
+```text
+"<type> <decimal-content-length>\0" || object-content
+```
+
+`<type>` is the literal Git object type, the decimal length has no sign or leading zero, and
+`object-content` is the exact unmodified content. This raw-object SHA-256 is distinct from the
+repository's 40-lowercase-hex SHA-1 object ID. Both values are required wherever an object is
+bound. Re-encoding JSON, stripping a signature header, changing a tag message, or hashing only
+object content cannot reproduce this digest.
+
+### 6.5.2 Statements, verified envelopes, and bundle
+
+Every object described here uses strict `CanonicalJSONV1`: UTF-8, NFC strings, bytewise-sorted
+object keys, schema-order arrays, JSON integers only, no booleans or strings where integers are
+required, no floats, no duplicate keys, no insignificant whitespace, and no terminal newline.
+Missing, extra, coercible, non-NFC, incorrectly ordered, or digest-mismatched data is invalid.
+
+`ProtocolReviewStatementV1` has exactly these top-level fields:
+
+```text
+schema_version
+role
+protocol_registry_sha256
+reviewer_numeric_account_id
+reviewer_login
+verification_mode
+signing_fingerprint
+input_tag_ref
+input_tag_oid
+input_tag_object_sha256
+peeled_c0_oid
+peeled_c0_sha256
+workflow_root
+subjects
+subject_root
+signed_at
+statement_sha256
+```
+
+`schema_version` is exactly `ProtocolReviewStatementV1`; the role and reviewer fields byte-match
+the corresponding ordered protocol-registry entry. `input_tag_ref` is the full T0 ref;
+`input_tag_oid` and `peeled_c0_oid` are exact 40-lowercase-hex SHA-1 OIDs; the two SHA-256 fields use
+`GitObjectSHA256V1`. `signed_at` is whole-second UTC RFC 3339. `statement_sha256` is the
+domain-separated SHA-256 with separator `laconian-protocol-review-statement-v1` over the canonical
+object with only `statement_sha256` omitted. The statement contains every substantive reviewer
+claim, including the complete T0/C0, registry, workflow, subject, identity, mode, and time binding.
+It contains no reviewer-commit OID, signature evidence, attestation-envelope digest, bundle value,
+T1 value, or placeholder for a value that becomes known only after the commit is created.
 
 The exact role-to-subject inventories are:
 
@@ -384,17 +474,120 @@ The exact role-to-subject inventories are:
 | `blind_judge_audit_protocol` | `hard_score_protocol_sha256`, `judge_prompt_sha256`, `judge_schema_sha256`, `audit_sampling_protocol_sha256`, `audit_commit_reveal_protocol_sha256`, `audit_adjudication_protocol_sha256` |
 | `security_evidence` | `provider_request_contract_sha256`, `retry_spend_protocol_sha256`, `campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`, `artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`, `identity_registry_bundle_sha256`, `state_writer_git_identity_sha256` |
 
-Each subject is exactly `{kind, sha256}`. A role's attestation must contain every listed subject once
+Each subject is exactly `{kind, sha256}`. A role's statement must contain every listed subject once
 in that order and may contain no subject assigned to another role, no unlisted subject, and no
 duplicate. Common fields such as registry, C0, and workflow roots remain top-level and are forbidden
 inside `subjects`. `subject_root` is the SHA-256 of the domain-separated canonical ordered subject
-array. The three attestations appear in the registry's exact role order, and their ordered canonical
-root is `protocol_attestations_root`.
+array.
+
+`VerifiedProtocolAttestationV1` has exactly `schema_version`, `statement`, `signature_evidence`,
+and `attestation_sha256`. `statement` is the complete canonical `ProtocolReviewStatementV1`,
+byte-identical to the blob at that role's fixed statement path. `attestation_sha256` uses separator
+`laconian-verified-protocol-attestation-v1` over the canonical envelope with only that field omitted.
+An envelope is created after its reviewer commit; it is verifier evidence, not reviewer-authored
+content, and cannot alter or supplement a substantive statement.
+
+`signature_evidence` is a closed mode-discriminated union. Every variant contains exactly
+`schema_version`, `verification_mode`, `commit_oid`, `commit_object_sha256`, `parent_commit_oid`,
+`statement_path`, `github_rest_verification`, and `github_graphql_signature`. The schema version is
+`GitHubVerifiedCommitEvidenceV1`, `SSHVerifiedCommitEvidenceV1`, or
+`OpenPGPVerifiedCommitEvidenceV1` according to the statement's mode. The commit and parent OIDs,
+raw-object SHA-256, path, reviewer identity, and mode must reconstruct from the reviewed Git object
+and registry rather than from the envelope. The two keyed variants additionally contain exactly
+`fingerprint`, `keyring_sha256`, and `local_signature_verification`; those fields are forbidden in
+the GitHub-only variant.
+
+`github_rest_verification` contains exactly `verified: true`, `reason: "valid"`, `payload`,
+`signature`, `verified_at`, `request_id`, and `response_sha256`, copied from and bound to the REST
+commit-verification response for the exact repository and commit OID. `payload` must byte-equal the
+signed commit payload reconstructed from the raw commit object, and `signature` must byte-equal its
+embedded signature. `github_graphql_signature` contains exactly `is_valid: true`, `state: "VALID"`,
+`signer_numeric_account_id`, `signer_login`, `request_id`, and `response_sha256`; the signer fields
+must byte-match the registry identity. A null signer, mismatched REST/GraphQL commit, stale response,
+missing field, extra field, or GitHub status accepted without the independently fetched raw Git
+object is invalid.
+
+For `ssh_sha256` and `openpgp_fingerprint`, `fingerprint` byte-matches the registry and statement,
+and `keyring_sha256` identifies the frozen public-key material included in the
+`identity_registry_bundle_sha256` subject. `local_signature_verification` contains exactly
+`verified: true`, `signed_payload_sha256`, `signature_sha256`, `verifier_tool_sha256`, and
+`verification_receipt_sha256`. An isolated verifier reconstructs the signed payload from the raw
+commit, verifies the embedded signature against only that frozen keyring, and requires the verified
+primary-key fingerprint to match. REST and GraphQL verification remain mandatory; local
+verification is additional and cannot be replaced by GitHub's status. Key material, access tokens,
+or a self-asserted verification result are forbidden in the envelope.
+
+`ProtocolAttestationBundleV1` at `bundle.json` contains exactly `schema_version`,
+`protocol_registry_sha256`, `input_tag_ref`, `input_tag_oid`, `input_tag_object_sha256`,
+`peeled_c0_oid`, `peeled_c0_sha256`, `workflow_root`, `attestations`,
+`protocol_attestations_root`, and `protocol_attestation_bundle_sha256`. `attestations` embeds the
+three complete verified envelopes in registry role order and each is byte-identical to its separate
+attestation blob. `protocol_attestations_root` uses separator
+`laconian-protocol-attestations-root-v1` over that canonical ordered array. The bundle digest uses
+separator `laconian-protocol-attestation-bundle-v1` over the canonical bundle with only its final
+digest omitted. No B0 or T1 identity appears in the bundle.
+
+### 6.5.3 Post-tag binding and campaign identity
+
+After T1 exists, preflight constructs `ProtocolAttestationTagBindingV1`. It has exactly these
+top-level fields:
+
+```text
+schema_version
+input_tag_ref
+input_tag_oid
+input_tag_object_sha256
+peeled_c0_oid
+peeled_c0_sha256
+reviewer_commits
+bundle_commit_oid
+bundle_commit_object_sha256
+companion_tag_ref
+companion_tag_oid
+companion_tag_object_sha256
+protocol_registry_sha256
+workflow_root
+protocol_attestations_root
+protocol_attestation_bundle_sha256
+object_closure_root
+tag_ruleset_snapshot_root
+protocol_attestation_tag_binding_sha256
+```
+
+`reviewer_commits` is the exact three-entry registry-role-ordered array of `{role, commit_oid,
+commit_object_sha256}`. `object_closure_root` is the domain-separated digest of the canonical
+OID/type/size/raw-object-SHA-256 inventory for T0, C0, all tree and blob objects needed to reconstruct
+C0 and the four exact deltas, Rstat, Rjudge, Rsecurity, B0, and T1. C0 parent OIDs are recorded as
+boundary links but pre-C0 ancestry is outside this campaign closure. `tag_ruleset_snapshot_root`
+binds exact API receipts and canonical active rule evaluations for both full refs, including the
+update/delete prohibitions and every observed actor/bypass setting. The binding digest uses
+separator `laconian-protocol-attestation-tag-binding-v1` over the canonical object with only its
+final digest omitted.
+
+The post-tag binding is first persisted only in secret-free preflight evidence and the append-only
+campaign authority; those are its only live authority sources. Downstream records and the final
+offline archive may copy it only through the sealed `CampaignRegistryV1`. It is forbidden from C0,
+all statements, all reviewer commits, B0, T0, and T1. This separation is what removes the hash
+cycle: the immutable DAG is completed first, and only then is its complete object binding
+constructed.
+
+`CampaignInputPackageV1` remains a C0-only package and contains neither attestations nor an
+attestation root. Preflight instead builds a `CampaignRegistryPayloadV1` containing the exact
+`campaign_input_package_sha256`, both reviewer-registry digests, `workflow_root`, the complete
+`ProtocolAttestationTagBindingV1`, `protocol_attestations_root`, and
+`protocol_attestation_bundle_sha256`. `campaign_registry_sha256` is the SHA-256 with separator
+`laconian-campaign-registry-v1` over the canonical payload. `campaign_id` is exactly
+`benchmark-` followed by the first 32 lowercase hex characters of that digest.
+`CampaignRegistryV1` contains exactly `schema_version`, `campaign_id`, `payload`, and
+`campaign_registry_sha256`; it rejects any ID not derived from its payload. Thus T1, B0, all three
+review commits, their verified signatures, and both ruleset snapshots bind campaign identity
+without requiring any containing Git object to hash itself.
 
 Cardinality, order, numeric account ID, login, verification mode, fingerprint, canonical bytes,
 and digest are all security boundaries. A login rename, numeric-ID mismatch, missing required
 fingerprint, reordered role, duplicate identity, or cross-registry lookup fails closed. Neither
-registry, its members, signatures, approvals, nor attestations may substitute for the other.
+registry, its members, signatures, approvals, statements, envelopes, tags, nor roots may substitute
+for the other.
 
 ### 6.6 Frozen workflow inventory
 
@@ -429,8 +622,9 @@ missing, extra, renamed, reordered, duplicated, nonregular, or byte-mismatched m
 therefore derived only after C0 and all 15 member bytes have been verified; it is never accepted
 from an input field without reconstruction.
 
-All three protocol attestations, the generation-context expectation and final generation context,
-every provider projection, and publication verification bind this same reconstructed
+All three protocol-review statements, verified envelopes, the bundle, the post-tag binding, the
+generation-context expectation and final generation context, every provider projection, and
+publication verification bind this same reconstructed
 `workflow_root`. A different workflow subset, reordered inventory, or independently supplied root
 cannot authorize a live stage or publication.
 
@@ -438,24 +632,48 @@ cannot authorize a live stage or publication.
 
 ### 7.1 Input tag, preflight, and generation-context expectation
 
-The operator creates a protected tag matching `benchmark-input-YYYYMMDD.N` on the exact commit to
-execute. The manually dispatched workflow rejects branch refs, moving aliases, malformed tags,
-uncommitted manifests, arbitrary model input, and arbitrary shell input.
+The operator supplies the completed protected pair T0/T1 from section 6.5. Both are annotated-only;
+T0 peels to the exact C0 to execute and T1 peels to the exact B0 that closes the serial review DAG.
+The manually dispatched workflow rejects branch refs, lightweight or nested tags, moving aliases,
+malformed or unpaired names, uncommitted manifests, arbitrary model input, and arbitrary shell
+input.
 
 A secret-free preflight:
 
-1. verifies the annotated or lightweight tag object, its peeled commit identity, and the exact
-   detached commit SHA that every later job must check out;
-2. validates the three static manifests and all captured inputs;
-3. materializes one 480-row parent plan for each model and one ordered campaign-plan index;
-4. deterministically projects 36 immutable model/scenario shard plans;
-5. verifies that the shard plans are disjoint and that their ordered union is exactly the 1,440
+1. reads both full refs and records their exact object OIDs before accepting any campaign data;
+2. downloads the exact section 6.5 campaign object closure, verifies every raw object against both
+   its Git SHA-1 OID and `GitObjectSHA256V1`, reconstructs every tree and exact delta, and rejects a
+   missing, extra, substituted, malformed, or unreachable object;
+3. verifies T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 topology, fixed paths, canonical statements,
+   envelopes, bundle, role order, subject roots, REST and GraphQL signature receipts, and required
+   local keyed-signature checks;
+4. reads both refs again and requires byte-identical ref/OID pairs, then freezes both tag-ruleset
+   observations and constructs `ProtocolAttestationTagBindingV1`; any movement, deletion, creation
+   race, peel change, or ruleset mismatch discards the candidate preflight;
+5. validates the three static manifests and all captured C0-only inputs;
+6. constructs the canonical `CampaignRegistryV1`, derives `campaign_id` from
+   `campaign_registry_sha256`, and uses that digest as the common downstream campaign binding;
+7. materializes one 480-row parent plan for each model and one ordered campaign-plan index;
+8. deterministically projects 36 immutable model/scenario shard plans;
+9. verifies that the shard plans are disjoint and that their ordered union is exactly the 1,440
    parent rows, with no gap or duplicate;
-6. calculates planned call and token exposure;
-7. binds the dated price snapshot, calculation rules, and official source URLs;
-8. calculates projected campaign and worst-batch reservations and verifies that the first batch
+10. calculates planned call and token exposure;
+11. binds the dated price snapshot, calculation rules, and official source URLs;
+12. calculates projected campaign and worst-batch reservations and verifies that the first batch
    can start under the fixed budget policy; and
-9. publishes only a preflight summary and digest for environment review.
+13. publishes only a preflight summary, registry digest, and safe verification receipts for
+    environment review.
+
+Before `PREFLIGHT_SEALED`, missing or temporarily unavailable refs, Git objects, REST/GraphQL
+responses, or ruleset reads produce a safe no-launch result: they create no campaign authority,
+state transition, reservation, provider dispatch, or external write, and the unchanged candidate
+may be checked again. A proven mismatch, malformed object, or drift also produces no launch; it
+cannot be waived or repaired under the same pair. After `PREFLIGHT_SEALED`, a transient read
+failure produces no new state and no external effect, while proven deletion, ref movement,
+raw-object mismatch, topology substitution, reviewer/signature mismatch, ruleset drift, or
+cross-campaign replay emits the phase-authorized `PERMANENT_STOP` and forbids further live work.
+A STOPped pair is never resumed by restoring a ref; continuation requires a new pair and campaign
+identity.
 
 No provider credential is available during preflight. The workflow does not scrape provider
 pricing as a security or correctness boundary. Before approving a live batch, the environment
@@ -464,8 +682,8 @@ If the current rate cannot be verified or differs, the reviewer does not approve
 require a new input tag and campaign identity.
 
 After the generation layer is final and before hard scoring, the campaign authority constructs an
-authority-bound `GenerationContextExpectationV1`. It binds the campaign ID, both reviewer-registry
-digests, `protocol_attestations_root`, the exact
+authority-bound `GenerationContextExpectationV1`. It binds the campaign ID,
+`campaign_registry_sha256`, both reviewer-registry digests, `protocol_attestations_root`, the exact
 predecessor campaign-authority root, the complete generation-layer root, the expected digest of the
 canonical generation-context payload, and the common `workflow_root`. The canonical payload
 carries the tagged hard-scorer source hash, hard-score protocol hash, judge protocol hash,
@@ -522,10 +740,11 @@ Dependency edges, a bounded wait before the controller step, and single-use hand
 the provider controller cannot begin until the receipt/state writer's expected-OID compare-and-swap
 has won. The repository `GITHUB_TOKEN` is read-only in all four jobs.
 
-`BatchPlanV1` binds campaign ID, phase (`generation` or `judge`), input tag object and peeled commit,
-workflow-file hash, predecessor-ledger hash, ordered shard and request identities, maximum request
-attempts, worst-case reservation, price-snapshot hash, monotonic-time allowance, soft deadline,
-and its own hash. The plan size is a deterministic function of the remaining authorized exposure,
+`BatchPlanV1` binds campaign ID, `campaign_registry_sha256`, phase (`generation` or `judge`), both
+tag object OIDs and raw-object SHA-256 values, peeled C0 and B0 object bindings, workflow-file hash,
+predecessor-ledger hash, ordered shard and request identities, maximum request attempts, worst-case
+reservation, price-snapshot hash, monotonic-time allowance, soft deadline, and its own hash. The
+plan size is a deterministic function of the remaining authorized exposure,
 remaining ordered work, and frozen call/time bounds; it cannot be enlarged after approval. The
 key-free receipt/state writer finalizes the reservation receipt with the exact `workflow_run_id`,
 `run_attempt`, `job_id`, and `batch_attempt_id`; the protected provider job accepts only the
@@ -544,8 +763,10 @@ The execution contract also uses:
   batches, state sealing, collection, publication, and release finalization;
 - a three-hour hard job timeout plus the runner soft deadline in section 8;
 - `contents: read` and only the additional read permission needed to retrieve exact artifacts;
-- checkout of the preflight-recorded detached commit SHA without persisted credentials, followed by
-  a fresh tag-object-to-commit verification before each key-bearing step; and
+- checkout of preflight-recorded detached C0 without persisted credentials, followed before each
+  credential-bearing step by a fresh double-read of both exact refs and verification of the sealed
+  `campaign_registry_sha256`, T0/C0 and T1/B0 object bindings, ruleset snapshots, and no-drift
+  condition; and
 - timestamps for every provider attempt.
 
 One environment approval authorizes only that exact bounded batch, not the whole campaign. A resume
@@ -562,9 +783,9 @@ and run-attempt identity.
 
 Before credentials become available on resume, the job:
 
-1. selects the exact artifact ID from the exact workflow-run ID, run attempt, input tag object,
-   peeled commit SHA, workflow-file hash, environment deployment, batch-attempt ID, and upload
-   service digest; latest-by-name lookup is forbidden;
+1. selects the exact artifact ID from the exact workflow-run ID, run attempt, both tag-object
+   bindings, peeled C0/B0 bindings, `campaign_registry_sha256`, workflow-file hash, environment
+   deployment, batch-attempt ID, and upload service digest; latest-by-name lookup is forbidden;
 2. enforces archive byte size, member count, per-file, aggregate, path-depth, and time bounds;
 3. rejects PAX/GNU sparse records, absolute paths, backslashes, NUL, non-NFC or empty components,
    `.`/`..`, links, devices, FIFOs, duplicate normalized paths, and unexpected members;
@@ -584,10 +805,17 @@ or explicit new-attempt flow.
 
 `CampaignStateV1` is the only dispatcher authority. Each canonical record contains schema version,
 campaign ID, monotonically increasing transition number, current state, previous-state hash,
-triggering `CampaignEventV1` type and hash, input tag object and peeled commit, active phase-plan
-hash, spend-ledger hash, artifact-inventory Merkle root, optional STOP/incident ID, exact
-workflow/job or reviewer identities, `state_writer_git_identity_sha256`, and its own hash. Every
-event is single-use and parent-bound.
+triggering `CampaignEventV1` type and hash, `campaign_registry_sha256`, both tag-object bindings,
+peeled C0/B0 bindings, active phase-plan hash, spend-ledger hash, artifact-inventory Merkle root,
+optional STOP/incident ID, exact workflow/job or reviewer identities,
+`state_writer_git_identity_sha256`, and its own hash. Every event is single-use and parent-bound.
+Authority genesis stores the complete `CampaignRegistryV1` and
+`ProtocolAttestationTagBindingV1`; every successor event must reproduce their digests unchanged.
+Every phase plan, reservation, ledger, capsule, hard-score set, judge projection, audit packet,
+analysis attachment, evidence inventory, bundle, publication/correction intent and receipt, merge
+evidence, result tag, release asset, and replay registry binds the same
+`campaign_registry_sha256`. Supplying component hashes without that common registry digest confers
+no authority.
 Every state or hold mutation runs under the repository-wide concurrency group and performs a
 compare-and-swap against the exact last valid state and unresolved-hold root.
 An unknown event, skipped parent, duplicate event, or hash mismatch is rejected without mutating the
@@ -675,6 +903,23 @@ rejected. The final digest is domain-separated with
 `laconian-credential-exposure-incident-evidence-v1`. The evidence is safe metadata only and cannot
 contain the suspected credential bytes.
 
+The same closed reason enum contains `protocol_authority_drift`. It is allowed from every
+post-seal prepublication state, including `PREFLIGHTED`, and requires
+`ProtocolAuthorityDriftEvidenceV1` with exactly `schema_version`, `campaign_id`,
+`campaign_registry_sha256`, `parent_state`, `parent_authority_oid`,
+`protocol_attestation_tag_binding_sha256`, `observed_input_ref_oid`,
+`observed_companion_ref_oid`, `observed_tag_ruleset_snapshot_root`, `failed_predicates`,
+`verification_receipts_root`, `observed_at`, and
+`protocol_authority_drift_evidence_sha256`. An observed ref OID is null only when an exact
+authenticated absence receipt proves deletion. `failed_predicates` is a nonempty canonical ordered
+subset of `input_ref_moved`, `input_ref_deleted`, `companion_ref_moved`,
+`companion_ref_deleted`, `object_oid_mismatch`, `raw_object_sha256_mismatch`, `closure_mismatch`,
+`ruleset_drift`, `signature_identity_mismatch`, `topology_mismatch`, and
+`cross_campaign_replay`. Its digest uses separator
+`laconian-protocol-authority-drift-evidence-v1`. The event changes no external object, cannot adopt
+restored refs, and enters `STOPPED_INVALID`; after merge the existing release-invalidation or
+correction path applies instead of a new prepublication STOP.
+
 A secret-free `INVALID_EVENT_DISMISSED` proof may clear a benign hold in every state, including
 `RESULT_MERGED` and `RELEASED`. It must establish that the event was either an unauthorized-origin
 no-op or a byte-identical replay of an already applied event, and that it changed no state, ledger,
@@ -696,7 +941,7 @@ The allowed durable transitions are:
 
 | From | Event and required evidence | To | Authorized next action |
 |---|---|---|---|
-| none | `PREFLIGHT_SEALED`: valid tag, plans, budget, price snapshot, canonical `StateWriterGitIdentityV1`, parentless authority commit, and atomic `expected_absent` ref creation | `PREFLIGHTED` | prepare generation batch |
+| none | `PREFLIGHT_SEALED`: valid annotated T0/T1 pair, double-read object closure and ruleset receipts, canonical `CampaignRegistryV1` and companion binding, plans, budget, price snapshot, canonical `StateWriterGitIdentityV1`, parentless authority commit, and atomic `expected_absent` ref creation | `PREFLIGHTED` | prepare generation batch |
 | `PREFLIGHTED` or `GENERATION_RESUMABLE` | `BATCH_RECEIPT_CONSUMED`: exact unused reservation/job tuple and current-price attestation | `GENERATION_ACTIVE` | execute frozen generation batch |
 | `GENERATION_ACTIVE` | `NO_DISPATCH_PROVED`: exact job evidence proves zero provider dispatch and releases only never-started reservations | `GENERATION_RESUMABLE` | prepare a new exact batch attempt |
 | `GENERATION_ACTIVE` | `VERIFIED_PARTIAL`: exact successor ledger, no STOP, suffix remains | `GENERATION_RESUMABLE` | prepare exact next suffix |
@@ -1089,7 +1334,8 @@ cannot be joined to the campaign.
 The live stage receives only the in-memory `VerifiedGenerationContextExpectationV1` reconstructed
 under section 7.1. Every hard-score set and downstream judge projection repeats and verifies the
 tagged hard-scorer source hash, hard-score, judge, statistical, and audit protocol hashes,
-`protocol_attestations_root`, both identity-registry digests, and the common `workflow_root`.
+`campaign_registry_sha256`, `protocol_attestations_root`, both identity-registry digests, and the
+common `workflow_root`.
 Provider-evidence validation rejects any attachment or provider-index projection that omits,
 changes, nests as alleged authority, or substitutes one of these bindings.
 
@@ -1406,8 +1652,12 @@ release workflows; it never creates or closes a PR, moves an authority ref, crea
 release, uploads release assets, approves, or merges.
 
 Self-review and admin bypass are disabled where GitHub supports those controls. Deployment refs
-are restricted to the protected benchmark tags. Approval actors and deployment identities are
-retained in provenance.
+are restricted to the protected input-tag pattern; the paired attestation-tag pattern is separately
+protected against update and deletion and is never accepted as a workflow trigger. Both exact
+ruleset snapshots enter `ProtocolAttestationTagBindingV1`. Approval actors and deployment
+identities are retained in provenance. A platform administrator may technically bypass or later
+change a ruleset, so a ref name or ruleset is not immutable authority: exact Git OIDs,
+`GitObjectSHA256V1` values, the double-read receipts, and post-seal drift checks are mandatory.
 
 All automated benchmark-workflow writes use exactly three installed, pairwise-distinct,
 repository-scoped GitHub Apps with actor IDs frozen in the security protocol and receipts:
@@ -1420,6 +1670,11 @@ repository-scoped GitHub Apps with actor IDs frozen in the security protocol and
 - the **release-finalizer App** creates the exact protected annotated result tag, creates the exact
   draft release and checksum-bound assets, verifies their returned roots, and performs exactly one
   transition that publishes that draft.
+
+The companion-tag amendment adds no GitHub App, workflow, environment, credential, or secret. The
+existing 15-member workflow inventory and three-App topology remain exact; protocol reviewers and
+the operator create the serial review commits and paired annotated tags through protected human Git
+operations before preflight.
 
 The release-finalizer App installation also has `Administration: read`, but this does not add a
 fourth App or a write authority. A separate fixed `security_attestor` job in
@@ -1656,13 +1911,15 @@ repository installation and `StateBrokerCallerPolicyV1`, and requires its digest
 registry and as the ordered `security_evidence` protocol-attestation subject. `PREFLIGHT_SEALED`,
 every `CampaignEventV1`, publication/correction authority intent, `AuthorityMutationRequestV1`, and
 `AuthorityMutationReceiptV1` binds the same digest. A different identity requires a new input tag,
-security attestation, and campaign; no authority ref may mix identity digests.
+paired companion tag, three new signed statements, bundle, and campaign; no authority ref may mix
+identity digests.
 
-Every broker request carries one canonical `AuthorityMutationRequestV1`: campaign ID, transition
-number, event type/root, exact source-record bytes and their schema roots, authority ref, mutation
-mode (`expected_absent` or `expected_current_oid`), expected current OID or literal null, proposed
-tree root, commit timestamp, `state_writer_git_identity_sha256`, OIDC/run identity root, request
-idempotency key, and request digest.
+Every broker request carries one canonical `AuthorityMutationRequestV1`: campaign ID,
+`campaign_registry_sha256`, transition number, event type/root, exact source-record bytes and their
+schema roots, authority ref, mutation mode (`expected_absent` or `expected_current_oid`), expected
+current OID or literal null, proposed tree root, commit timestamp,
+`state_writer_git_identity_sha256`, OIDC/run identity root, request idempotency key, and request
+digest.
 The broker accepts no caller-supplied packfile, prebuilt commit, arbitrary path, or arbitrary Git
 object. It independently canonicalizes every schema record, recomputes its SHA-256 root, fetches and
 verifies the exact predecessor tree when one exists, and constructs the candidate Git objects.
@@ -1737,11 +1994,12 @@ at the expected OID it may retry the identical receive command, and any third OI
 No reconciliation path force-moves or rewinds a ref.
 
 Every attempt yields canonical `AuthorityMutationReceiptV1` in the broker's append-only durable
-log and as safe workflow evidence. It contains exactly schema version, campaign/request/idempotency
-IDs, event type/root, ref, mutation mode, expected old OID, ordered blob/tree OIDs, candidate commit
-OID, observed before/after OIDs, create/update/adopt outcome, endpoint-policy digest, ordered GitHub
-request IDs/statuses, App actor ID/login, `state_writer_git_identity_sha256`, OIDC identity root,
-started/completed timestamps, and receipt digest. It contains no App token or record payload.
+log and as safe workflow evidence. It contains exactly schema version,
+campaign/request/idempotency IDs, `campaign_registry_sha256`, event type/root, ref, mutation mode,
+expected old OID, ordered blob/tree OIDs, candidate commit OID, observed before/after OIDs,
+create/update/adopt outcome, endpoint-policy digest, ordered GitHub request IDs/statuses, App actor
+ID/login, `state_writer_git_identity_sha256`, OIDC identity root, started/completed timestamps, and
+receipt digest. It contains no App token or record payload.
 Duplicate request IDs must reproduce the same
 candidate and prior OID; conflicting reuse is denied. This protocol provides only exact authority
 ref creation/advance, not arbitrary repository write authority.
@@ -1758,13 +2016,15 @@ provider key. No `pull_request_target`, privileged automatic `workflow_run`, unt
 or model-generated command is used.
 
 Human authorities are separate and are not counted among the three automated Apps. The three
-protocol reviewers author and sign their exact protocol-attestation commits/PRs; the two audit
-reviewers author their commitment and reveal commits/PRs and sign adjudication; and maintainers
-perform environment/deployment approvals, exact-head validation authorization, protected PR review,
-and protected merges. These acts use the humans' own GitHub identities through normal protected
-repository controls; no human token is injected into a workflow. Human authorship or approval
-cannot replace an App receipt or authority CAS, and no App may substitute for a required human
-reviewer, approve its own PR, or merge.
+protocol reviewers author and sign, in registry role order, their exact one-statement reviewer
+commits; the operator creates the exact annotated T0/T1 tag pair only at its specified point in the
+serial construction; the two audit reviewers author their commitment and reveal commits/PRs and
+sign adjudication; and maintainers perform environment/deployment approvals, exact-head validation
+authorization, protected PR review, and protected merges. These acts use the humans' own GitHub
+identities through normal protected repository controls; no human token is injected into a
+workflow. Human authorship or approval cannot replace signature verification, an App receipt, or
+authority CAS, and no App may substitute for a required human reviewer, approve its own PR, or
+merge.
 
 The live secret is a dedicated project-scoped restricted key created for this benchmark campaign,
 not an organization/admin key. The project has no unrelated consumers, exposes only the API
@@ -1775,8 +2035,9 @@ Each provider batch has the exact four-role/job boundary in section 7.2: secret-
 protected repository-read-only provider, key-free receipt/state writer, and key-free post/state
 writer. The prepare job imports and verifies checkpoints, checks the predecessor ledger/STOP state,
 constructs `BatchPlanV1`, creates its worst-case reservation, and emits a digest-bound safe input
-artifact. The protected provider job checks out the exact detached preflight commit and re-verifies
-the tag object and plan digest, but its controller step remains disabled until the receipt/state
+artifact. The protected provider job checks out exact detached C0 and re-verifies both tag objects,
+the sealed `campaign_registry_sha256`, and the plan digest, but its controller step remains disabled
+until the receipt/state
 writer wins the single expected-OID authority CAS and the job verifies that won receipt. The
 post/state writer validates the output and performs the successor expected-OID CAS; neither state
 writer maps the provider key.
@@ -1872,11 +2133,13 @@ the blind audit packet from an exact provider-evidence root.
 
 Only after `AUDIT_COMPLETE` and `ANALYSIS_COMPLETE`, the secret-free, read-only complete collector
 accepts the sealed evidence inventory plus allowlisted exact workflow-run IDs, run
-attempts, job and batch-attempt IDs, artifact IDs, detached input/workflow SHAs, tag objects and
-peeled commits, environment deployments, service digests, capsule seals, attachment hashes, audit
-commitments, and statistical outputs. It rejects name-based latest lookup, duplicates, superseded
-attempts, PR/fork origins, and a missing predecessor. It binds the ordered set of all 36 generation
-capsules, all 36 `HardScoreRequestSetV1` attachments, and all 36 judge attachments, then creates an
+attempts, job and batch-attempt IDs, artifact IDs, detached input/workflow SHAs,
+`campaign_registry_sha256`, both tag objects and peeled commits, the exact campaign object closure,
+environment deployments, service digests, capsule seals, attachment hashes, audit commitments,
+and statistical outputs. It rejects name-based latest lookup, duplicates, superseded attempts,
+PR/fork origins, a missing predecessor, or any component that does not reconstruct the sealed
+registry. It binds the ordered set of all 36 generation capsules, all 36
+`HardScoreRequestSetV1` attachments, and all 36 judge attachments, then creates an
 allowlisted bundle artifact whose proposed repository destination is:
 
 ```text
@@ -1885,11 +2148,16 @@ benchmarks/results/<campaign-id>/
 
 The bundle includes:
 
-- campaign registry record and input/result commit identities;
+- campaign registry record, `ProtocolAttestationTagBindingV1`, and input/result commit identities;
 - copied native-v2 manifests, tier- and cache-dimensioned dated price snapshot, and per-batch
   reviewer attestations;
-- both independent identity registries, all three ordered protocol attestations and their root,
-  the 15-member workflow inventory, derived member hashes, and common workflow root;
+- both independent identity registries; all three canonical protocol-review statements; all three
+  ordered verified envelopes; the bundle, attestation root, and bundle digest; frozen REST,
+  GraphQL, local-signature, double-read, and ruleset verification receipts; the 15-member workflow
+  inventory, derived member hashes, and common workflow root;
+- exact raw T0, C0, Rstat, Rjudge, Rsecurity, B0, and T1 objects plus the canonical campaign object
+  closure inventory needed to reconstruct every tree delta, Git SHA-1 OID, and
+  `GitObjectSHA256V1` value offline;
 - exact cases, arm hashes, Caveman provenance, protocol hashes, and runner provenance;
 - all terminal and retry attempts, errors, exact applied-cache-control evidence, separate
   cache-read/cache-write usage and accounting, service-tier request/return/accounting evidence,
@@ -1902,7 +2170,9 @@ The bundle includes:
 - audit sample manifest, commitments, reveals, original labels, adjudication, and agreement
   report;
 - scored records, machine summary, bootstrap outputs, human-readable report, and limitations; and
-- a complete checksum manifest and reproducibility command.
+- a complete checksum manifest and reproducibility command that verifies the object closure with
+  network and credential-access canaries proving that replay performs no API call and reads no
+  provider or App secret.
 
 Raw and derived layers remain separately hash-bound. Recomputing an analysis creates a new
 attachment; it never mutates generation evidence.
@@ -1924,9 +2194,10 @@ secret material, or affected artifact content.
 
 The read-only collector seals a checksum manifest, fixed path inventory, and complete-bundle or
 prefix-finalizer digest. A secret-free `PublicationPlanV1` then binds that digest; the exact
-bundle kind (`complete` or `invalid_prefix`); the protected `main` base SHA; the input commit SHA;
-the ordered set of every present commitment, reveal, and adjudication merge SHA; the expected result
-path and tree diff; the publication workflow SHA; and the proposed branch name. A complete plan
+bundle kind (`complete` or `invalid_prefix`); `campaign_registry_sha256`; both tag-object and peeled
+commit bindings; the protected `main` base SHA; the input commit SHA; the ordered set of every
+present commitment, reveal, and adjudication merge SHA; the expected result path and tree diff; the
+publication workflow SHA; and the proposed branch name. A complete plan
 requires the full audit merge set. An invalid-prefix plan instead binds its exact STOP state and
 missing-stage suffix and cannot invent absent audit merges. The base must be current `main`, must
 contain the input commit and every present bound merge SHA as ancestors, and must not already contain
@@ -1947,8 +2218,9 @@ evidence specified in section 7.4; failed admission emits `RESULT_MERGE_INVALIDA
 `RELEASE_BLOCKED`. Neither path can consume the other's event.
 
 A separately approved `benchmark-publish` environment job runs trusted publisher preparation from
-the detached input commit with no App credential. It creates a separate worktree rooted at the
-exact publication base SHA, verifies the plan, bundle digest, workflow root, and inventory, copies
+detached C0 with no App credential. It creates a separate worktree rooted at the exact publication
+base SHA, rechecks both protected tag refs against the sealed companion binding, verifies the plan,
+`campaign_registry_sha256`, bundle digest, workflow root, and inventory, copies
 fixed allowlisted paths byte-for-byte, and verifies the exact expected tree diff and sealed commit
 root. It first persists the initial publication intent under section 7.6. Only then does its fixed
 byte-blind publisher step map the publisher-App credential; that step accepts only the intent,
@@ -1965,8 +2237,9 @@ resolution, exact-head validation, and human review apply. The publication contr
 maintainer with write access to verify the exact PR head SHA and sealed bundle digest and authorize
 the secret-free `publication-pr-validate` check required by branch protection. The publisher App
 cannot approve or merge its own PR. After human merge, a protected `ResultReleasePlanV1` binds the
-campaign, input tag, bundle digest, exact publication PR and approved head, merge commit and
-result-tree digest, result tag name, release workflow SHA, common workflow root, and asset digests.
+campaign, `campaign_registry_sha256`, both protocol tag bindings, bundle digest, exact publication
+PR and approved head, merge commit and result-tree digest, result tag name, release workflow SHA,
+common workflow root, and asset digests.
 A separately approved `benchmark-publish` release-finalizer job rechecks the plan and prepares the
 annotated-tag object and sealed opaque assets before any write token is mapped. The separate
 downscoped security-attestor job first fetches the supported immutable-Releases setting through
@@ -2050,12 +2323,24 @@ Implementation is test-driven and includes:
 - hard-score/request-set sealing plus judge-schema, prompt-blinding, injection-resistance,
   attachment-binding, zero-call attachment, and exact coverage tests;
 - audit sampling, certainty-unit coverage, canonicalization, exact two-entry audit identity
-  registry, exact ordered three-entry protocol registry/attestations, closed verification modes,
+  registry, exact ordered three-entry protocol registry/statements/envelopes, closed verification modes,
   role-specific ordered subject inventories and forbidden fields, numeric-ID/login/signature
   binding and non-null security-evidence fingerprint,
   commitment/reveal PR ordering, adjudication, weighting, agreement, model/arm-indexed false-fail
   sensitivity, quality/brevity extrema, exact-search certificates, and deterministic search-cap
   tests, including `M = K = 120` fail-closed exhaustion;
+- exact protocol-review DAG golden vectors fixing every synthetic T0, C0, Rstat, Rjudge,
+  Rsecurity, B0, and T1 Git SHA-1 OID and `GitObjectSHA256V1` value; strict
+  `ProtocolReviewStatementV1`, mode-discriminated `VerifiedProtocolAttestationV1`,
+  `ProtocolAttestationBundleV1`, and post-tag `ProtocolAttestationTagBindingV1` canonical-byte,
+  self-digest, ordered-root, path, delta, object-closure, REST/GraphQL signer, and local SSH/OpenPGP
+  verification vectors; malformed CanonicalJSON vectors explicitly reject floats, booleans where
+  integers are required, numeric strings, non-NFC strings, duplicate keys, reordered arrays, and
+  extra or missing fields; negative DAG vectors reject any attestation in C0, any envelope in its
+  own reviewer commit, wrong parent, path, role order or companion suffix, extra tree entry,
+  lightweight/nested/moved/deleted ref, mixed campaign, signature/identity/mode/fingerprint
+  mismatch, malformed or noncanonical JSON, ruleset drift, missing object, raw-object mismatch, or
+  cross-campaign replay;
 - exact call-count, default-tier price-snapshot attestation, non-null cache-write rates,
   `BatchPlanV1`, single-use job receipt, distinct cache-read/cache-write
   reservation/reconciliation/evidence, duplicate/rerun rejection, STOP propagation, and
@@ -2086,7 +2371,12 @@ Implementation is test-driven and includes:
   parent, current roots, source upload, scanner and containment receipts, artifact denylist, and
   open-PR close receipt where applicable, and reject every reason alias, secret-bearing field,
   excluded parent, or incomplete receipt;
-- `StateWriterGitIdentityV1` canonical-byte/digest, input-tag/App-account/security-attestation
+- campaign-binding golden and substitution tests proving `PREFLIGHT_SEALED`, authority genesis,
+  every `CampaignEventV1`, `BatchPlanV1`, generation context, provider attachment, collector,
+  publication/correction/release plan and receipt accept only the one sealed
+  `campaign_registry_sha256`, companion-tag binding, and attestation root, and reject a component
+  from any other otherwise-valid pair;
+- `StateWriterGitIdentityV1` canonical-byte/digest, input-tag/App-account/security-statement/envelope
   binding, literal ASCII author/committer line, whole-second epoch/timezone, and mixed-digest
   rejection tests; authority-object golden vectors for every permitted tree shape and Git
   blob/tree/commit byte, SHA-1 OID, fixed identity/time/message, parentless bootstrap and exact
@@ -2142,76 +2432,96 @@ Implementation is test-driven and includes:
   or supplied capability surrogate;
 - import- and call-graph tests proving all seven public replay commands are offline and
   non-evidentiary and that every live hard-score, judge, audit, analysis, and verification workflow
-  uses the exact Runtime or Publication entrypoint without invoking the public CLI; and
-- a full synthetic campaign that reconstructs the report from published-style artifacts without a
-  provider secret.
+  uses the exact Runtime or Publication entrypoint without invoking the public CLI; offline archive
+  replay installs network and credential-access canaries and proves it neither reaches GitHub nor
+  reads provider/App secrets; and
+- a full synthetic campaign that first constructs and verifies the complete
+  T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 DAG and then reconstructs the report from published-style
+  artifacts without a provider secret.
 
 PR and fork CI remains provider-offline and secret-free: it may fetch pinned actions and locked
 dependencies, but it has read-only repository permission and cannot make live model calls.
 
 ### 14.2 Live pilot
 
-Before preregistering the confirmatory tag, a separately labeled operational pilot runs one shared
-scenario in both languages, all four arms, one repetition, and all three generation models. At
-most 24 generation and 24 judge attempts are permitted, under the USD 5 cap. The pilot freezes
-`max_transient_retries = 0`, so retries cannot raise the actual API-attempt ceiling above 48.
+Before constructing the confirmatory pair, the provider-offline synthetic run first constructs and
+replays the complete T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 DAG. The repository then configures and
+records active rulesets for both pilot tag patterns. On the frozen pilot C0, the operator creates an
+annotated pilot T0; the three registry reviewers add and sign their one-statement commits serially;
+the verifier creates B0 with only the three envelopes and bundle; and the operator creates the
+paired annotated pilot T1. Pilot preflight double-reads the two refs, verifies the exact closure and
+signatures, seals its own `CampaignRegistryV1`, and only then may a separately labeled operational
+pilot run one shared scenario in both languages, all four arms, one repetition, and all three
+generation models. At most 24 generation and 24 judge attempts are permitted, under the USD 5 cap.
+The pilot freezes `max_transient_retries = 0`, so retries cannot raise the actual API-attempt ceiling
+above 48.
 
 The pilot validates API parameters; literal requested and returned `default` service-tier evidence;
 returned explicit/`30m` applied-cache-control evidence; separate zero cache-read/cache-write proof
 and STOP behavior; returned-model and usage capture; rate behavior; checkpoint transport; judge
 schema; and cost accounting. It is never benchmark evidence. The corpus and decision thresholds
-cannot be tuned to make the observed pilot effect favorable. A required protocol fix creates a new
-pilot identity; the confirmatory input tag is created only after the implementation is frozen and
-reverified.
+cannot be tuned to make the observed pilot effect favorable. A required protocol or implementation
+fix creates a new pilot pair, three new reviewer statements and signatures, a new bundle, and a new
+pilot campaign identity; no object or attestation from the failed pair is reused. The confirmatory
+pair is created only after the implementation is frozen and reverified.
 
 ### 14.3 Confirmatory sequence
 
-This amended design is a governance gate. The gate is satisfied by the dated **Amendment approval**
-record above, which binds the maintainer/user's explicit approval to normative design commit
-`46147ef62b5bb009421d58928e879d92247d84b5`. This successor changes governance metadata only. The
-historical 2026-08-30 approval could not satisfy this gate, and any later normative amendment
-invalidates this approval and requires a new explicit maintainer approval before any affected
-implementation slice, pilot, or live workflow rollout may begin.
+This attestation-transport amendment is a governance gate. The approval of
+`46147ef62b5bb009421d58928e879d92247d84b5` remains valid historical evidence for the prior design
+but does not satisfy this new gate. The exact commit containing this normative amendment is pending
+a new explicit maintainer approval. A later governance-only commit must record that exact SHA and
+approval message without changing normative text. Until then, implementation, pilot execution, and
+live rollout remain blocked; any later normative amendment repeats the same approval process.
 
-After this explicit reapproval and the still-required implementation, the release sequence is:
+After that exact reapproval and the still-required implementation, the release sequence is:
 
-1. full provider-offline synthetic campaign is green;
-2. the exact two audit identities and ordered three protocol identities/attestations are frozen,
-   and workflow security and statistical review are green against the common workflow root;
-3. the live operational pilot is green;
-4. code, manifests, methods, settings, seeds, price snapshot, and the exact
-   `StateWriterGitIdentityV1` member are frozen in the input tag and security attestation;
-5. preflight verifies that identity against the installed App account ID/login, proves SHA-1 object
-   format and a nonempty repository, canonically constructs the literal-identity parentless
-   transition-one object closure, and bootstraps the absent authority ref with one all-zero-old-OID
-   receive-pack command and an identity-bound `AuthorityMutationReceiptV1`;
-6. each required bounded generation batch receives `benchmark-live` approval and runs in order;
-7. all generation capsules are sealed, the authority-bound generation-context expectation is
+1. the full provider-offline synthetic campaign, including complete serial tag-pair construction
+   and offline object-closure replay, is green;
+2. the live operational pilot in section 14.2 is green under its own non-reusable pair;
+3. final code, manifests, methods, settings, seeds, price snapshot, both identity registries, exact
+   protocol subjects, and `StateWriterGitIdentityV1` are frozen in C0;
+4. both final tag-pattern rulesets are active and their exact trust-boundary snapshot is recorded;
+5. the operator creates final annotated T0 on C0;
+6. Rstat, Rjudge, and Rsecurity each add exactly their fixed-path statement and commit-sign it in
+   registry order; the verifier requires workflow security, judge/audit, and statistical review to
+   be green against the common workflow root;
+7. the verifier creates B0 with only the three verified envelopes and bundle delta, and the
+   operator creates deterministic paired annotated T1 on B0;
+8. preflight double-reads both refs, verifies the exact object closure, tag rulesets, registry,
+   statements, signatures, envelopes, roots, and bundle, constructs
+   `ProtocolAttestationTagBindingV1` and `CampaignRegistryV1`, verifies
+   `StateWriterGitIdentityV1` against the installed App account ID/login, proves SHA-1 object format
+   and a nonempty repository, canonically constructs the literal-identity parentless transition-one
+   object closure, and bootstraps the absent authority ref with one all-zero-old-OID receive-pack
+   command and an identity-bound `AuthorityMutationReceiptV1`;
+9. each required bounded generation batch receives `benchmark-live` approval and runs in order;
+10. all generation capsules are sealed, the authority-bound generation-context expectation is
    reconstructed, and `GENERATION_SET_SEALED` atomically binds the exact ordered 36 capsule hashes,
    `generation_context_expectation_sha256`, and `verified_generation_context_root` into
    `GENERATION_COMPLETE`; then the deterministic hard-score/request-set attachments are sealed;
-8. each required bounded judge batch receives `benchmark-live` approval and runs in order;
-9. generation, hard-score, and judge artifacts pass read-only provider-evidence integrity
+11. each required bounded judge batch receives `benchmark-live` approval and runs in order;
+12. generation, hard-score, and judge artifacts pass read-only provider-evidence integrity
    validation and `EvidenceInventoryV1` is sealed;
-10. two reviewers complete commit-reveal and adjudication;
-11. capsule-bound aggregation classifies every model outcome;
-12. the complete read-only collector seals the final bundle from provider evidence, audit, and
+13. two reviewers complete commit-reveal and adjudication;
+14. capsule-bound aggregation classifies every model outcome;
+15. the complete read-only collector seals the final bundle from provider evidence, audit, and
     analysis;
-13. `benchmark-publish` receives separate approval for the exact `PublicationPlanV1`, first seals
+16. `benchmark-publish` receives separate approval for the exact `PublicationPlanV1`, first seals
     `PUBLICATION_INTENT_AUTHORIZED`, then maps only the publisher App in the fixed step and creates
     or adopts the exact result branch/PR from the verified main base;
-14. a maintainer approves publication-PR validation for the exact head SHA and the reviewed PR
+17. a maintainer approves publication-PR validation for the exact head SHA and the reviewed PR
     merges;
-15. the read-only attestor promptly persists the exact passing, non-bypassed rule suite and the
+18. the read-only attestor promptly persists the exact passing, non-bypassed rule suite and the
     broker double-reads main, reconstructs `PostMergeAdmissionEvidenceV1`, and records the observed
     merge event; failed complete admission enters `RELEASE_BLOCKED`, while failed invalid-prefix
     admission enters its terminal invalid-merge state;
-16. `ResultReleasePlanV1` binds the observed merge commit and asset digests, and
+19. `ResultReleasePlanV1` binds the observed merge commit and asset digests, and
     `RESULT_RELEASE_INTENT_AUTHORIZED` is sealed before any tag/Release effect;
-17. the separately approved release finalizer maps only the release App, creates or adopts the
+20. the separately approved release finalizer maps only the release App, creates or adopts the
     protected annotated result tag, draft release, and checksum-bound assets, verifies them, and
     performs or adopts one publish transition with every receipt reconciled; and
-18. documentation, website, and social result packages are updated from the active, nonwithdrawn
+21. documentation, website, and social result packages are updated from the active, nonwithdrawn
     released lineage.
 
 If a correction PR is observed merged but fails admission, its exact typed `merged_invalid` event
@@ -2299,11 +2609,10 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- the governance prerequisite is satisfied by the dated approval record above: on 2026-08-30 the
-  maintainer/user in this Codex task explicitly approved normative design commit
-  `46147ef62b5bb009421d58928e879d92247d84b5` with the exact message
-  `Одобряю amendment 46147ef`; the historical pre-amendment approval alone was not sufficient, and
-  any later normative amendment requires a new explicit maintainer approval;
+- the governance prerequisite is satisfied by a governance-only successor that records the exact
+  commit SHA of this attestation-transport amendment and the maintainer/user's new explicit approval
+  message; approval `46147ef62b5bb009421d58928e879d92247d84b5` remains historical and cannot
+  satisfy this gate, and any later normative amendment requires another exact approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
@@ -2344,8 +2653,9 @@ The system is ready for the full campaign only when:
   one-parent fast-forward child, response loss reconciles only absent/exact/divergent outcomes, and
   no extra object, ref, parent, tree member, mode, endpoint, or REST pseudo-CAS is admitted; the
   input-tag `StateWriterGitIdentityV1` fixes the literal ASCII author/committer name/email bytes,
-  exact installed App numeric ID/login and digest, appears in the ordered security attestation and
-  every event/intent/request/receipt, and candidate construction ignores Git config/environment and
+  exact installed App numeric ID/login and digest, appears in the ordered security statement,
+  verified envelope, and every event/intent/request/receipt, and candidate construction ignores Git
+  config/environment and
   forbids alternate identity, control/Unicode bytes, signature/encoding/mergetag headers, timestamp,
   or timezone;
 - every post-upload `credential_exposure` STOP uses the canonical safe
@@ -2358,9 +2668,24 @@ The system is ready for the full campaign only when:
 - the exact two-entry audit registry and exact three-entry ordered protocol registry bind numeric
   IDs, logins, closed verification modes and fingerprints, the security-evidence fingerprint is
   non-null, every role has exactly its ordered required subject inventory and no forbidden field,
-  the three ordered attestations/root verify, and neither registry can substitute for the other;
+  the three ordered statements/envelopes/root verify, and neither registry can substitute for the
+  other;
+- C0 and `CampaignInputPackageV1` contain no protocol-review statement, envelope, attestation root,
+  or companion binding; T0 and T1 are annotated-only protected deterministic pairs; the exact
+  serial C0/Rstat/Rjudge/Rsecurity/B0 topology, one-parent fixed-path reviewer deltas, B0-only
+  three-envelope/bundle delta, strict CanonicalJSON schemas, REST/GraphQL and local keyed-signature
+  verification, and every Git SHA-1/raw-object SHA-256 golden vector verify; preflight double-reads
+  both refs and exact closure, freezes both ruleset snapshots, and rejects movement, deletion,
+  substitution, mixed campaigns, wrong identity/path/parent/order, malformed bytes, missing objects,
+  or repair in place;
+- `ProtocolAttestationTagBindingV1` originates only in preflight/authority evidence as live
+  authority and is copied downstream only through the sealed registry; canonical
+  `CampaignRegistryV1` derives campaign ID from its payload and binds T0/C0, all three reviewer
+  commits, B0/T1, signatures, bundle/root, workflow and rulesets; `campaign_registry_sha256` is
+  unchanged in authority genesis, every event and `BatchPlanV1`, generation context, provider/audit/
+  analysis evidence, collector, publication/correction/release records, and offline archive;
 - the exact ordered 15-path workflow inventory derives its member hashes and common root only from
-  verified C0 bytes, and protocol attestations, generation context, provider projection, and
+  verified C0 bytes, and protocol statements/envelopes, generation context, provider projection, and
   publication all verify that same root;
 - the authority-bound generation-context expectation is reconstructed only in campaign memory,
   binds campaign/registries/predecessor/generation layer and expected context digest without a hash
@@ -2384,8 +2709,9 @@ The system is ready for the full campaign only when:
   downscoped, read-only Administration/Metadata/Contents security-attestor token whose returned
   permissions and exact rule-suite/immutable-setting reads are receipt-bound and contain no write
   scope;
-- protocol/audit reviewer commits and PRs, maintainer validations/approvals, and protected human
-  merges remain distinct human authorities and cannot be replaced by any automated App or workflow;
+- serial protocol-reviewer statement commits, audit-reviewer commits/PRs, tag-operator acts,
+  maintainer validations/approvals, and protected human merges remain distinct human authorities
+  and cannot be replaced by any automated App or workflow;
 - the batch controller and every later artifact-consuming phase prove predecessor-ledger,
   single-use job receipt where applicable, per-attempt reservation, permanent STOP, soft-deadline,
   exact-suffix resume, and zero-subsequent-download/call behavior for authentication, permission,
@@ -2422,7 +2748,7 @@ The system is ready for the full campaign only when:
   passing rule-suite evidence, protected rulesets, canonical immutable-setting/Release observation,
   and pinned `gh release verify` evidence constrain the technically broader App permissions, and no
   workflow token can approve or merge a PR;
-- protected input/result tags, all three App installations, the state-broker OIDC/claim policy,
+- protected annotated input/companion/result tags, all three App installations, the state-broker OIDC/claim policy,
   actor restrictions, immutable Releases, and both GitHub environments are configured; and
 - the maintainer explicitly approves the live workflow deployment.
 
@@ -2444,6 +2770,9 @@ the integrity, coverage, quality, audit, and publication gates in this specifica
 - [GitHub calling reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow)
 - [Git receive-pack protocol](https://git-scm.com/docs/gitprotocol-pack.html)
 - [GitHub Git references API](https://docs.github.com/en/rest/git/refs)
+- [GitHub Git commits and verification object](https://docs.github.com/en/rest/git/commits)
+- [GitHub GraphQL `GitSignature`](https://docs.github.com/en/graphql/reference/git-objects#gitsignature)
+- [GitHub rules available for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 - [GitHub repository rule suites](https://docs.github.com/en/rest/repos/rule-suites)
 - [GitHub immutable-Releases setting](https://docs.github.com/en/rest/repos/repos#check-if-immutable-releases-are-enabled-for-a-repository)
 - [GitHub list Releases, including authenticated drafts](https://docs.github.com/en/rest/releases/releases#list-releases)
