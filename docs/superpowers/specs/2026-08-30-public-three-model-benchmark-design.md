@@ -470,12 +470,13 @@ statistical protocol hash, audit protocol hash, provider-projection root, and ev
 capsule root. Those bindings are retained unchanged in hard-score attachments, judge projections,
 provider-evidence inventory, analysis, and publication evidence.
 
-The final `GENERATION_COMPLETE` authority record binds the expectation digest in addition to the
-verified final generation-context root. To avoid a hash self-cycle, the expected context digest is
-computed over the canonical context payload without the expectation-link field; the expectation
-then binds that expected digest, and the final authority record binds both the reconstructed
-context root and the separately computed expectation digest. Verification requires both values to
-match their independently reconstructed objects.
+The `GENERATION_SET_SEALED` event and resulting `GENERATION_COMPLETE` authority record contain the
+required fields `generation_context_expectation_sha256` and
+`verified_generation_context_root` in addition to the 36 ordered capsule hashes. To avoid a hash
+self-cycle, the expected context digest is computed over the canonical context payload without the
+expectation-link field; the expectation then binds that expected digest, and the final authority
+record binds both the reconstructed context root and the separately computed expectation digest.
+Verification requires both values to match their independently reconstructed objects.
 
 This authority is a non-serializable campaign capability. Only campaign-side reconstruction of the
 predecessor authority root and final generation-layer roots may construct
@@ -507,11 +508,12 @@ credential-separated roles/jobs:
    `BatchPlanV1` for a contiguous prefix of remaining work;
 2. one protected, repository-read-only `benchmark-live` provider job, whose single controller step
    consumes the won receipt and plan sequentially with provider parallelism exactly one;
-3. a key-free receipt/state-writer job that uses only the state-writer GitHub App in its fixed
-   state-writer step to compare-and-swap the exact reservation receipt and authority predecessor;
+3. a key-free receipt/state-writer job whose fixed minimal reusable state-writer boundary invokes
+   the broker-held state-writer GitHub App to compare-and-swap the exact reservation receipt and
+   authority predecessor;
 4. a key-free post/state-writer job that validates and uploads every completed or partial logical
-   capsule and append-only attempt journal, then uses only the state-writer App in its fixed step to
-   compare-and-swap the successor ledger and authority state.
+   capsule and append-only attempt journal, then invokes that same broker-held App through the fixed
+   minimal reusable boundary to compare-and-swap the successor ledger and authority state.
 
 Dependency edges, a bounded wait before the controller step, and single-use handoff receipts ensure
 the provider controller cannot begin until the receipt/state writer's expected-OID compare-and-swap
@@ -595,6 +597,9 @@ for state names, event names, allowed parent-state and bundle-kind combinations,
 and terminality. The table below is a generated human-readable rendering of that schema, and tests
 load the same schema rather than maintaining a second transition list. Any table/schema drift,
 unknown enum value, or event whose evidence discriminator does not match its parent is rejected.
+For `GENERATION_SET_SEALED`, the schema's exact required-evidence set is the ordered 36 capsule
+hashes, `generation_context_expectation_sha256`, and `verified_generation_context_root`; neither
+root is optional, derivable after the transition, or replaceable by a raw context payload.
 
 A secret-free `INVALID_EVENT_DISMISSED` proof may clear a benign hold in every state, including
 `RESULT_MERGED` and `RELEASED`. It must establish that the event was either an unauthorized-origin
@@ -619,7 +624,7 @@ The allowed durable transitions are:
 | `PREFLIGHTED` or `GENERATION_RESUMABLE` | `BATCH_RECEIPT_CONSUMED`: exact unused reservation/job tuple and current-price attestation | `GENERATION_ACTIVE` | execute frozen generation batch |
 | `GENERATION_ACTIVE` | `NO_DISPATCH_PROVED`: exact job evidence proves zero provider dispatch and releases only never-started reservations | `GENERATION_RESUMABLE` | prepare a new exact batch attempt |
 | `GENERATION_ACTIVE` | `VERIFIED_PARTIAL`: exact successor ledger, no STOP, suffix remains | `GENERATION_RESUMABLE` | prepare exact next suffix |
-| `GENERATION_ACTIVE` | `GENERATION_SET_SEALED`: all 36 capsule hashes | `GENERATION_COMPLETE` | deterministic hard score |
+| `GENERATION_ACTIVE` | `GENERATION_SET_SEALED`: all 36 capsule hashes, `generation_context_expectation_sha256`, and `verified_generation_context_root` | `GENERATION_COMPLETE` | deterministic hard score |
 | `GENERATION_COMPLETE` | `HARD_SCORE_SET_SEALED`: all 36 request-set hashes | `HARD_SCORE_COMPLETE` | prepare judge batch |
 | `HARD_SCORE_COMPLETE` or `JUDGE_RESUMABLE` | `BATCH_RECEIPT_CONSUMED`: exact unused reservation/job tuple and current-price attestation | `JUDGE_ACTIVE` | execute frozen judge batch |
 | `JUDGE_ACTIVE` | `NO_DISPATCH_PROVED`: exact job evidence proves zero provider dispatch and releases only never-started reservations | `JUDGE_RESUMABLE` | prepare a new exact batch attempt |
@@ -640,7 +645,7 @@ The allowed durable transitions are:
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INVALIDATED`: exactly one typed correction invalidation with allowed phase parent and terminal evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
-| any nonterminal pre-publication state | `PERMANENT_STOP`: security, ambiguity, identity, receipt, price-snapshot mismatch, or provenance failure; any open publication PR is closed | `STOPPED_INVALID` | prefix/STOP finalizer only |
+| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason and evidence; an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix | `INVALID_FINALIZED` | publish registry/incident only |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
@@ -1220,7 +1225,8 @@ All automated benchmark-workflow writes use exactly three installed, pairwise-di
 repository-scoped GitHub Apps with actor IDs frozen in the security protocol and receipts:
 
 - the **state-writer App** performs only expected-OID, non-force, fast-forward updates on
-  `benchmark-authority/*`, from fixed hash-verified state-writer steps;
+  `benchmark-authority/*`, for requests admitted from the fixed hash-verified reusable
+  state-writer job;
 - the **publisher App** creates the exact result branch and PR bound by the current
   `PublicationPlanV1`, or closes that exact PR after its typed publication invalidation; and
 - the **release-finalizer App** creates the exact protected annotated result tag, creates the exact
@@ -1236,52 +1242,107 @@ state transition outside the frozen policy fails closed and leaves a durable rec
 
 The state-writer App private key is held only by an identity-bound external token broker; it is not
 stored in repository, organization, environment, or Actions secrets. The broker accepts GitHub OIDC
-only with the frozen audience and exact repository numeric ID and owner. `job_workflow_ref` must be
-`.github/workflows/benchmark-publication-state.yml@<verified-C0-SHA>`; `workflow_ref` must be an
-allowed caller below at the same C0 SHA. That reusable workflow has exact job ID `state_writer` and
-credential-bearing step ID `state-cas`; callers cannot request a token directly. The closed
-caller/event mapping is:
+only under a versioned `StateBrokerCallerPolicyV1`. The policy freezes the audience, exact
+`OWNER/REPO`, numeric `repository_id`, exact owner login and numeric `repository_owner_id`, and the
+repository's exact OIDC subject-customization/immutable-subject configuration state and digest; it
+does not assume one GitHub default `sub` format across repository creation, opt-in, rename, or
+transfer boundaries. The broker requires `typ=JWT`, `alg=RS256`, a `kid` that resolves through the
+current GitHub OIDC JWKS, issuer `https://token.actions.githubusercontent.com`, the frozen `aud`, a
+`sub` derived by the frozen repository configuration, `nbf <= iat <= now < exp`, an accepted age
+of at most five minutes, and a durable never-before-seen `jti`, then constructs an exact identity
+projection containing `repository`, `repository_id`, `repository_owner`, `repository_owner_id`,
+`actor`, `actor_id`, `ref`, `ref_type`, `sha`, `event_name`, `workflow`, `workflow_ref`,
+`workflow_sha`, `job_workflow_ref`, `job_workflow_sha`, `run_id`, `run_attempt`,
+`check_run_id`, and `runner_environment`. The projection requires every listed field; `actor` and
+`actor_id` must be the same plan-authorized human dispatcher in the frozen operator registry, and
+the `environment` claim must be absent because the reusable state-writer job does not use a GitHub
+environment. Standard JOSE/time claims remain raw token metadata. Any missing, duplicate, unknown
+identity field in the signed broker request, or value inconsistent with the JWT, GitHub API run,
+campaign plan, or frozen registry is denied; extra raw GitHub claims are retained but never confer
+authority.
 
-| Caller workflow | Allowed event types |
-|---|---|
-| `benchmark-preflight.yml` | `PREFLIGHT_SEALED` |
-| `benchmark-batch.yml` | `BATCH_RECEIPT_CONSUMED`, `NO_DISPATCH_PROVED`, `VERIFIED_PARTIAL`, `GENERATION_SET_SEALED`, `JUDGE_SET_SEALED`, `PERMANENT_STOP`, `BUDGET_EXHAUSTED` |
-| `benchmark-hard-score.yml` | `HARD_SCORE_SET_SEALED` |
-| `benchmark-evidence.yml` | `EVIDENCE_INVENTORY_SEALED` |
-| `benchmark-audit.yml` | `AUDIT_SEALED` |
-| `benchmark-analysis.yml` | `ANALYSIS_SEALED` |
-| `benchmark-collect-complete.yml` | `COMPLETE_BUNDLE_SEALED` |
-| `benchmark-finalize-invalid.yml` | `INVALID_PREFIX_SEALED` |
-| `benchmark-dismiss-hold.yml` | `INVALID_EVENT_DISMISSED` |
-| `benchmark-publish.yml` | `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation)` |
-| `benchmark-release.yml` | `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
+For a called workflow, GitHub's `workflow`, `ref`, `workflow_ref`, and `workflow_sha` describe the
+caller, while `job_workflow_ref` and `job_workflow_sha` describe the called reusable workflow. The
+caller reference must therefore be exactly
+`OWNER/REPO/.github/workflows/<allowed-caller>.yml@<trigger-ref>` and the called reference exactly
+`OWNER/REPO/.github/workflows/benchmark-publication-state.yml@<trigger-ref>`; bare paths and a
+synthetic `workflow_ref@C0` comparison are forbidden. `workflow` must equal the exact top-level
+workflow name extracted from the verified caller member. The caller uses the same-repository
+reusable-workflow form, so the called workflow resolves at the same triggering commit without a
+self-referential C0 literal in C0's own YAML. The called workflow has exact job ID `state_writer`.
+Because GitHub OIDC has no step-ID claim and `id-token: write` is job-scoped, the entire reusable
+job is the credential boundary: it contains only GitHub's OIDC bootstrap and one fixed,
+hash-pinned, argument-closed broker client, with no checkout, generated command, caller script, or
+caller-controlled action before or after it. `state-cas` is a reviewed YAML step ID, not an OIDC
+identity claim. The broker binds `check_run_id` to that reusable job through the GitHub API and
+performs the expected-OID CAS itself; no installation token is returned to any Actions step.
 
-Paths are implicitly under `.github/workflows/`; no other member of the 15-path inventory may call
-the broker. The broker verifies the run through the GitHub API and requires the exact job ID, common
-workflow root, campaign ID, caller-allowed event type,
+`<trigger-ref>` has exactly one of two forms selected by the caller row: the campaign's exact
+protected input tag `refs/tags/<campaign-input-tag>`, with `ref_type=tag`, `sha=C0`, and both
+workflow SHA claims equal to C0; or exact `refs/heads/main`, with `ref_type=branch`, `sha` and both
+workflow SHA claims equal to the single main commit already bound by the applicable audit,
+analysis, collection, publication, release, dismissal, or correction plan. For a main run the
+broker also reads both workflow members at that commit and requires their bytes to equal the
+corresponding C0-derived member hashes in the common workflow root. All caller rows require
+`event_name=workflow_dispatch`; a reusable `workflow_call` is the mechanism of the called job, not
+the triggering event reported by these OIDC tokens. The closed caller/ref/event mapping is:
+
+| Caller workflow | Required triggering ref | Allowed event types |
+|---|---|---|
+| `benchmark-preflight.yml` | exact campaign input tag | `PREFLIGHT_SEALED` |
+| `benchmark-batch.yml` | exact campaign input tag | `BATCH_RECEIPT_CONSUMED`, `NO_DISPATCH_PROVED`, `VERIFIED_PARTIAL`, `GENERATION_SET_SEALED`, `JUDGE_SET_SEALED`, `PERMANENT_STOP`, `BUDGET_EXHAUSTED` |
+| `benchmark-hard-score.yml` | exact campaign input tag | `HARD_SCORE_SET_SEALED`, `PERMANENT_STOP` |
+| `benchmark-evidence.yml` | exact campaign input tag | `EVIDENCE_INVENTORY_SEALED`, `PERMANENT_STOP` |
+| `benchmark-audit.yml` | exact plan-bound `main` | `AUDIT_SEALED`, `PERMANENT_STOP` |
+| `benchmark-analysis.yml` | exact plan-bound `main` | `ANALYSIS_SEALED`, `PERMANENT_STOP` |
+| `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP` |
+| `benchmark-finalize-invalid.yml` | exact campaign input tag | `INVALID_PREFIX_SEALED` |
+| `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP` |
+| `benchmark-publish.yml` | exact plan-bound `main` | `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation)` |
+| `benchmark-release.yml` | exact plan-bound `main` | `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
+
+Paths are fully qualified as above; no other member of the 15-path inventory may call the broker.
+The broker verifies the run and reusable caller/callee relationship through the GitHub API and
+requires `run_id`, `run_attempt`, and `check_run_id` to resolve to the exact reusable job, exact
+caller and callee workflow commits, and exact initial-run actor. On a rerun it separately obtains
+the REST `triggering_actor` and requires that login/numeric ID to be plan-authorized; no nonexistent
+OIDC `triggering_actor` claim is assumed. It also requires the common workflow root, campaign ID,
+caller-allowed event type,
 `refs/heads/benchmark-authority/<campaign-id>` target, and expected current OID in the signed token
-request.
+request. `PERMANENT_STOP` is additionally closed by schema parent and reason: batch may emit it only
+from `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `HARD_SCORE_COMPLETE`,
+`JUDGE_RESUMABLE`, or `JUDGE_ACTIVE` for provider, reservation, delivery, identity, ledger, or
+security evidence; hard-score only from `GENERATION_COMPLETE` for generation-context or hard-score
+integrity failure; evidence only from `JUDGE_COMPLETE` for coverage or provider-evidence failure;
+audit only from `PROVIDER_EVIDENCE_VERIFIED` for identity, nonparticipation, reveal, or adjudication
+protocol failure; analysis only from `AUDIT_COMPLETE` for statistical, provenance, or integrity
+failure; and complete collection only from `ANALYSIS_COMPLETE` for bundle coverage or lineage
+failure. Publish may emit it only from `BUNDLE_COLLECTED` or `COMPLETE_PUBLICATION_PR_OPEN`, and the
+latter requires the exact publisher-App close receipt for that open PR. Dismiss-hold may emit it
+only from one of those already enumerated predecessor states after proving a cited nondismissible
+`InvalidEventHoldV1` whose source evidence matches the same phase-specific reason. No other
+predecessor, reason discriminator, caller, or wildcard STOP authority exists.
 
-The OIDC `ref` is closed to either the protected campaign input-tag ref whose object peels to C0, or
-`refs/heads/main` at the exact SHA already bound by a publication, release, dismissal, or correction
-plan. Pull-request refs, branches other than exact `main`, tag/commit mismatches, unlisted reusable
-workflows, a different job/step, and a stale expected OID are denied before token minting. The broker
-issues a single-repository, short-lived installation token for one fixed state-writer invocation;
-the token is never returned to a caller-controlled shell, expires within five minutes, and is
-discarded immediately after the one expected-OID CAS. Its request ID, OIDC subject/claims, App actor,
-expiry, event kind, authority ref, expected/new OIDs, and broker decision are recorded in the state
-receipt. Policy tests prove an unrelated workflow—even on an otherwise allowed ref—cannot obtain
-the credential.
+Pull-request refs, branches other than exact `main`, any other tag, a tag/object/commit mismatch,
+unlisted callers or called workflows, caller/callee SHA or byte mismatch, an unexpected
+`environment`, a different event/job/check-run/actor, and a stale expected OID are denied before
+token minting. The broker obtains a single-repository, short-lived installation token for one fixed
+state-writer invocation; the token never leaves the broker, expires within five minutes, and is
+discarded immediately after the one expected-OID CAS. Its request ID, raw OIDC
+subject/claims, canonical identity projection, App actor, expiry, event kind and STOP reason,
+authority ref, expected/new OIDs, and broker decision are recorded in the state receipt. Policy
+tests prove an unrelated workflow—even on an otherwise allowed ref—cannot obtain the credential.
 
 Publisher and release-finalizer credentials are mapped only in their separately approved
-`benchmark-publish` jobs. State-writer App credentials are mapped only in fixed state-writer steps.
-No App credential is present in provider-controller, model-output parsing, scoring, packaging, or
-artifact-inspection scope, and no App ever receives `OPENAI_API_KEY` or a model-output field as an
-input, environment value, argument, stdin, or log. A fixed byte-blind transport step may transmit
-only already sealed opaque Git objects or release assets whose roots are plan-bound; it cannot
-decode or select their contents. Provider jobs have read-only repository permissions. Publication
-jobs never receive the provider key. No `pull_request_target`, privileged automatic `workflow_run`,
-untrusted fork code, or model-generated command is used.
+`benchmark-publish` jobs. State-writer App credentials are never mapped into Actions; the broker
+uses them only after the fixed reusable job passes the closed policy above. No App credential is
+present in provider-controller, model-output parsing, scoring, packaging, or artifact-inspection
+scope, and no App ever receives `OPENAI_API_KEY` or a model-output field as an input, environment
+value, argument, stdin, or log. A fixed byte-blind transport step may transmit only already sealed
+opaque Git objects or release assets whose roots are plan-bound; it cannot decode or select their
+contents. Provider jobs have read-only repository permissions. Publication jobs never receive the
+provider key. No `pull_request_target`, privileged automatic `workflow_run`, untrusted fork code,
+or model-generated command is used.
 
 Human authorities are separate and are not counted among the three automated Apps. The three
 protocol reviewers author and sign their exact protocol-attestation commits/PRs; the two audit
@@ -1524,15 +1585,23 @@ Implementation is test-driven and includes:
   PR/merge/tag/draft/asset/publish crash-window reconciliation, atomic
   `CORRECTION_RESULT_RELEASED` escape, terminal correction append, distinct phase-bound correction
   invalidations, immutable-orphan evidence, invalid-finalization, and happy-path property tests;
+  canonical golden vectors for `GENERATION_SET_SEALED` require the exact ordered 36 capsule hashes,
+  `generation_context_expectation_sha256`, and `verified_generation_context_root`, and reject an
+  omitted, extra, swapped, malformed, or independently mismatched root while proving the rendered
+  transition table is generated from that same required-evidence schema;
 - closed retry-taxonomy, `Retry-After`, jitter, retry exhaustion, 401/403 stop, ambiguous delivery,
   soft deadline, forced runner loss, and exact-suffix resume tests;
 - tar round-trip, hidden-lock, mode, digest, extraction, traversal, link, overwrite, inventory,
   and secret-scan tests;
 - exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
   provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
-  human/App authority separation, OIDC state-broker claim/ref/workflow/job/step/OID restrictions,
-  unrelated-workflow and pull-request-ref denial, token expiry, per-batch environment approval,
-  campaign concurrency, batch-controller ordering,
+  human/App authority separation, OIDC state-broker exact identity projection, fully qualified
+  caller/callee references, tag/main `ref`/`ref_type`/`sha` and caller/callee SHA semantics,
+  `typ`/`alg`/`kid`/issuer/audience/subject/time/single-use-`jti`, absent-environment and exact
+  actor/repository/check-run/rerun-initiator restrictions, minimal reusable-job boundary,
+  missing/extra/mismatch, unrelated-workflow, and pull-request-ref denial, token expiry, and every
+  closed phase-specific `PERMANENT_STOP` caller/parent/reason allow and deny vector, per-batch
+  environment approval, campaign concurrency, batch-controller ordering,
   step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
   policy tests;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
@@ -1540,8 +1609,9 @@ Implementation is test-driven and includes:
   minimal App publisher, exact-head manual publication-PR validation, `ResultReleasePlanV1`,
   annotated-tag/draft-assets/one-publish release finalizer, and correction-lineage tests;
 - authority-bound generation-context expectation reconstruction, no-hash-self-cycle, tagged
-  protocol/workflow-root propagation, and rejection of every serialized or supplied capability
-  surrogate;
+  protocol/workflow-root propagation, exact expectation/final-root binding in the schema-canonical
+  `GENERATION_SET_SEALED` event and `GENERATION_COMPLETE` record, and rejection of every serialized
+  or supplied capability surrogate;
 - import- and call-graph tests proving all seven public replay commands are offline and
   non-evidentiary and that every live hard-score, judge, audit, analysis, and verification workflow
   uses the exact Runtime or Publication entrypoint without invoking the public CLI; and
@@ -1582,8 +1652,9 @@ After that explicit reapproval and implementation, the release sequence is:
 4. code, manifests, methods, settings, seeds, and price snapshot are frozen in the input tag;
 5. each required bounded generation batch receives `benchmark-live` approval and runs in order;
 6. all generation capsules are sealed, the authority-bound generation-context expectation is
-   reconstructed and bound by `GENERATION_COMPLETE`, and the deterministic
-   hard-score/request-set attachments are sealed;
+   reconstructed, and `GENERATION_SET_SEALED` atomically binds the exact ordered 36 capsule hashes,
+   `generation_context_expectation_sha256`, and `verified_generation_context_root` into
+   `GENERATION_COMPLETE`; then the deterministic hard-score/request-set attachments are sealed;
 7. each required bounded judge batch receives `benchmark-live` approval and runs in order;
 8. generation, hard-score, and judge artifacts pass read-only provider-evidence integrity
    validation and `EvidenceInventoryV1` is sealed;
@@ -1601,9 +1672,10 @@ After that explicit reapproval and implementation, the release sequence is:
     publish transition; and
 16. documentation, website, and social result packages are updated from the merged evidence.
 
-At any provider-stage `PERMANENT_STOP` or `BUDGET_EXHAUSTED`, the sequence branches immediately to
-the prefix/STOP finalizer and safe invalid-campaign publication path defined by `CampaignStateV1`.
-It does not continue to judge, audit, aggregate, or complete collection.
+At any authorized prepublication `PERMANENT_STOP`, or any provider-stage `BUDGET_EXHAUSTED`, the
+sequence branches immediately to the prefix/STOP finalizer and safe invalid-campaign publication
+path defined by `CampaignStateV1`. It does not continue to a later live, audit, aggregate, complete
+collection, or complete-publication stage.
 
 ## 15. Known limitations
 
@@ -1692,13 +1764,21 @@ The system is ready for the full campaign only when:
   publication all verify that same root;
 - the authority-bound generation-context expectation is reconstructed only in campaign memory,
   binds campaign/registries/predecessor/generation layer and expected context digest without a hash
-  self-cycle, and carries the tagged hard-scorer plus hard-score, judge, statistics, audit protocols
-  and workflow root through final provider and publication evidence;
+  self-cycle, the schema-canonical `GENERATION_SET_SEALED` evidence and resulting
+  `GENERATION_COMPLETE` both require `generation_context_expectation_sha256` and
+  `verified_generation_context_root` alongside the ordered 36 capsule hashes, and that lineage
+  carries the tagged hard-scorer plus hard-score, judge, statistics, audit protocols and workflow
+  root through final provider and publication evidence;
 - the repository `GITHUB_TOKEN` is read-only everywhere; the four-job provider boundary is exact;
   the state-writer, publisher, and release-finalizer Apps are pairwise distinct and repository
-  scoped; the state token broker admits only the exact reusable workflow/C0/ref/job/step/event/OID
-  claims and denies unrelated workflows; and App/provider credentials are mapped only in their
-  fixed, separately authorized steps with no provider-key/model-output overlap;
+  scoped; the state token broker admits only the exact repository/actor identity, fully qualified
+  caller and reusable-workflow paths at the exact tag or main ref, real
+  `workflow_sha`/`job_workflow_sha` caller/callee semantics, event/check-run/OID tuple, minimal
+  reusable job, frozen crypto/audience/subject/time/single-use-token policy, REST-verified rerun
+  initiator, and phase-specific caller/parent/reason STOP authority, and denies every unrelated
+  workflow, ref, identity, missing/extra/mismatched claim, predecessor, or event; App/provider
+  credentials are mapped only in their fixed, separately authorized boundaries with no
+  provider-key/model-output overlap;
 - protocol/audit reviewer commits and PRs, maintainer validations/approvals, and protected human
   merges remain distinct human authorities and cannot be replaced by any automated App or workflow;
 - the batch controller proves predecessor-ledger, single-use job receipt, per-attempt reservation,
@@ -1745,6 +1825,9 @@ the integrity, coverage, quality, audit, and publication gates in this specifica
 - [GitHub Actions artifact storage](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 - [Secure use of GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use)
 - [GitHub `GITHUB_TOKEN` workflow-run behavior](https://docs.github.com/en/actions/concepts/security/github_token)
+- [GitHub OpenID Connect token claims](https://docs.github.com/en/actions/reference/security/oidc#oidc-token-claims)
+- [GitHub OIDC with reusable workflows](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows#how-the-token-works-with-reusable-workflows)
+- [GitHub calling reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow)
 - [OpenAI project and restricted-key controls](https://help.openai.com/en/articles/9186755-managing-projects-in-the-api-platform)
 - [OpenAI Responses create API reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 - [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
