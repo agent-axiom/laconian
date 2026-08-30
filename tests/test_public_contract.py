@@ -44,12 +44,27 @@ STANDALONE_URL = (
 )
 STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
 STANDALONE_RMDIR = 'rmdir "$HOME/.agents/skills/if"'
+APPROVED_NEGATED_SOCIAL_CLAIMS = (
+    "not proven",
+    "no numeric token savings",
+    "does not claim numeric token savings",
+    "not a benchmark winner",
+    "not a universal-directory listing",
+)
 
 
 def _read(path: str) -> str:
     full_path = ROOT / path
     assert full_path.is_file(), f"missing public file: {path}"
     return full_path.read_text(encoding="utf-8")
+
+
+def _social_claim_scan_text(text: str) -> str:
+    folded = text.casefold()
+    for approved in APPROVED_NEGATED_SOCIAL_CLAIMS:
+        pattern = rf"(?<![\w-]){re.escape(approved)}(?![\w-])"
+        folded = re.sub(pattern, "", folded)
+    return folded
 
 
 @pytest.mark.parametrize("filename", README_FILES.values())
@@ -403,6 +418,31 @@ def test_alpha_release_notes_describe_only_the_experimental_release() -> None:
         assert phrase.casefold() in text.casefold()
 
 
+@pytest.mark.parametrize(
+    ("approved", "affirmative", "prohibited"),
+    (
+        ("Not proven.", "Proven.", "proven"),
+        ("No numeric token savings.", "Numeric token savings.", "numeric token savings"),
+        (
+            "Does not claim numeric token savings.",
+            "Claims numeric token savings.",
+            "numeric token savings",
+        ),
+        ("Not a benchmark winner.", "Benchmark winner.", "benchmark winner"),
+        (
+            "Not a universal-directory listing.",
+            "Universal-directory listing.",
+            "universal-directory listing",
+        ),
+    ),
+)
+def test_social_claim_guard_allows_only_approved_negations(
+    approved: str, affirmative: str, prohibited: str
+) -> None:
+    assert prohibited not in _social_claim_scan_text(approved)
+    assert prohibited in _social_claim_scan_text(affirmative)
+
+
 def test_social_launch_copy_is_explicitly_experimental() -> None:
     text = _read("docs/social/alpha-launch.md")
     publishable, separator, boundaries = text.partition("## Claim boundaries")
@@ -415,6 +455,7 @@ def test_social_launch_copy_is_explicitly_experimental() -> None:
     assert "one-file workflow" in text
     assert "experimental alpha" in text
     assert "open benchmark under development" in text
+    publishable_claims = _social_claim_scan_text(publishable)
     for prohibited in (
         "proven",
         "numeric token savings",
@@ -422,5 +463,5 @@ def test_social_launch_copy_is_explicitly_experimental() -> None:
         "universal-directory listing",
     ):
         assert f"- {prohibited}" in prohibited_block
-        assert prohibited not in publishable.casefold()
+        assert prohibited not in publishable_claims
     assert re.search(r"\b\d+(?:[.,]\d+)?\s*%", text) is None
