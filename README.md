@@ -81,6 +81,7 @@ For a standalone, pinned one-file installation:
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -95,10 +96,20 @@ For a standalone, pinned one-file installation:
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
-The installer refuses to overwrite any existing path at the target.
+The installer refuses a symlink at either the skill directory or target, and refuses to overwrite
+any existing target path.
 
 Invoke the standalone skill as `$if`. Verify the copied file with:
 
@@ -106,8 +117,9 @@ Invoke the standalone skill as `$if`. Verify the copied file with:
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-Standalone uninstall accepts only the unmodified regular file. It refuses symlinks and modified or
-replaced files, which require manual inspection; it removes the directory only when empty:
+Standalone uninstall accepts only the unmodified regular file. It refuses a symlink at either the
+skill directory or target, and refuses modified or replaced files; those cases require manual
+inspection. It removes the directory only when empty:
 
 ```bash
 (
@@ -115,6 +127,8 @@ replaced files, which require manual inspection; it removes the directory only w
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then

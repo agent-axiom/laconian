@@ -84,6 +84,7 @@ Per un'installazione autonoma del singolo file con versione fissata:
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -98,10 +99,20 @@ Per un'installazione autonoma del singolo file con versione fissata:
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
-Il programma di installazione rifiuta di sovrascrivere qualsiasi percorso di destinazione esistente.
+Il programma di installazione rifiuta un collegamento simbolico sia per la directory della skill
+sia per la destinazione e non sovrascrive alcun percorso di destinazione esistente.
 
 Invocare la skill autonoma con `$if`. Verificare il file copiato con:
 
@@ -109,8 +120,9 @@ Invocare la skill autonoma con `$if`. Verificare il file copiato con:
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-La disinstallazione autonoma accetta soltanto il file regolare non modificato. Rifiuta collegamenti
-simbolici e file modificati o sostituiti, che richiedono un controllo manuale; rimuove la directory
+La disinstallazione autonoma accetta soltanto il file regolare non modificato. Rifiuta un
+collegamento simbolico sia per la directory della skill sia per il file di destinazione, oltre ai
+file modificati o sostituiti; questi casi richiedono un controllo manuale. Rimuove la directory
 soltanto se è vuota:
 
 ```bash
@@ -119,6 +131,8 @@ soltanto se è vuota:
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then

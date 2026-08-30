@@ -85,6 +85,7 @@ codex plugin marketplace remove laconian --json
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -99,10 +100,20 @@ codex plugin marketplace remove laconian --json
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
-Установщик отказывается перезаписывать любой уже существующий путь назначения.
+Установщик отклоняет символическую ссылку как в пути каталога навыка, так и в целевом пути, и
+отказывается перезаписывать любой уже существующий целевой путь.
 
 Отдельный навык вызывается как `$if`. Проверьте скопированный файл:
 
@@ -110,9 +121,9 @@ codex plugin marketplace remove laconian --json
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-Удаление отдельной установки принимает только неизменённый обычный файл. Символические ссылки, а
-также изменённые или заменённые файлы не удаляются и требуют ручной проверки; каталог удаляется
-только тогда, когда он пуст:
+Удаление отдельной установки принимает только неизменённый обычный файл. Символическая ссылка как
+в пути каталога навыка, так и в целевом пути, а также изменённый или заменённый файл отклоняются и
+требуют ручной проверки. Каталог удаляется только тогда, когда он пуст:
 
 ```bash
 (
@@ -120,6 +131,8 @@ test -s "$HOME/.agents/skills/if/SKILL.md"
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then

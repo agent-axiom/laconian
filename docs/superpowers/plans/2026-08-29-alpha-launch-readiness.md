@@ -550,8 +550,8 @@ Use the marketplace object asserted by the test. Do not duplicate `SKILL.md` und
 Run:
 
 ```bash
-uv run python /Users/if/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/if
-uv run python /Users/if/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
+uv run python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/if
+uv run python "${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator/scripts/validate_plugin.py" .
 uv run pytest tests/test_skill_contract.py tests/test_plugin_contract.py -q
 ```
 
@@ -821,9 +821,9 @@ codex plugin remove laconian@laconian --json
 codex plugin marketplace remove laconian --json
 ```
 
-Provide the hardened standalone path. It refuses a symlinked skill directory or any existing target,
-downloads to a same-directory temporary file, verifies the canonical digest, and installs with a
-no-clobber hard link:
+Provide the hardened standalone path. It refuses a symlink at either the skill directory or target
+and refuses any existing target, downloads to a same-directory temporary file, verifies the
+canonical digest, and installs with a no-clobber hard link:
 
 ```bash
 (
@@ -833,6 +833,7 @@ no-clobber hard link:
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -847,6 +848,15 @@ no-clobber hard link:
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
@@ -856,8 +866,9 @@ State that standalone invocation is `$if`, and verify the copy with:
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-Under a separate uninstall label, remove only an unchanged canonical regular file. Refuse symlinks
-and modified or replaced files for manual inspection, and leave any nonempty directory intact:
+Under a separate uninstall label, remove only an unchanged canonical regular file. Refuse a symlink
+at either the skill directory or target and refuse modified or replaced files for manual inspection;
+leave any nonempty directory intact:
 
 ```bash
 (
@@ -865,6 +876,8 @@ and modified or replaced files for manual inspection, and leave any nonempty dir
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -1127,8 +1140,8 @@ git commit -m "ci: gate and publish alpha plugin releases"
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
-uv run python /Users/if/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/if
-uv run python /Users/if/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
+uv run python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/if
+uv run python "${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator/scripts/validate_plugin.py" .
 uv run pytest tests/test_ci_contract.py tests/test_plugin_contract.py \
   tests/test_release_bundle.py tests/test_skill_contract.py tests/test_public_contract.py -q
 ```

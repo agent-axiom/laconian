@@ -104,6 +104,7 @@ codex plugin marketplace remove laconian --json
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -118,10 +119,20 @@ codex plugin marketplace remove laconian --json
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
-Ὁ ἐγκαταστάτας οὐδεμίαν ἤδη ἐοῦσαν ὁδὸν ἐν τῷ τέλει ἐπικαλύπτει.
+Ὁ ἐγκαταστάτας `symbolic link` ἔν τε τῷ καταλόγῳ τοῦ `skill` καὶ ἐν τῷ τέλει
+ἀρνεῖται, οὐδὲ ἤδη ἐοῦσαν ὁδὸν ἐν τῷ τέλει ἐπικαλύπτει.
 
 Τὸ καθ᾽ αὑτὸ `skill` τῷ `$if` κάλει. Τὸ ἀντίγραφον τῷδε δοκίμασον:
 
@@ -130,8 +141,9 @@ test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
 Ἁ καθ᾽ αὑτὸ ἀφαίρεσις μόνον τὸ ἀμετάβλητον ὀρθὸν ἀρχεῖον δέχεται. `Symbolic
-link` ἢ μεταβεβλημένον ἢ ἀντικατασταθὲν ἀρχεῖον ἀρνεῖται· ταῦτα χερσὶν
-ἐπισκεπτέα. Τὸν κατάλογον μόνον αἴκα κενὸς ᾖ ἀφαιρεῖ:
+link` ἔν τε τῷ καταλόγῳ τοῦ `skill` καὶ ἐν τῷ τέλει, ἢ μεταβεβλημένον ἢ
+ἀντικατασταθὲν ἀρχεῖον, ἀρνεῖται· ταῦτα χερσὶν ἐπισκεπτέα. Τὸν κατάλογον
+μόνον αἴκα κενὸς ᾖ ἀφαιρεῖ:
 
 ```bash
 (
@@ -139,6 +151,8 @@ link` ἢ μεταβεβλημένον ἢ ἀντικατασταθὲν ἀρ�
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then

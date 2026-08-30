@@ -1,6 +1,8 @@
 import hashlib
+import os
 import re
 import struct
+import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -53,6 +55,7 @@ STANDALONE_INSTALL_BLOCK = f"""(
   skill_expected_sha256="{STANDALONE_SHA256}"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -67,12 +70,23 @@ STANDALONE_INSTALL_BLOCK = f"""(
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${{skill_tmp##*/}}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )"""
 STANDALONE_UNINSTALL_BLOCK = f"""(
   set -eu
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="{STANDALONE_SHA256}"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -113,6 +127,55 @@ def _social_claim_scan_text(text: str) -> str:
     return folded
 
 
+def _standalone_test_environment(tmp_path: Path, *, curl_mode: str) -> tuple[Path, dict[str, str]]:
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        """#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+test -n "$output"
+if [ "$STUB_CURL_MODE" = "race-directory" ]; then
+  mkdir "$HOME/.agents/skills/if/SKILL.md"
+fi
+cp "$STUB_SKILL_SOURCE" "$output"
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.defpath)}",
+            "STUB_CURL_MODE": curl_mode,
+            "STUB_SKILL_SOURCE": str(ROOT / "skills/if/SKILL.md"),
+        }
+    )
+    return home, env
+
+
+def _run_standalone_block(block: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", block],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 @pytest.mark.parametrize("filename", README_FILES.values())
 def test_all_six_readme_editions_exist(filename: str) -> None:
     assert (ROOT / filename).is_file(), f"missing README edition: {filename}"
@@ -142,7 +205,13 @@ def test_standalone_lifecycle_is_collision_safe_and_hash_pinned() -> None:
     )
 
     install = STANDALONE_INSTALL_BLOCK
-    assert install.index('test ! -L "$skill_dir"') < install.index('mkdir -p "$skill_dir"')
+    directory_guards = [
+        match.start()
+        for match in re.finditer(r'^  test ! -L "\$skill_dir"$', install, re.MULTILINE)
+    ]
+    assert len(directory_guards) == 2
+    mkdir_position = install.index('mkdir -p "$skill_dir"')
+    assert directory_guards[0] < mkdir_position < directory_guards[1]
     for guard in ('test ! -e "$skill_target"', 'test ! -L "$skill_target"'):
         assert guard in install
     assert 'mktemp "$skill_dir/.SKILL.md.XXXXXX"' in install
@@ -150,10 +219,20 @@ def test_standalone_lifecycle_is_collision_safe_and_hash_pinned() -> None:
     assert "EXIT HUP INT TERM" not in install
     assert f'curl -fsSL "{STANDALONE_URL}" -o "$skill_tmp"' in install
     assert '-o "$skill_target"' not in install
-    assert 'ln "$skill_tmp" "$skill_target"' in install
+    link_and_verify = (
+        'ln "$skill_tmp" "$skill_target"\n  if ! test "$skill_tmp" -ef "$skill_target"; then'
+    )
+    assert link_and_verify in install
+    assert 'test -f "$skill_misdirected"' in install
+    assert 'test ! -L "$skill_misdirected"' in install
+    assert 'test "$skill_tmp" -ef "$skill_misdirected"' in install
     assert 'mv "$skill_tmp" "$skill_target"' not in install
 
     uninstall = STANDALONE_UNINSTALL_BLOCK
+    directory_guard = 'test ! -L "$skill_dir"'
+    directory_check = 'test -d "$skill_dir"'
+    assert uninstall.index(directory_guard) < uninstall.index(directory_check)
+    assert uninstall.index(directory_check) < uninstall.index('test -f "$skill_target"')
     assert 'test -f "$skill_target"' in uninstall
     assert 'test ! -L "$skill_target"' in uninstall
     hash_guard = 'test "$skill_actual_sha256" = "$skill_expected_sha256"'
@@ -168,6 +247,49 @@ def test_standalone_lifecycle_is_collision_safe_and_hash_pinned() -> None:
     assert STANDALONE_UNINSTALL_BLOCK in plan
     assert UNSAFE_STANDALONE_REMOVE not in plan
     assert '-o "$HOME/.agents/skills/if/SKILL.md"' not in plan
+    assert "/Users/if/" not in plan
+    assert "${CODEX_HOME:-$HOME/.codex}/skills/.system/" in plan
+
+
+def test_standalone_install_refuses_an_existing_target(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="copy")
+    skill_dir = home / ".agents/skills/if"
+    skill_dir.mkdir(parents=True)
+    target = skill_dir / "SKILL.md"
+    target.write_text("user content\n", encoding="utf-8")
+
+    result = _run_standalone_block(STANDALONE_INSTALL_BLOCK, env)
+
+    assert result.returncode != 0
+    assert target.read_text(encoding="utf-8") == "user content\n"
+
+
+def test_standalone_uninstall_refuses_a_symlinked_skill_directory(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="copy")
+    external = tmp_path / "external"
+    external.mkdir()
+    external_target = external / "SKILL.md"
+    canonical = (ROOT / "skills/if/SKILL.md").read_bytes()
+    external_target.write_bytes(canonical)
+    skill_parent = home / ".agents/skills"
+    skill_parent.mkdir(parents=True)
+    (skill_parent / "if").symlink_to(external, target_is_directory=True)
+
+    result = _run_standalone_block(STANDALONE_UNINSTALL_BLOCK, env)
+
+    assert result.returncode != 0
+    assert external_target.read_bytes() == canonical
+
+
+def test_standalone_install_cleans_a_directory_race_hardlink(tmp_path: Path) -> None:
+    home, env = _standalone_test_environment(tmp_path, curl_mode="race-directory")
+
+    result = _run_standalone_block(STANDALONE_INSTALL_BLOCK, env)
+
+    target = home / ".agents/skills/if/SKILL.md"
+    assert result.returncode != 0
+    assert target.is_dir()
+    assert list(target.iterdir()) == []
 
 
 def test_greek_readme_describes_a_specific_pinned_version() -> None:

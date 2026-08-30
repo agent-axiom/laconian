@@ -75,6 +75,7 @@ codex plugin marketplace remove laconian --json
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
   test ! -L "$skill_dir"
   mkdir -p "$skill_dir"
+  test ! -L "$skill_dir"
   test ! -e "$skill_target"
   test ! -L "$skill_target"
   skill_tmp="$(mktemp "$skill_dir/.SKILL.md.XXXXXX")"
@@ -89,10 +90,19 @@ codex plugin marketplace remove laconian --json
   test "$skill_actual_sha256" = "$skill_expected_sha256"
   chmod 0644 "$skill_tmp"
   ln "$skill_tmp" "$skill_target"
+  if ! test "$skill_tmp" -ef "$skill_target"; then
+    skill_misdirected="$skill_target/${skill_tmp##*/}"
+    if test -f "$skill_misdirected" &&
+      test ! -L "$skill_misdirected" &&
+      test "$skill_tmp" -ef "$skill_misdirected"; then
+      rm "$skill_misdirected"
+    fi
+    false
+  fi
 )
 ```
 
-安装程序会拒绝覆盖目标位置已有的任何路径。
+如果技能目录或目标位置是符号链接，安装程序都会拒绝继续；它也不会覆盖已有的目标路径。
 
 单文件技能以 `$if` 调用。验证复制结果：
 
@@ -100,8 +110,8 @@ codex plugin marketplace remove laconian --json
 test -s "$HOME/.agents/skills/if/SKILL.md"
 ```
 
-卸载单文件版本时，只接受未经修改的常规文件，并拒绝符号链接以及被修改或替换的文件；
-这些情况必须手动检查。目录只有在为空时才会删除：
+卸载单文件版本时，只接受未经修改的常规文件。如果技能目录或目标位置是符号链接，或者
+文件已被修改或替换，卸载都会拒绝继续并要求手动检查。目录只有在为空时才会删除：
 
 ```bash
 (
@@ -109,6 +119,8 @@ test -s "$HOME/.agents/skills/if/SKILL.md"
   skill_dir="$HOME/.agents/skills/if"
   skill_target="$skill_dir/SKILL.md"
   skill_expected_sha256="5c549c7c492c66a6b3ac5560499353b71615ffc6b93c4b1811f741a8f3d54006"
+  test ! -L "$skill_dir"
+  test -d "$skill_dir"
   test -f "$skill_target"
   test ! -L "$skill_target"
   if command -v sha256sum >/dev/null 2>&1; then
