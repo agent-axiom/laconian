@@ -601,6 +601,71 @@ For `GENERATION_SET_SEALED`, the schema's exact required-evidence set is the ord
 hashes, `generation_context_expectation_sha256`, and `verified_generation_context_root`; neither
 root is optional, derivable after the transition, or replaceable by a raw context payload.
 
+The closed `PERMANENT_STOP.reason` enum contains the literal discriminator
+`credential_exposure`. It is not encoded as generic `security`, `artifact_failure`, or another
+alias. For that reason, `CampaignStateSchemaV1` requires a
+`CredentialExposureIncidentEvidenceV1` root. Its exact top-level fields are:
+
+```text
+schema_version
+campaign_id
+incident_id
+reason
+parent_state
+parent_authority_oid
+current_state_root
+spend_ledger_root
+artifact_inventory_root
+active_phase_plan_root
+unresolved_hold_root
+secret_kind
+affected_artifacts
+scanner_receipt
+credential_containment
+artifact_quarantine_receipt_sha256
+no_further_campaign_download_receipt_sha256
+complete_publication_pr_close_receipt_sha256
+detected_at
+credential_exposure_incident_evidence_sha256
+```
+
+`reason` is exactly `credential_exposure`. `secret_kind` is exactly one of
+`openai_api_key`, `state_writer_app_private_key`, `publisher_app_private_key`,
+`release_finalizer_app_private_key`, `github_app_installation_token`, `github_oidc_id_token`,
+`repository_github_token`, or `unclassified_suspected_credential`; a secret value, matching
+substring, authorization header, environment dump, or raw provider/GitHub response is forbidden.
+`schema_version` is exactly `CredentialExposureIncidentEvidenceV1`; `incident_id` matches
+`credexp-[0-9a-f]{32}` and is single-use within the campaign.
+`unresolved_hold_root` is the exact current hold root or literal null only when absence is proven.
+`affected_artifacts` is a nonempty array in ascending numeric artifact-ID order. Each element has
+exactly `artifact_id`, `artifact_sha256`, `upload_service_digest`, `source_workflow_ref`,
+`source_workflow_sha`, `upload_run_id`, `upload_run_attempt`, `upload_job_id`,
+`upload_check_run_id`, `uploaded_at`, `deletion_status`, and `deletion_receipt_sha256`.
+`deletion_status` is exactly `deleted`, `already_expired`, `deletion_not_available`, or
+`pending_at_stop`; its receipt binds the exact API request/result or the verified reason deletion
+was unavailable or pending. Duplicate artifact IDs are forbidden.
+
+`scanner_receipt` has exactly `scanner_protocol_sha256`, `scanner_tool_sha256`, `scanner_rule_id`,
+`scanner_run_id`, `scanner_run_attempt`, `scanner_check_run_id`, `verification_mode`, and
+`verification_receipt_sha256`; `verification_mode` is `exact_known_value`, `credential_pattern`, or
+`independent_safe_metadata_confirmation`. `credential_containment` has exactly `status` and
+`receipt_sha256`, where status is `revoked`, `rotated`, or `cryptographically_expired`.
+`cryptographically_expired` is allowed only for a GitHub installation, OIDC, or repository token
+whose signed issuance/expiry and current invalidity verify; long-lived key kinds require `revoked`
+or `rotated`, and an unclassified pattern requires a receipt for containment of every candidate
+credential class identified by the safe scanner rule. The quarantine and no-further-download
+receipts bind an authority-installed denylist for every affected artifact; they prove that no later
+campaign job may download it, not that a prior public download did not occur.
+`complete_publication_pr_close_receipt_sha256` is required only for
+`COMPLETE_PUBLICATION_PR_OPEN` and must be literal null for every other parent.
+
+Canonical bytes are RFC 8785 JSON over those exact fields excluding the final digest, UTF-8 with no
+terminal newline; timestamps are UTC RFC 3339, IDs are canonical integers, roots are lowercase
+64-hex SHA-256, and extra, missing, null-where-forbidden, duplicate, or reordered array members are
+rejected. The final digest is domain-separated with
+`laconian-credential-exposure-incident-evidence-v1`. The evidence is safe metadata only and cannot
+contain the suspected credential bytes.
+
 A secret-free `INVALID_EVENT_DISMISSED` proof may clear a benign hold in every state, including
 `RESULT_MERGED` and `RELEASED`. It must establish that the event was either an unauthorized-origin
 no-op or a byte-identical replay of an already applied event, and that it changed no state, ledger,
@@ -610,9 +675,11 @@ trigger actor, verifies and signs the dismissal; clearing the hold does not crea
 transition.
 
 For a nondismissible verified defect before merge, a valid `PERMANENT_STOP` cites the hold and takes
-the enumerated invalid path. At `RESULT_MERGED`, it instead uses `RELEASE_PLAN_INVALIDATED`; at
-`RELEASED`, the state remains terminal and the defect starts a new correction lineage with an
-explicit `supersedes` hash. Correction invalidations have exactly two distinct kinds:
+the enumerated invalid path. The sole no-prior-hold exception is `credential_exposure`, whose
+incident evidence must instead prove the exact current hold root or proven absence as specified
+above. At `RESULT_MERGED`, the defect uses `RELEASE_PLAN_INVALIDATED`; at `RELEASED`, the state
+remains terminal and the defect starts a new correction lineage with an explicit `supersedes` hash.
+Correction invalidations have exactly two distinct kinds:
 `correction_publication_invalidation` and `correction_release_invalidation`. Their schemas,
 allowed parents, and evidence are distinct; a generic correction-invalidation alias is forbidden.
 
@@ -645,13 +712,27 @@ The allowed durable transitions are:
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INVALIDATED`: exactly one typed correction invalidation with allowed phase parent and terminal evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
-| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason and evidence; an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
+| `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason and evidence; `credential_exposure` requires `CredentialExposureIncidentEvidenceV1`; an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix | `INVALID_FINALIZED` | publish registry/incident only |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: base/head moved or plan check failed, prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
 | `INVALID_FINALIZED` | `INVALID_PUBLICATION_PR_OPENED`: exact `bundle_kind=invalid_prefix`, sealed prefix root, publication plan, branch, base, head, PR | `INVALID_PUBLICATION_PR_OPEN` | review and required CI, no performance claim |
 | `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PREFIX_MERGED`: approved invalid-prefix PR, exact sealed-prefix lineage and merge tree | `INVALID_PREFIX_MERGED` | terminal registry/incident publication only |
 | `INVALID_PUBLICATION_PR_OPEN` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: exact invalid-prefix PR closed, sealed prefix root unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
+
+Within that generated transition, `credential_exposure` has exactly these allowed parents:
+`GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`,
+`JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`,
+`AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, and
+`COMPLETE_PUBLICATION_PR_OPEN`. The event must reproduce every current authority, state, ledger,
+artifact-inventory, active-plan, and hold root from its parent. `PREFLIGHTED` is excluded because no
+provider-bearing artifact has been uploaded; `RESULT_MERGED` uses `RELEASE_PLAN_INVALIDATED`, and
+`RELEASED` uses correction lineage. The reason is also forbidden from `STOPPED_INVALID`,
+`BUDGET_INCOMPLETE`, `INVALID_FINALIZED`, `INVALID_PUBLICATION_PR_OPEN`, `INVALID_PREFIX_MERGED`,
+`RELEASE_BLOCKED`, correction states, and every terminal state. Neither a generic incident event nor
+a reason alias can bypass this parent set. Noncredential artifact corruption, traversal, inventory,
+or provenance defects remain under their existing phase-specific reason discriminators and cannot
+be mislabeled `credential_exposure`.
 
 An active job that exits at the soft deadline is resumable only through `VERIFIED_PARTIAL`. A lost
 job without that event uses `NO_DISPATCH_PROVED` only when durable job and provider evidence proves
@@ -1323,6 +1404,26 @@ only from one of those already enumerated predecessor states after proving a cit
 `InvalidEventHoldV1` whose source evidence matches the same phase-specific reason. No other
 predecessor, reason discriminator, caller, or wildcard STOP authority exists.
 
+Those ordinary reason grants do not subsume `credential_exposure`. That discriminator has this
+separate exhaustive caller/parent matrix; every cell also requires the exact
+`CredentialExposureIncidentEvidenceV1` roots and receipts above:
+
+| Credential-incident caller | Exact allowed current parent states | Additional restriction |
+|---|---|---|
+| `benchmark-batch.yml` | `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE` | affected artifact was uploaded or consumed by the exact current batch plan/run |
+| `benchmark-hard-score.yml` | `GENERATION_COMPLETE` | affected generation artifact is an exact hard-score input or scan output |
+| `benchmark-evidence.yml` | `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED` | designated cross-phase inventory/scanner; every artifact is already in the current inventory or exact phase plan |
+| `benchmark-audit.yml` | `PROVIDER_EVIDENCE_VERIFIED` | affected artifact is an exact audit input or output |
+| `benchmark-analysis.yml` | `AUDIT_COMPLETE` | affected artifact is an exact analysis input or output |
+| `benchmark-collect-complete.yml` | `ANALYSIS_COMPLETE` | affected artifact is an exact collection input or proposed bundle member |
+| `benchmark-publish.yml` | `BUNDLE_COLLECTED`, `COMPLETE_PUBLICATION_PR_OPEN` | affected artifact is publication-plan bound; the open-PR parent additionally requires publisher-App closure of that exact PR and its close receipt |
+| `benchmark-dismiss-hold.yml` | every allowed `credential_exposure` parent except `COMPLETE_PUBLICATION_PR_OPEN` | only with the exact current nondismissible hold root and incident evidence independently verified under dismissal approval |
+
+`benchmark-preflight.yml`, `benchmark-finalize-invalid.yml`, `benchmark-release.yml`, both PR
+validators, and the docs validator have no credential-incident authority. The matrix grants no
+caller a different STOP reason, parent, event, ref, artifact, or App operation. A phase workflow
+that merely receives an unbound artifact ID or scanner assertion is denied.
+
 Pull-request refs, branches other than exact `main`, any other tag, a tag/object/commit mismatch,
 unlisted callers or called workflows, caller/callee SHA or byte mismatch, an unexpected
 `environment`, a different event/job/check-run/actor, and a stale expected OID are denied before
@@ -1393,11 +1494,36 @@ never written for scanning. If inventory or scanning fails, upload and publicati
 security event is retained without reproducing the suspected secret; pattern matching is defense
 in depth, not a claim that regex can prove the absence of every secret.
 
-Suspected credential exposure discovered after upload triggers immediate campaign STOP and key
-revocation/rotation. The affected Actions artifact is deleted where GitHub still permits deletion;
-only its artifact ID, digest, safe metadata, deletion result, and incident timeline are retained.
+Suspected credential exposure discovered after upload uses only
+`PERMANENT_STOP(reason=credential_exposure)`. The discovering phase workflow or designated
+`benchmark-evidence` inventory/scanner reconstructs the exact current state/ledger/inventory/plan/
+hold roots, verifies the source upload/run/job and scanner receipts, assigns the incident ID, and
+builds `CredentialExposureIncidentEvidenceV1` without retaining the suspected bytes. Before the
+state CAS, the discovering run fails its ordinary phase action closed and retains the
+repository-wide mutation concurrency lease, so no successor phase or live batch can start. The
+affected credential is then revoked, rotated, or proven cryptographically expired; every
+affected artifact is locally quarantined and placed in the proposed authority denylist, a deletion
+request is attempted, and the current deletion result is recorded. The state writer atomically
+installs the incident root and
+denylist and moves the exact allowed parent to `STOPPED_INVALID` by one expected-OID CAS. Every
+entrypoint checks that denylist before artifact download and checks STOP before provider dispatch,
+so the CAS authorizes zero later downloads by campaign jobs and zero later provider calls.
+
+If the parent is `COMPLETE_PUBLICATION_PR_OPEN`, the separately approved `benchmark-publish` job
+first uses only the publisher App to close that exact PR and includes the close receipt; no other
+credential-incident caller can stop from that parent. If deletion is pending or unavailable at the
+STOP CAS, the prefix/STOP finalizer cannot emit `INVALID_PREFIX_SEALED` until it binds a terminal
+safe containment receipt containing the final deletion result, continued artifact denylist, and
+credential-response receipt. No transition out of `STOPPED_INVALID` is added merely to update
+containment evidence.
+
 Because retrieval may already have occurred, the event is treated as a disclosure and the campaign
-is operationally invalid even if deletion succeeds. Raw affected data is excluded from publication.
+is operationally invalid even if deletion succeeds. Only artifact IDs/digests, safe upload and
+scanner metadata, containment/deletion receipts, incident timeline, and the safe invalid-campaign
+record are retained; raw affected data is excluded from publication. Discovery at `RESULT_MERGED`
+uses `RELEASE_PLAN_INVALIDATED`; discovery at `RELEASED` uses a correction lineage. Release,
+correction, invalid-finalization, invalid-publication, and terminal states cannot emit a new
+credential-exposure STOP event.
 
 Model output remains untrusted data. It is never executed, used as a path, interpolated into a
 shell command, or rendered as raw GitHub Markdown/HTML. Canonical output stays in JSONL/download
@@ -1457,6 +1583,11 @@ last valid spend ledger, ordered completed prefix, exact expected missing suffix
 reason, artifact inventory and safe provenance, and emits only a registry/incident artifact with no
 performance estimate or model comparison. This lets every started input tag receive an outcome
 without weakening the complete collector.
+
+For `credential_exposure`, the prefix/STOP finalizer additionally requires the canonical incident
+root, continued denylist, terminal credential-containment and deletion receipts, and proof that no
+affected raw artifact is in the safe publication projection. It publishes no scanner match bytes,
+secret material, or affected artifact content.
 
 ### 13.2 Review, merge, release, and correction
 
@@ -1588,11 +1719,17 @@ Implementation is test-driven and includes:
   canonical golden vectors for `GENERATION_SET_SEALED` require the exact ordered 36 capsule hashes,
   `generation_context_expectation_sha256`, and `verified_generation_context_root`, and reject an
   omitted, extra, swapped, malformed, or independently mismatched root while proving the rendered
-  transition table is generated from that same required-evidence schema;
+  transition table is generated from that same required-evidence schema; credential-exposure
+  vectors require the exact safe `CredentialExposureIncidentEvidenceV1`, allowed prepublication
+  parent, current roots, source upload, scanner and containment receipts, artifact denylist, and
+  open-PR close receipt where applicable, and reject every reason alias, secret-bearing field,
+  excluded parent, or incomplete receipt;
 - closed retry-taxonomy, `Retry-After`, jitter, retry exhaustion, 401/403 stop, ambiguous delivery,
   soft deadline, forced runner loss, and exact-suffix resume tests;
 - tar round-trip, hidden-lock, mode, digest, extraction, traversal, link, overwrite, inventory,
-  and secret-scan tests;
+  and secret-scan tests, including cross-phase post-upload detection, deletion pending/unavailable,
+  terminal containment before prefix finalization, and zero later campaign download/provider-call
+  tests;
 - exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
   provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
   human/App authority separation, OIDC state-broker exact identity projection, fully qualified
@@ -1600,12 +1737,14 @@ Implementation is test-driven and includes:
   `typ`/`alg`/`kid`/issuer/audience/subject/time/single-use-`jti`, absent-environment and exact
   actor/repository/check-run/rerun-initiator restrictions, minimal reusable-job boundary,
   missing/extra/mismatch, unrelated-workflow, and pull-request-ref denial, token expiry, and every
-  closed phase-specific `PERMANENT_STOP` caller/parent/reason allow and deny vector, per-batch
-  environment approval, campaign concurrency, batch-controller ordering,
+  closed phase-specific `PERMANENT_STOP` caller/parent/reason allow and deny vector, including every
+  allowed and forbidden credential-incident caller/state pair, per-batch environment approval,
+  campaign concurrency, batch-controller ordering,
   step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
   policy tests;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
-  credential-incident, `PublicationPlanV1` ancestor/base/head movement and closed-PR replan,
+  credential-incident schema/canonicalization/quarantine/deletion/revocation/rotation/expiry and
+  safe-record publication, `PublicationPlanV1` ancestor/base/head movement and closed-PR replan,
   minimal App publisher, exact-head manual publication-PR validation, `ResultReleasePlanV1`,
   annotated-tag/draft-assets/one-publish release finalizer, and correction-lineage tests;
 - authority-bound generation-context expectation reconstruction, no-hash-self-cycle, tagged
@@ -1672,6 +1811,14 @@ After that explicit reapproval and implementation, the release sequence is:
     publish transition; and
 16. documentation, website, and social result packages are updated from the merged evidence.
 
+From the first provider artifact upload through `COMPLETE_PUBLICATION_PR_OPEN`, every consuming
+phase scans its exact inputs and proposed outputs before its success transition; the designated
+`benchmark-evidence` scanner may also be dispatched against any exact eligible current-state
+inventory. A credential-exposure finding immediately takes the caller/state-specific incident path,
+installs the denylist and `STOPPED_INVALID`, completes containment, and then uses only the safe
+prefix/incident publication path. It never resumes the numbered success sequence. A finding after
+`RESULT_MERGED` or `RELEASED` follows release invalidation or correction instead.
+
 At any authorized prepublication `PERMANENT_STOP`, or any provider-stage `BUDGET_EXHAUSTED`, the
 sequence branches immediately to the prefix/STOP finalizer and safe invalid-campaign publication
 path defined by `CampaignStateV1`. It does not continue to a later live, audit, aggregate, complete
@@ -1689,6 +1836,11 @@ collection, or complete-publication stage.
   not remove every judge bias.
 - A public artifact reveals benchmark responses before final publication to anyone who retrieves
   it; blinding is enforced by the reviewer protocol, not by pretending the repository is private.
+- Secret scanning cannot prove that an uploaded artifact contains no credential, and deleting an
+  artifact cannot retract prior public downloads. The cross-phase `credential_exposure` path
+  revokes or expires the credential, blocks later campaign downloads and calls, and invalidates the
+  campaign, but it cannot prove that disclosure did not already occur or that every external copy
+  was destroyed.
 - A forced runner loss can occur before the post-controller `always()` upload. Per-shard seals limit
   already-uploaded evidence loss, but work produced across multiple shards inside the current batch
   can still be lost; retained reservations and STOP behavior prevent unsafe continuation but cannot
@@ -1755,6 +1907,13 @@ The system is ready for the full campaign only when:
   `RELEASED` only appends terminal history, every correction external effect is preauthorized and
   receipt-reconciled/adoptable after crashes, and the two phase-bound correction invalidations
   cannot alias;
+- every post-upload `credential_exposure` STOP uses the canonical safe
+  `CredentialExposureIncidentEvidenceV1`, reproduces the exact current authority/state/ledger/
+  inventory/plan/hold roots and affected upload/run/job, binds the closed secret classification,
+  scanner verification, credential containment, quarantine/deletion and no-further-campaign-
+  download receipts, closes an open complete PR with the publisher App before STOP, and is accepted
+  only from the exact prepublication parents and frozen callers; release, correction,
+  invalid-finalization, invalid-publication, and terminal states cannot use that reason;
 - the exact two-entry audit registry and exact three-entry ordered protocol registry bind numeric
   IDs, logins, closed verification modes and fingerprints, the security-evidence fingerprint is
   non-null, every role has exactly its ordered required subject inventory and no forbidden field,
@@ -1775,15 +1934,17 @@ The system is ready for the full campaign only when:
   caller and reusable-workflow paths at the exact tag or main ref, real
   `workflow_sha`/`job_workflow_sha` caller/callee semantics, event/check-run/OID tuple, minimal
   reusable job, frozen crypto/audience/subject/time/single-use-token policy, REST-verified rerun
-  initiator, and phase-specific caller/parent/reason STOP authority, and denies every unrelated
-  workflow, ref, identity, missing/extra/mismatched claim, predecessor, or event; App/provider
+  initiator, phase-specific caller/parent/reason STOP authority, and the exact cross-phase
+  credential-incident matrix, and denies every unrelated workflow, ref, identity,
+  missing/extra/mismatched claim, predecessor, reason alias, artifact, or event; App/provider
   credentials are mapped only in their fixed, separately authorized boundaries with no
   provider-key/model-output overlap;
 - protocol/audit reviewer commits and PRs, maintainer validations/approvals, and protected human
   merges remain distinct human authorities and cannot be replaced by any automated App or workflow;
-- the batch controller proves predecessor-ledger, single-use job receipt, per-attempt reservation,
-  permanent STOP, soft-deadline, exact-suffix resume, and zero-subsequent-call behavior for
-  authentication, permission, ambiguity, credential exposure, and missing state;
+- the batch controller and every later artifact-consuming phase prove predecessor-ledger,
+  single-use job receipt where applicable, per-attempt reservation, permanent STOP, soft-deadline,
+  exact-suffix resume, and zero-subsequent-download/call behavior for authentication, permission,
+  ambiguity, credential exposure, and missing state;
 - preflight and the durable ledger enforce the USD 75 authorized-exposure scheduling bound from
   the frozen default-tier, cache-dimensioned price snapshot and reviewer attestation, account
   nonzero writes before STOP, retain worst-case exposure for missing write/tier detail, and stop
