@@ -36,6 +36,7 @@ def build_release(root: Path, output_dir: Path) -> ReleaseArtifacts:
         for relative in RELEASE_FILES:
             data = (root / relative).read_bytes()
             info = ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
             info.compress_type = ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             bundle.writestr(info, data, compresslevel=9)
