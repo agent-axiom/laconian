@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-30
 
-**Status:** Attestation-transport amendment pending exact maintainer approval; implementation blocked
+**Status:** Attestation-transport amendment approved; implementation may proceed only after the
+implementation plan is synchronized to this approved normative commit
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -11,10 +12,11 @@ the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with t
 `Одобряю amendment 46147ef`. That approval remains historical evidence for the prior normative
 design; it does not approve this later attestation-transport amendment.
 
-**Current amendment approval:** Pending. This amendment removes the input-tag/attestation hash
-self-cycle by introducing a serial reviewer-commit chain and a separate protected companion tag.
-Its exact commit SHA must receive a new explicit maintainer approval, recorded by a later
-governance-only commit, before implementation, pilot execution, or live rollout begins.
+**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+approved the normative design at commit `55b90582ae461cf7a3dc072d53d8b03e79fb3614` with the exact
+message `Одобряю amendment 55b90582ae461cf7a3dc072d53d8b03e79fb3614`. This governance-only
+successor records that approval without changing normative behavior. Implementation may proceed
+only after the implementation plan is synchronized to that approved normative commit.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -3166,12 +3168,13 @@ pair is created only after the implementation is frozen and reverified.
 
 This attestation-transport amendment is a governance gate. The approval of
 `46147ef62b5bb009421d58928e879d92247d84b5` remains valid historical evidence for the prior design
-but does not satisfy this new gate. The exact commit containing this normative amendment is pending
-a new explicit maintainer approval. A later governance-only commit must record that exact SHA and
-approval message without changing normative text. Until then, implementation, pilot execution, and
-live rollout remain blocked; any later normative amendment repeats the same approval process.
+but does not satisfy this new gate. That gate is satisfied by the 2026-08-31 exact maintainer/user
+approval of normative commit `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, recorded by this
+governance-only successor with the exact message
+`Одобряю amendment 55b90582ae461cf7a3dc072d53d8b03e79fb3614`. Implementation may proceed
+only after plan synchronization; any later normative amendment repeats the same approval process.
 
-After that exact reapproval and the still-required implementation, the release sequence is:
+After that exact approval, plan synchronization, and the still-required implementation, the release sequence is:
 
 1. the full provider-offline synthetic campaign, including complete serial tag-pair construction
    and offline object-closure replay, is green;
@@ -3317,10 +3320,13 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- the governance prerequisite is satisfied by a governance-only successor that records the exact
-  commit SHA of this attestation-transport amendment and the maintainer/user's new explicit approval
-  message; approval `46147ef62b5bb009421d58928e879d92247d84b5` remains historical and cannot
-  satisfy this gate, and any later normative amendment requires another exact approval;
+- the governance prerequisite is satisfied by this governance-only successor recording the
+  2026-08-31 exact approval of normative commit
+  `55b90582ae461cf7a3dc072d53d8b03e79fb3614` with message
+  `Одобряю amendment 55b90582ae461cf7a3dc072d53d8b03e79fb3614`; approval
+  `46147ef62b5bb009421d58928e879d92247d84b5` remains historical, the implementation plan must be
+  synchronized before implementation proceeds, and any later normative amendment requires another
+  exact approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
