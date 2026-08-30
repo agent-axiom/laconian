@@ -2,9 +2,12 @@
 
 **Date:** 2026-08-30
 
-**Status:** Approved for implementation planning
+**Status:** Amendment drafted; pending explicit maintainer reapproval
 
-**Maintainer approval:** 2026-08-30
+**Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
+
+**Amendment approval:** Pending. The historical approval does not approve this amendment. A new
+approval record may be added only after a maintainer reviews this exact diff.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -53,9 +56,10 @@ connected end-to-end to capsule-bound judging, scoring, inference, audit, and pu
 currently has no live-benchmark workflow, benchmark environment, benchmark secret, or protected
 benchmark-tag ruleset.
 
-The current public CLI also has no finalize/seal writer, scenario-shard projection, live structured
-judge, campaign spend ledger, or reasoning/verbosity request fields. Those are prerequisites, not
-capabilities this document assumes already exist.
+The current public CLI also confers no campaign authority or evidentiary capability, and the
+repository has no complete scenario-shard projection, live structured judge, campaign spend
+ledger, or reasoning/verbosity request path. Those are prerequisites, not capabilities this
+document assumes already exist.
 
 The design therefore completes the evidence path before spending API budget or publishing a
 performance statement.
@@ -137,12 +141,14 @@ repetition remain fixed. Only the captured arm instruction bytes differ.
 
 All three models use the Responses API with explicit, captured settings:
 
+- literal request wire field `service_tier: "default"`;
 - `reasoning.effort: medium`;
 - `text.verbosity: medium`;
 - `max_output_tokens: 1024`, including visible and reasoning output tokens;
 - no tools;
 - no conversation carry-over or prior response;
 - `store: false`;
+- explicit cache mode that has no breakpoint and cannot write;
 - no temperature value sent; and
 - the existing `system_suffix` instruction placement.
 
@@ -150,8 +156,53 @@ Explicit reasoning and verbosity prevent provider-default drift from silently ch
 experiment. A setting change creates a new protocol hash and cannot be pooled with the campaign.
 The source and resolved manifest schemas, request model, request-config hash, plan rows, provider
 kwargs, and capsule verifier must all carry these fields. Preflight fails if the exact wire request
-does not contain `reasoning: {effort: medium}` and `text: {verbosity: medium}`. Reasoning mode is
-omitted and the omission is itself part of the captured request configuration.
+does not contain `service_tier: "default"`, `reasoning: {effort: medium}`, and
+`text: {verbosity: medium}`. The service-tier key on the wire is exactly `service_tier`; aliases,
+SDK-only configuration, environment defaults, and omission are forbidden. The request serializer,
+provider projection, attempt journal, response evidence, ledger, and verifier bind this literal
+field end to end as `service_tier="default"`. Returned-tier evidence is the exact
+`service_tier` field from the canonical raw Responses API result plus its source digest; a renamed,
+derived, or SDK-default assertion is not returned-tier evidence. Reasoning mode is omitted and the
+omission is itself part of the captured request configuration.
+
+Every response attempt records returned-tier evidence and exactly one closed service-tier
+accounting status:
+
+```text
+reported_default | not_applicable_definitely_not_sent |
+not_applicable_definitely_rejected | missing | mismatch
+```
+
+`reported_default` requires returned provider evidence that the effective service tier was
+`default`. `not_applicable_definitely_not_sent` is valid only when independent durable evidence
+proves the request was never dispatched and therefore received no response and incurred no usage.
+`not_applicable_definitely_rejected` is valid only when independent durable evidence proves a
+structured definitely-rejected transport response with no Responses API result and no usage;
+the retry-eligible 429 case remains governed by section 8. Neither status may be inferred from a
+missing field. If any Responses API result is received, or if delivery is unknown, missing
+returned-tier evidence is `missing`; any non-`default` evidence is `mismatch`. Either retains the
+full worst-case exposure, durably appends STOP, and permits zero later provider calls.
+
+Cache reads and cache writes are distinct request, evidence, usage, pricing, reservation,
+reconciliation, and accounting dimensions. The tagged API contract uses an explicit
+no-breakpoint/no-write cache mode. Every frozen model alias has a reviewed, non-null cache-write
+rate even though writes are forbidden. `price_snapshot.service_tier` and
+`price_attestation.requested_service_tier` are both exactly `"default"`; a mismatch stops before
+key access. The price snapshot binds separate uncached-input, cache-read-input, cache-write-input,
+visible-output, and reasoning-output prices and their source evidence. Every attempt records
+separate cache-read and cache-write token usage and separate closed accounting statuses. A
+nonzero cache-write observation is first reconciled and charged at the frozen cache-write rate,
+then appends STOP and permits zero later calls. Missing cache-write detail is never interpreted as
+zero: it retains the conservative cache-write reservation and, after any response or unknown
+delivery, appends STOP. Here and in section 8, “response” means a Responses API result, not a
+structured definitely-rejected transport response independently proven to have no result and no
+usage.
+
+The versioned conservative input-exposure rule is frozen and proves an upper bound of at most
+`272_000` input tokens for each request attempt. The price snapshot, batch plan, and ledger reserve
+only under the ordinary `default`-tier price schedule at that bound. Long-context pricing is not an
+authorized price class and must not be used to authorize, reserve, or reconcile campaign spend;
+an attempt that cannot be proven within the bound stops before dispatch.
 
 Provider evidence must capture `output_tokens_details.reasoning_tokens` in addition to total
 provider `output_tokens`. The visible-response token count is defined as provider output tokens
@@ -190,9 +241,76 @@ localized cases are `critical`; the `preserve-command` and `safety-financial` wa
 frozen before the pilot; no change is allowed after observing pilot outputs without a new protocol
 identity.
 
+### 6.5 Independent reviewer identity registries
+
+The input tag contains two independent, typed identity registries. `AuditReviewerRegistryV1`
+contains exactly two distinct audit reviewers. Each ordered entry binds the reviewer ID, numeric
+GitHub account ID, exact GitHub login, signing-verification mode, signing fingerprint (including an
+explicit null only when the frozen verification mode permits no fingerprint), and role. Its
+canonical bytes and digest are audit-registry-specific and bind every audit commitment, reveal,
+adjudication, approval, and collector check.
+
+`ProtocolReviewerRegistryV1` contains exactly three distinct protocol reviewers in this exact role
+order:
+
+1. `statistical_method`;
+2. `blind_judge_audit_protocol`; and
+3. `security_evidence`.
+
+Each ordered protocol entry binds its numeric GitHub account ID, exact GitHub login,
+signing-verification mode, and signing fingerprint. The `security_evidence` fingerprint is
+non-null regardless of the other roles' allowed modes. The protocol registry has canonical bytes
+and a digest distinct from the audit registry. The three ordered `ProtocolAttestationV1` records
+each bind their role, exact registry digest, protocol bytes and roots reviewed for that role,
+signing evidence, and the common workflow root from section 6.6. Their ordered canonical root is
+`protocol_attestations_root`.
+
+Cardinality, order, numeric account ID, login, verification mode, fingerprint, canonical bytes,
+and digest are all security boundaries. A login rename, numeric-ID mismatch, missing required
+fingerprint, reordered role, duplicate identity, or cross-registry lookup fails closed. Neither
+registry, its members, signatures, approvals, nor attestations may substitute for the other.
+
+### 6.6 Frozen workflow inventory
+
+The protocol freezes this exact 15-member workflow path inventory, in this literal UTF-8 byte
+order:
+
+```text
+.github/workflows/audit-pr-validate.yml
+.github/workflows/benchmark-analysis.yml
+.github/workflows/benchmark-audit.yml
+.github/workflows/benchmark-batch.yml
+.github/workflows/benchmark-collect-complete.yml
+.github/workflows/benchmark-dismiss-hold.yml
+.github/workflows/benchmark-docs-validate.yml
+.github/workflows/benchmark-evidence.yml
+.github/workflows/benchmark-finalize-invalid.yml
+.github/workflows/benchmark-hard-score.yml
+.github/workflows/benchmark-preflight.yml
+.github/workflows/benchmark-publication-state.yml
+.github/workflows/benchmark-publish.yml
+.github/workflows/benchmark-release.yml
+.github/workflows/publication-pr-validate.yml
+```
+
+Only these member paths and their order are source constants. C0 is the fully verified peeled
+commit of the protected input tag used as the campaign code/input authority. For each path, the
+member SHA-256 is derived from the exact bytes read from that verified C0 tree; no member hash is a
+source constant.
+`WorkflowInventoryV1` is the canonical ordered mapping of each literal path to that derived hash,
+and `workflow_root` is the SHA-256 of its domain-separated canonical bytes. The inventory rejects a
+missing, extra, renamed, reordered, duplicated, nonregular, or byte-mismatched member. The root is
+therefore derived only after C0 and all 15 member bytes have been verified; it is never accepted
+from an input field without reconstruction.
+
+All three protocol attestations, the generation-context expectation and final generation context,
+every provider projection, and publication verification bind this same reconstructed
+`workflow_root`. A different workflow subset, reordered inventory, or independently supplied root
+cannot authorize a live stage or publication.
+
 ## 7. Execution architecture
 
-### 7.1 Input tag and preflight
+### 7.1 Input tag, preflight, and generation-context expectation
 
 The operator creates a protected tag matching `benchmark-input-YYYYMMDD.N` on the exact commit to
 execute. The manually dispatched workflow rejects branch refs, moving aliases, malformed tags,
@@ -219,6 +337,30 @@ reviewer checks the frozen source URLs against the committed snapshot and record
 If the current rate cannot be verified or differs, the reviewer does not approve; revised rates
 require a new input tag and campaign identity.
 
+After the generation layer is final and before hard scoring, the campaign authority constructs an
+authority-bound `GenerationContextExpectationV1`. It binds the campaign ID, both reviewer-registry
+digests, `protocol_attestations_root`, the exact
+predecessor campaign-authority root, the complete generation-layer root, the expected digest of the
+canonical generation-context payload, and the common `workflow_root`. The canonical payload
+carries the tagged hard-scorer source hash, hard-score protocol hash, judge protocol hash,
+statistical protocol hash, audit protocol hash, provider-projection root, and every generation
+capsule root. Those bindings are retained unchanged in hard-score attachments, judge projections,
+provider-evidence inventory, analysis, and publication evidence.
+
+The final `GENERATION_COMPLETE` authority record binds the expectation digest in addition to the
+verified final generation-context root. To avoid a hash self-cycle, the expected context digest is
+computed over the canonical context payload without the expectation-link field; the expectation
+then binds that expected digest, and the final authority record binds both the reconstructed
+context root and the separately computed expectation digest. Verification requires both values to
+match their independently reconstructed objects.
+
+This authority is a non-serializable campaign capability. Only campaign-side reconstruction of the
+predecessor authority root and final generation-layer roots may construct
+`VerifiedGenerationContextExpectationV1`, and it exists only in memory for the authorized stage.
+No serialized file, raw hash, identifier, CLI or workflow input, environment value, or nested
+provider-index field creates, carries, or confers this capability. A caller that merely supplies
+the correct bytes or digest remains unauthorized.
+
 ### 7.2 Logical shards and bounded batch controller
 
 Generation uses 36 logical capsules: `3 models x 12 scenarios`. A capsule keeps both languages,
@@ -234,24 +376,33 @@ or run identity.
 
 GitHub applies environment protection to each job, not once to an entire campaign. The workflow
 therefore uses a resumable bounded batch controller rather than 36 generation plus 36 judge
-environment jobs. Each manual `workflow_dispatch` or resume consists of:
+environment jobs. Each manual `workflow_dispatch` or resume uses four pairwise
+credential-separated roles/jobs:
 
 1. a secret-free batch-prepare job that imports the exact campaign registry, predecessor ledger,
-   checkpoint inventory, and immutable ordered plan;
-2. deterministic construction of one `BatchPlanV1` for a contiguous prefix of remaining work;
-3. one `benchmark-live` environment-gated provider job, which consumes that plan sequentially with
-   provider parallelism exactly one; and
-4. secret-free post-controller validation and upload of every completed or partial logical capsule,
-   the append-only attempt journal, and the successor ledger.
+   checkpoint inventory, and immutable ordered plan and deterministically constructs one
+   `BatchPlanV1` for a contiguous prefix of remaining work;
+2. one protected, repository-read-only `benchmark-live` provider job, whose single controller step
+   consumes the won receipt and plan sequentially with provider parallelism exactly one;
+3. a key-free receipt/state-writer job that uses only the state-writer GitHub App in its fixed
+   state-writer step to compare-and-swap the exact reservation receipt and authority predecessor;
+4. a key-free post/state-writer job that validates and uploads every completed or partial logical
+   capsule and append-only attempt journal, then uses only the state-writer App in its fixed step to
+   compare-and-swap the successor ledger and authority state.
+
+Dependency edges, a bounded wait before the controller step, and single-use handoff receipts ensure
+the provider controller cannot begin until the receipt/state writer's expected-OID compare-and-swap
+has won. The repository `GITHUB_TOKEN` is read-only in all four jobs.
 
 `BatchPlanV1` binds campaign ID, phase (`generation` or `judge`), input tag object and peeled commit,
 workflow-file hash, predecessor-ledger hash, ordered shard and request identities, maximum request
 attempts, worst-case reservation, price-snapshot hash, monotonic-time allowance, soft deadline,
 and its own hash. The plan size is a deterministic function of the remaining authorized exposure,
 remaining ordered work, and frozen call/time bounds; it cannot be enlarged after approval. The
-secret-free first step of the provider job finalizes the reservation receipt with the exact
-`workflow_run_id`, `run_attempt`, `job_id`, and `batch_attempt_id` before the key-bearing step can
-run.
+key-free receipt/state writer finalizes the reservation receipt with the exact `workflow_run_id`,
+`run_attempt`, `job_id`, and `batch_attempt_id`; the protected provider job accepts only the
+corresponding CAS-winner receipt. Only its single hash-verified provider-controller step may map
+`OPENAI_API_KEY`, and only after that receipt is verified.
 
 The controller may cross logical shard boundaries, but it never reorders requests or begins an
 item outside the frozen batch. It seals and checkpoints at every logical shard boundary and also
@@ -327,7 +478,9 @@ transition.
 For a nondismissible verified defect before merge, a valid `PERMANENT_STOP` cites the hold and takes
 the enumerated invalid path. At `RESULT_MERGED`, it instead uses `RELEASE_PLAN_INVALIDATED`; at
 `RELEASED`, the state remains terminal and the defect starts a new correction lineage with an
-explicit `supersedes` hash.
+explicit `supersedes` hash. Correction invalidations have exactly two distinct kinds:
+`correction_publication_invalidation` and `correction_release_invalidation`. Their schemas,
+allowed parents, and evidence are distinct; a generic correction-invalidation alias is forbidden.
 
 The allowed durable transitions are:
 
@@ -354,6 +507,8 @@ The allowed durable transitions are:
 | `PUBLICATION_PR_OPEN` | `INVALID_PUBLICATION_PLAN_INVALIDATED`: invalid-prefix PR closed, sealed prefix digest unchanged | `INVALID_FINALIZED` | prepare a new invalid publication plan |
 | `RESULT_MERGED` | `RESULT_RELEASED`: protected result tag and checksum-bound assets | `RELEASED` | documentation/social follow-up |
 | `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
+| `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
+| `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
 | any nonterminal pre-publication state | `PERMANENT_STOP`: security, ambiguity, identity, receipt, price-snapshot mismatch, or provenance failure; any open publication PR is closed | `STOPPED_INVALID` | prefix/STOP finalizer only |
 | any ready/resumable provider state | `BUDGET_EXHAUSTED`: next minimum batch cannot fit | `BUDGET_INCOMPLETE` | prefix/STOP finalizer only |
 | `STOPPED_INVALID` or `BUDGET_INCOMPLETE` | `INVALID_PREFIX_SEALED`: exact completed prefix and missing suffix | `INVALID_FINALIZED` | publish registry/incident only |
@@ -369,6 +524,38 @@ a reason-specific `PERMANENT_STOP`; an explicitly signed unresolved adjudication
 partial, STOP, budget, or release-blocked state into live execution or complete collection. An
 unresolved `InvalidEventHoldV1` blocks every otherwise allowed transition.
 
+`CORRECTION_RESULT_RELEASED` is the sole escape from `RELEASE_BLOCKED`. It binds the correction
+lineage root and exact predecessor/supersedes event; the prior and new latest-result pointers; the
+correction publication plan, branch, PR, approval, validation, head, merge commit, and merge
+receipts; the corrected result tree root; and the correction release plan, protected annotated tag
+object root, release receipt, and complete ordered release-asset root. Every pointer and receipt is
+reconstructed from its authoritative source and proves the explicit lineage from the blocked
+merge. A correction from an already `RELEASED` campaign appends the same terminal correction
+evidence while the campaign state remains `RELEASED`; it cannot overwrite the prior result,
+transition, tag, release, latest pointer history, or any earlier authority bytes.
+
+The state writer installs the complete correction evidence and the blocked-release escape event in
+one ordered authority commit, then publishes that commit with one expected-OID, non-force,
+fast-forward remote compare-and-swap. A partial correction install, split authority commits,
+changed expected OID, or generic invalidation kind fails without moving the authority ref.
+
+### 7.5 Public replay CLI is offline and non-evidentiary
+
+All seven public `laconian-benchmark` commands are offline replay conveniences and are
+non-evidentiary: `hard-score`, `prepare-judge`, `seal-judge`, `sample-audit`, `seal-audit`,
+`analyze`, and `verify`. They may reconstruct or inspect ordinary values from supplied local
+artifacts, but their outputs cannot create campaign authority, advance `CampaignStateV1`, satisfy a
+live prerequisite, mint a verified context, or enter publication evidence merely because the
+bytes or hashes match.
+
+Live `hard-score`, `prepare-judge`, and `seal-judge` execute only as Runtime campaign-side stages
+that receive the in-memory verified generation-context capability. Live `sample-audit`,
+`seal-audit`, `analyze`, and `verify` execute only as Publication
+`campaign.evaluation_stage` operations that reconstruct their authorized predecessor state. No
+live workflow invokes the public replay CLI. No verified capability, capability wrapper, or
+capability-bearing context is serialized to an artifact, provider index, command line, workflow
+input, or environment value.
+
 ## 8. Provider failures, retries, and spend
 
 The campaign has a fixed **USD 75 maximum authorized request exposure** under the committed price
@@ -379,11 +566,23 @@ that an external provider invoice can be controlled perfectly or that every plan
 guaranteed to fit. If cumulative charged-or-reserved exposure plus the next conservative batch
 reservation no longer fits, the campaign stops incomplete and is reported accordingly.
 
+The committed `PriceSnapshotV1` and each reviewer `PriceAttestationV1` are tier-specific.
+`price_snapshot.service_tier == price_attestation.requested_service_tier == "default"` is required
+for every alias and batch. Each frozen alias has separate non-null reviewed rates for ordinary
+uncached input, cache reads, cache writes, visible output, and reasoning output. In particular, a
+null cache-write rate is forbidden even though the request contract disables writes; any numeric
+rate, including zero, must itself be explicitly sourced and reviewed rather than inferred. The
+snapshot and attestation bind the versioned `<= 272_000` conservative input-exposure proof; no
+long-context schedule is in the authorized price vocabulary.
+
 An append-only campaign spend ledger tracks both batch and request-attempt exposure. Before a
 provider job can map the key, the secret-free preparation path persists a worst-case reservation
 for every initial call and allowed retry in its frozen `BatchPlanV1`, including input bounds and
-output-token caps. Its finalized receipt binds the campaign, phase, ordered plan items, price
-snapshot, predecessor ledger, and exact provider-job identity tuple
+output-token caps. Each reservation independently freezes ordinary-input, cache-read, cache-write,
+visible-output, and reasoning-output exposure and prices; read exposure cannot satisfy or erase the
+write reservation. Its finalized receipt binds the campaign, phase, ordered plan items, price
+snapshot, requested `default` service tier, explicit no-breakpoint/no-write cache mode, predecessor
+ledger, and exact provider-job identity tuple
 `(workflow_run_id, run_attempt, job_id, batch_attempt_id)`.
 
 That identity must consume exactly one unused reservation before key access. A rerun or replacement
@@ -401,11 +600,28 @@ attempts in a retry chain and the final successful attempt reconcile independent
 erases earlier exposure. The next batch starts only when its predecessor ledger is exact, its new
 worst-case reservation fits, and no STOP marker exists.
 
+Every terminal attempt stores separate provider fields and accounting statuses for total input,
+uncached input, cache-read input, cache-write input, visible output, reasoning output, billed
+output, and total usage, plus source evidence for each. Cache-read evidence and cache-write evidence
+are different typed records and are never derived from one another. `cache_write_input_tokens = 0`
+is accepted only from complete trusted detail that explicitly proves zero under the frozen response
+schema. Absent or incomplete write detail stays unknown, never becomes zero, and retains the full
+cache-write reservation. If delivery is unknown or any Responses API result was received, missing
+cache-write detail also appends STOP and permits zero later calls.
+
+Any trusted nonzero cache-write usage is reconciled at the frozen non-null cache-write rate and
+included in charged exposure before STOP is appended. The record and cost remain evidence; STOP
+does not discard or relabel the write. Cache-read usage, when present, reconciles only the separate
+read reservation. The same per-attempt record stores exactly one service-tier accounting status
+from section 6.2. `missing` or `mismatch` returned-tier evidence retains all unreconciled worst-case
+components, appends STOP, and permits zero later calls.
+
 The automatic retry taxonomy is closed and versioned:
 
 - authentication and permission failures, including both 401 and 403, durably stop the campaign;
-- only a structured provider 429 response classified `delivery_certainty=definitely_rejected` may
-  be retried automatically;
+- only a structured provider 429 response classified `delivery_certainty=definitely_rejected`,
+  independently proven to have no response usage, and recorded as
+  `not_applicable_definitely_rejected` for service-tier accounting may be retried automatically;
 - its valid bounded `Retry-After` controls the delay; when absent, the frozen domain-seeded
   exponential full-jitter rule controls the delay;
 - timeout, connection loss, 408, 409, 5xx, or any other response with uncertain delivery becomes
@@ -444,8 +660,16 @@ and the exact ordered judge-request IDs for hard-pass responses. The attachment 
 any judge request; changing a hard decision or request set creates a new attachment identity and
 cannot be joined to the campaign.
 
+The live stage receives only the in-memory `VerifiedGenerationContextExpectationV1` reconstructed
+under section 7.1. Every hard-score set and downstream judge projection repeats and verifies the
+tagged hard-scorer source hash, hard-score, judge, statistical, and audit protocol hashes,
+`protocol_attestations_root`, both identity-registry digests, and the common `workflow_root`.
+Provider-evidence validation rejects any attachment or provider-index projection that omits,
+changes, nests as alleged authority, or substitutes one of these bindings.
+
 Only deterministic hard-pass responses enter semantic judging. The judge is `gpt-5.6-sol` with:
 
+- literal wire `service_tier: "default"` and the same explicit no-breakpoint/no-write cache mode;
 - `reasoning.effort: low`;
 - low text verbosity and a strict structured-output schema;
 - `max_output_tokens: 768`;
@@ -464,9 +688,10 @@ applicable, any material contradiction, overall semantic pass, and bounded evide
 decision must be derivable from the item decisions; inconsistent or malformed judgments fail
 closed.
 
-Judge requests follow the same delivery, retry, budget, journaling, and artifact rules as
-generation. A semantic-gated report requires 100% judgment coverage for hard-pass responses. Judge
-failure does not silently fall back to a hard-gated performance claim.
+Judge requests follow the same service-tier, cache-read/cache-write, input-bound, delivery, retry,
+budget, journaling, and artifact rules as generation. A semantic-gated report requires 100%
+judgment coverage for hard-pass responses. Judge failure does not silently fall back to a
+hard-gated performance claim.
 
 Judging uses 36 hash-bound attachments keyed by generation model and scenario. Each attachment
 references exactly one sealed generation-capsule hash and its sealed `HardScoreRequestSetV1` hash,
@@ -498,8 +723,8 @@ A positive delta means the eligible visible `if` response is shorter. For each r
 `visible_output_tokens = output_tokens - reasoning_tokens`; billed output and hidden reasoning
 tokens are reported separately. The point estimator is the median over eligible paired visible-token
 deltas. Characters are secondary and are never presented as tokens. Input, visible output,
-reasoning output, billed output, total, cached-input tokens, estimated cost, and latency remain
-separate descriptive metrics.
+reasoning output, billed output, total, cache-read-input tokens, cache-write-input tokens,
+estimated cost, and latency remain separate descriptive metrics.
 
 This is a post-treatment estimand conditional on both matched responses passing the semantic gate.
 It does not estimate unconditional token, total-token, or cost savings across all planned requests.
@@ -629,8 +854,9 @@ inspect generation or judge artifacts before committing their labels.
 
 ### 11.2 Commit-reveal
 
-The input-tag manifest preregisters two distinct reviewer GitHub identities and, when used, their
-commit-signing key fingerprints. Independence is preserved through ordinary user-authored pull
+The input-tag manifest binds the exact two-entry `AuditReviewerRegistryV1` from section 6.5,
+including each numeric GitHub account ID, exact login, signing-verification mode, fingerprint
+field, canonical bytes, and digest. Independence is preserved through ordinary user-authored pull
 requests and this public commit-reveal protocol:
 
 1. each reviewer produces canonical label JSONL and a fresh random salt locally;
@@ -743,31 +969,60 @@ The repository adds two protected environments:
 
 - `benchmark-live`, holding `OPENAI_API_KEY` and requiring approval before generation or judge
   batch execution; and
-- `benchmark-publish`, requiring a separate approval before repository-write publication.
+- `benchmark-publish`, requiring separate approval for each publisher or release-finalizer write.
 
 At specification time the repository API reports default workflow permission `read` and
-`can_approve_pull_request_reviews: false`. The read default remains; rollout enables the repository
-Actions PR-creation toggle only for the protected publication path and grants write permissions
-explicitly on its two minimal jobs. Neither job contains a PR-approval or merge operation.
+`can_approve_pull_request_reviews: false`. The read default remains. The repository
+`GITHUB_TOKEN` is read-only everywhere, including state, provider, publication, correction, and
+release workflows; it never creates or closes a PR, moves an authority ref, creates a tag or
+release, uploads release assets, approves, or merges.
 
 Self-review and admin bypass are disabled where GitHub supports those controls. Deployment refs
 are restricted to the protected benchmark tags. Approval actors and deployment identities are
 retained in provenance.
 
-Provider jobs have read-only repository permissions and never receive a write-capable token.
-Publication jobs never receive the provider key. No `pull_request_target`, privileged automatic
-`workflow_run`, untrusted fork code, or model-generated command is used.
+All repository writes use exactly three installed, pairwise-distinct, repository-scoped GitHub Apps
+with actor IDs frozen in the security protocol and receipts:
+
+- the **state-writer App** performs only expected-OID, non-force, fast-forward updates on
+  `benchmark-authority/*`, from fixed hash-verified state-writer steps;
+- the **publisher App** creates the exact result branch and PR bound by the current
+  `PublicationPlanV1`, or closes that exact PR after its typed publication invalidation; and
+- the **release-finalizer App** creates the exact protected annotated result tag, creates the exact
+  draft release and checksum-bound assets, verifies their returned roots, and performs exactly one
+  transition that publishes that draft.
+
+The Apps' GitHub permission grants are necessarily broader than those semantic operations, so the
+design does not claim that unavailable GitHub capability scopes enforce the narrow roles. Narrowing
+is enforced jointly by fixed hashed tools, endpoint-policy allow/deny tests, protected branch/tag
+rulesets, immutable Releases configuration, expected-object receipts, exact actor restrictions,
+environment approvals, and postcondition verification. An endpoint, method, ref, actor, asset, or
+state transition outside the frozen policy fails closed and leaves a durable receipt or incident.
+
+Publisher and release-finalizer credentials are mapped only in their separately approved
+`benchmark-publish` jobs. State-writer App credentials are mapped only in fixed state-writer steps.
+No App credential is present in provider-controller, model-output parsing, scoring, packaging, or
+artifact-inspection scope, and no App ever receives `OPENAI_API_KEY` or a model-output field as an
+input, environment value, argument, stdin, or log. A fixed byte-blind transport step may transmit
+only already sealed opaque Git objects or release assets whose roots are plan-bound; it cannot
+decode or select their contents. Provider jobs have read-only repository permissions. Publication
+jobs never receive the provider key. No `pull_request_target`, privileged automatic `workflow_run`,
+untrusted fork code, or model-generated command is used.
 
 The live secret is a dedicated project-scoped restricted key created for this benchmark campaign,
 not an organization/admin key. The project has no unrelated consumers, exposes only the API
 capabilities required by the frozen runner, and uses a provider-side project spend guard where
 available. The key is revoked or rotated after the campaign and immediately after any incident.
 
-Each batch has an exact two-job credential boundary. A job outside `benchmark-live` imports and
-verifies the checkpoints, checks the predecessor ledger/STOP state, constructs `BatchPlanV1`,
-creates its worst-case reservation, and emits a digest-bound safe input artifact. The
-environment-gated provider job checks out the exact detached preflight commit, re-verifies the tag
-object and plan digest, and finalizes the single-use job receipt before execution.
+Each provider batch has the exact four-role/job boundary in section 7.2: secret-free prepare,
+protected repository-read-only provider, key-free receipt/state writer, and key-free post/state
+writer. The prepare job imports and verifies checkpoints, checks the predecessor ledger/STOP state,
+constructs `BatchPlanV1`, creates its worst-case reservation, and emits a digest-bound safe input
+artifact. The protected provider job checks out the exact detached preflight commit and re-verifies
+the tag object and plan digest, but its controller step remains disabled until the receipt/state
+writer wins the single expected-OID authority CAS and the job verifies that won receipt. The
+post/state writer validates the output and performs the successor expected-OID CAS; neither state
+writer maps the provider key.
 `${{ secrets.OPENAI_API_KEY }}` is mapped through step-scoped `env` only for the single
 hash-verified provider-controller command, never at workflow or job scope and never during
 checkout, dependency setup, artifact download/upload, or packaging. No third-party action or
@@ -776,8 +1031,9 @@ ambient proxy credentials are not trusted.
 
 All Actions are pinned to full commit SHAs. Every job checks out the preflight-recorded detached
 commit SHA, never a tag name after preflight, and checkout does not persist credentials. Workflow
-policy tests fail on a floating action ref, widened permission, unapproved trigger, arbitrary live
-input, tag/commit mismatch, or secret in a PR/fork job.
+policy tests fail on a floating action ref, widened `GITHUB_TOKEN` permission, wrong App actor or
+credential scope, forbidden GitHub endpoint, unapproved trigger, arbitrary live input,
+tag/commit/workflow-root mismatch, or any provider/App secret in a PR/fork or wrong-role job.
 
 ### 12.2 Public artifacts
 
@@ -829,10 +1085,16 @@ benchmarks/results/<campaign-id>/
 The bundle includes:
 
 - campaign registry record and input/result commit identities;
-- copied native-v2 manifests, dated price snapshot, and per-batch reviewer attestations;
+- copied native-v2 manifests, tier- and cache-dimensioned dated price snapshot, and per-batch
+  reviewer attestations;
+- both independent identity registries, all three ordered protocol attestations and their root,
+  the 15-member workflow inventory, derived member hashes, and common workflow root;
 - exact cases, arm hashes, Caveman provenance, protocol hashes, and runner provenance;
-- all terminal and retry attempts, errors, usage, returned models, and request metadata allowed by
-  the publication policy;
+- all terminal and retry attempts, errors, separate cache-read/cache-write usage and accounting,
+  service-tier request/return/accounting evidence, returned models, and request metadata allowed
+  by the publication policy;
+- generation-context expectation/final roots and the tagged hard-scorer, hard-score, judge,
+  statistical, audit, provider-projection, and workflow-root lineage;
 - generation seals and checksums;
 - deterministic hard-score protocol and request-set attachments;
 - judge protocol, records, and attachment hashes;
@@ -865,27 +1127,34 @@ contain the input commit and every present bound merge SHA as ancestors, and mus
 the result path. Any base movement or proposed-head change invalidates the plan and requires a new
 plan and approval.
 
-A minimal `benchmark-publish` environment job receives only the repository write and pull-request
-permissions needed to publish. Trusted publisher code runs from the detached input commit and
-creates a separate worktree rooted at the exact publication base SHA. It verifies the plan, bundle
-digest, and inventory, copies fixed allowlisted paths byte-for-byte, verifies the exact expected
-tree diff, and opens the bound branch and pull request. It does not parse, score, render, execute, or
-otherwise interpret untrusted model output, and it has no provider key. The repository setting that
-allows GitHub Actions to create pull requests must be explicitly enabled; the workflow token is not
-allowed to approve or merge its own PR.
+A separately approved `benchmark-publish` environment job runs trusted publisher preparation from
+the detached input commit with no App credential. It creates a separate worktree rooted at the
+exact publication base SHA, verifies the plan, bundle digest, workflow root, and inventory, copies
+fixed allowlisted paths byte-for-byte, and verifies the exact expected tree diff and sealed commit
+root. Only then does its fixed byte-blind publisher step map the publisher-App credential; that step
+accepts only the plan, object roots, ref, and PR metadata and creates only the bound branch and pull
+request. For an invalidated publication it may instead close only that exact plan-bound PR and must
+record the typed `correction_publication_invalidation` or ordinary publication invalidation receipt
+as applicable. It does not parse, score, render, execute, or otherwise interpret untrusted model
+output, and it has no provider key or state/release App credential. The read-only repository
+`GITHUB_TOKEN` is not a publication authority and cannot approve or merge the PR.
 
 The publication job does not merge directly. Normal CI, branch protection, conversation
-resolution, and human review apply. GitHub places `pull_request` runs created by `GITHUB_TOKEN`
-`opened`, `synchronize`, or `reopened` events into an approval-required state. The publication
-contract requires a maintainer with write access to verify the exact PR head SHA and sealed bundle
-digest, then select **Approve workflows to run**. The resulting secret-free
-`publication-pr-validate` check is required by branch protection. After merge, a protected
-`ResultReleasePlanV1` binds the campaign, input tag, bundle digest, exact publication PR and approved
-head, merge commit and result-tree digest, result tag name, release workflow SHA, and asset digests.
-A separate `benchmark-publish` environment-gated release-finalizer job rechecks that plan and
-creates `benchmark-result-<campaign-id>` at exactly the merge commit plus the checksum-bound GitHub
-Release. It receives only the tag/release permissions needed, never rewrites result files, and
-records the tag object, release ID, and returned asset digests.
+resolution, exact-head validation, and human review apply. The publication contract requires a
+maintainer with write access to verify the exact PR head SHA and sealed bundle digest and authorize
+the secret-free `publication-pr-validate` check required by branch protection. The publisher App
+cannot approve or merge its own PR. After human merge, a protected `ResultReleasePlanV1` binds the
+campaign, input tag, bundle digest, exact publication PR and approved head, merge commit and
+result-tree digest, result tag name, release workflow SHA, common workflow root, and asset digests.
+A separately approved `benchmark-publish` release-finalizer job rechecks the plan and prepares the
+annotated-tag object and sealed opaque assets before any App credential is mapped. Its fixed
+byte-blind finalizer step then maps only the release-finalizer App credential, accepts the bound
+tag/release/asset roots, creates the protected annotated `benchmark-result-<campaign-id>` tag at
+exactly the merge commit, creates the checksum-bound draft GitHub Release and exact assets, verifies
+returned tag/release/asset roots, and performs one publish transition. It never rewrites result
+files and records the annotated tag object, release ID, draft and publish receipts, and returned
+asset digests. Repository immutable Releases and tag rulesets prohibit rewrite; the read-only
+`GITHUB_TOKEN` performs none of these writes.
 
 Actions artifacts are temporary review transport, not the durable public record. The committed
 result directory and release assets are the publication surface.
@@ -898,9 +1167,15 @@ Every started confirmatory input tag gets a registry outcome:
 - suspected credential exposure follows section 12.2 and publishes only the safe invalid-campaign
   incident record.
 
-Corrections create a new result directory and tag with an explicit `supersedes` link. Existing
-evidence, tags, and releases are not rewritten. A `RELEASE_BLOCKED` lineage creates no result tag or
-release; its correction lineage binds and supersedes the blocked merge explicitly.
+Corrections create a new result directory, protected annotated tag, release, and append-only latest
+pointer event with an explicit `supersedes` lineage. Existing evidence, states, commits, pointers,
+tags, and releases are not rewritten. A `RELEASE_BLOCKED` lineage creates no original result tag or
+release; its correction binds and supersedes the blocked merge explicitly. Publication-stage
+correction failure records `correction_publication_invalidation`; release-stage correction failure
+records `correction_release_invalidation`; no generic correction invalidation is accepted. A
+successful correction binds the prior/new latest pointers, publication and merge receipts, result
+tree, annotated-tag root, release receipt, and release-asset root and enters authority only through
+the atomic `CORRECTION_RESULT_RELEASED` process in section 7.4.
 
 ### 13.3 Documentation and social claims
 
@@ -925,38 +1200,50 @@ Implementation is test-driven and includes:
 - unit and property tests for delta direction, eligibility, scenario-cluster bootstrap,
   visible-versus-reasoning tokens, non-inferiority, outcome classification, sparse/missing
   records, and deterministic seeds;
-- manifest/request round-trip tests proving exact medium reasoning and medium verbosity in every
-  request identity and wire payload;
+- manifest/request round-trip tests proving literal wire `service_tier: "default"`, exact medium
+  reasoning, medium verbosity, explicit no-breakpoint/no-write cache mode, and the `<= 272_000`
+  versioned input-exposure bound in every request identity and wire payload;
 - corpus-neutrality tests proving that only prompt-grounded sentence constraints are gating and
   that critical-warning case IDs are frozen;
 - parent/shard-plan tests proving exactly 36 disjoint 40-row generation projections whose ordered
   union is the three 480-row parent plans;
 - hard-score/request-set sealing plus judge-schema, prompt-blinding, injection-resistance,
   attachment-binding, zero-call attachment, and exact coverage tests;
-- audit sampling, certainty-unit coverage, canonicalization, reviewer identity/signature binding,
+- audit sampling, certainty-unit coverage, canonicalization, exact two-entry audit identity
+  registry, exact ordered three-entry protocol registry/attestations, numeric-ID/login/signature
+  binding and non-null security-evidence fingerprint,
   commitment/reveal PR ordering, adjudication, weighting, agreement, model/arm-indexed false-fail
   sensitivity, quality/brevity extrema, exact-search certificates, and deterministic search-cap
   tests, including `M = K = 120` fail-closed exhaustion;
-- exact call-count, price-snapshot attestation, `BatchPlanV1`, single-use job receipt, per-attempt
-  reservation/reconciliation, duplicate/rerun rejection, STOP propagation, and campaign-budget
-  tests, including a 429-retry-then-success chain whose attempts remain separately accounted;
+- exact call-count, default-tier price-snapshot attestation, non-null cache-write rates,
+  `BatchPlanV1`, single-use job receipt, distinct cache-read/cache-write
+  reservation/reconciliation/evidence, duplicate/rerun rejection, STOP propagation, and
+  campaign-budget tests, including a definitely-rejected 429-retry-then-success chain whose
+  attempts remain separately accounted and every closed service-tier accounting status;
 - `CampaignStateV1` transition-table, parent-hash, atomic invalid-event hold, approved dismissal,
   post-merge benign-hold dismissal, hold-to-STOP, compare-and-swap race, no-mutation, illegal-jump,
   zero-dispatch recovery, resumable-partial, budget-incomplete, publication-replan,
-  release-blocked, invalid-finalization, and happy-path property tests;
+  release-blocked, atomic `CORRECTION_RESULT_RELEASED` escape, terminal correction append,
+  distinct correction invalidations, invalid-finalization, and happy-path property tests;
 - closed retry-taxonomy, `Retry-After`, jitter, retry exhaustion, 401/403 stop, ambiguous delivery,
   soft deadline, forced runner loss, and exact-suffix resume tests;
 - tar round-trip, hidden-lock, mode, digest, extraction, traversal, link, overwrite, inventory,
   and secret-scan tests;
-- workflow trigger, permissions, per-batch environment approval, campaign concurrency,
-  batch-controller ordering, step-scoped-secret, detached-SHA pinning, Markdown neutralization, and
-  exact artifact-provenance policy tests;
+- exact 15-path C0-derived workflow inventory/root, trigger, read-only `GITHUB_TOKEN`, four-job
+  provider boundary, three distinct App actors, endpoint policy, rulesets, immutable Releases,
+  per-batch environment approval, campaign concurrency, batch-controller ordering,
+  step-scoped-secret, detached-SHA pinning, Markdown neutralization, and exact artifact-provenance
+  policy tests;
 - read-only provider-evidence verifier, complete-collector ordering, incomplete-prefix finalizer,
   credential-incident, `PublicationPlanV1` ancestor/base/head movement and closed-PR replan,
-  minimal-publisher, exact-head manual publication-PR validation, `ResultReleasePlanV1`, and
-  release-finalizer tests;
-- public finalize/seal writer and capsule-bound hard-score/judge/scoring/aggregation attachment
-  tests; and
+  minimal App publisher, exact-head manual publication-PR validation, `ResultReleasePlanV1`,
+  annotated-tag/draft-assets/one-publish release finalizer, and correction-lineage tests;
+- authority-bound generation-context expectation reconstruction, no-hash-self-cycle, tagged
+  protocol/workflow-root propagation, and rejection of every serialized or supplied capability
+  surrogate;
+- tests proving all seven public replay commands are offline and non-evidentiary and that every
+  live hard-score, judge, audit, analysis, and verification workflow uses its required Runtime or
+  Publication campaign stage without invoking the public CLI; and
 - a full synthetic campaign that reconstructs the report from published-style artifacts without a
   provider secret.
 
@@ -970,23 +1257,31 @@ scenario in both languages, all four arms, one repetition, and all three generat
 most 24 generation and 24 judge attempts are permitted, under the USD 5 cap. The pilot freezes
 `max_transient_retries = 0`, so retries cannot raise the actual API-attempt ceiling above 48.
 
-The pilot validates API parameters, returned-model and usage capture, rate behavior, checkpoint
-transport, judge schema, and cost accounting. It is never benchmark evidence. The corpus and
-decision thresholds cannot be tuned to make the observed pilot effect favorable. A required
-protocol fix creates a new pilot identity; the confirmatory input tag is created only after the
-implementation is frozen and reverified.
+The pilot validates API parameters; literal requested and returned `default` service-tier evidence;
+separate cache-read/cache-write usage, zero-write proof, and STOP behavior; returned-model and usage
+capture; rate behavior; checkpoint transport; judge schema; and cost accounting. It is never
+benchmark evidence. The corpus and decision thresholds cannot be tuned to make the observed pilot
+effect favorable. A required protocol fix creates a new pilot identity; the confirmatory input tag
+is created only after the implementation is frozen and reverified.
 
 ### 14.3 Confirmatory sequence
 
-The release sequence is:
+This amended design is a governance gate. No implementation slice, pilot, or live workflow rollout
+may begin while **Amendment approval** remains pending. A maintainer must review this exact diff and
+add a new dated approval record in a later commit; the historical 2026-08-30 approval cannot satisfy
+that gate.
+
+After that explicit reapproval and implementation, the release sequence is:
 
 1. full provider-offline synthetic campaign is green;
-2. workflow security and statistical review are green;
+2. the exact two audit identities and ordered three protocol identities/attestations are frozen,
+   and workflow security and statistical review are green against the common workflow root;
 3. the live operational pilot is green;
 4. code, manifests, methods, settings, seeds, and price snapshot are frozen in the input tag;
 5. each required bounded generation batch receives `benchmark-live` approval and runs in order;
-6. all generation capsules are sealed and the deterministic hard-score/request-set attachments are
-   sealed;
+6. all generation capsules are sealed, the authority-bound generation-context expectation is
+   reconstructed and bound by `GENERATION_COMPLETE`, and the deterministic
+   hard-score/request-set attachments are sealed;
 7. each required bounded judge batch receives `benchmark-live` approval and runs in order;
 8. generation, hard-score, and judge artifacts pass read-only provider-evidence integrity
    validation and `EvidenceInventoryV1` is sealed;
@@ -994,13 +1289,14 @@ The release sequence is:
 10. capsule-bound aggregation classifies every model outcome;
 11. the complete read-only collector seals the final bundle from provider evidence, audit, and
     analysis;
-12. `benchmark-publish` receives separate approval for the exact `PublicationPlanV1` and opens the
-    result PR from the verified main base;
+12. `benchmark-publish` receives separate approval for the exact `PublicationPlanV1`, maps only the
+    publisher App in the fixed step, and opens the result PR from the verified main base;
 13. a maintainer approves publication-PR validation for the exact head SHA and the reviewed PR
     merges;
 14. `ResultReleasePlanV1` binds the merge commit and asset digests;
-15. the separately approved release finalizer creates the protected result tag and checksum-bound
-    release; and
+15. the separately approved release finalizer maps only the release App, creates the protected
+    annotated result tag, draft release, and checksum-bound assets, verifies them, and performs one
+    publish transition; and
 16. documentation, website, and social result packages are updated from the merged evidence.
 
 At any provider-stage `PERMANENT_STOP` or `BUDGET_EXHAUSTED`, the sequence branches immediately to
@@ -1026,8 +1322,16 @@ It does not continue to judge, audit, aggregate, or complete collection.
 - GitHub environment approval is job-scoped. A long campaign may require several manual approvals,
   one for each bounded generation or judge batch; there is no campaign-wide approval primitive.
 - Publication requires one protected approval to create the exact result PR and another to create
-  the post-merge result tag/release; these are separate write-capable jobs.
-- API price estimates are not invoices, and cache accounting remains provider-specific.
+  the post-merge result tag/release; these are separate App-credentialed jobs.
+- GitHub App permission grants are broader than the intended state, publisher, and release roles.
+  Fixed tools, endpoint tests, rulesets, immutable Releases, receipts, and actor restrictions reduce
+  that exposure but do not make it a platform-enforced least-capability boundary.
+- API price estimates are not invoices. Cache reads, cache writes, and returned service-tier detail
+  remain provider evidence: missing detail retains worst-case exposure and can invalidate the run.
+  The campaign intentionally authorizes neither long-context pricing nor a service tier other than
+  literal `default`.
+- The seven public replay commands are useful for offline reproduction but intentionally cannot
+  recreate live campaign authority or evidentiary capabilities.
 - Human audit requires two available reviewers and timely reveal before temporary Actions
   artifacts expire.
 - Human audit uses only 24 targeted primary-arm records per model under the agreed 144-record
@@ -1041,13 +1345,21 @@ It does not continue to judge, audit, aggregate, or complete collection.
 
 The system is ready for the full campaign only when:
 
+- a maintainer has reviewed this exact amendment diff and recorded a fresh explicit approval; the
+  historical 2026-08-30 approval is not sufficient;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
-- public finalize/seal, hard-score/request-set, judge, scoring, inference, and bundle writers bind
-  every attachment to its exact parent hashes;
-- manifest/request evidence captures medium reasoning, medium verbosity, and the reasoning-token
-  breakdown required for visible-token scoring;
+- Runtime and Publication campaign-side stages bind every live hard-score, judge, audit, analysis,
+  verification, and bundle attachment to its exact authority parents, while all seven public replay
+  commands remain offline and non-evidentiary;
+- manifest/request evidence captures literal wire `service_tier: "default"`, returned-tier evidence
+  and the exact closed accounting vocabulary, explicit no-breakpoint/no-write cache mode, separate
+  cache-read/cache-write evidence and usage, medium reasoning, medium verbosity, and the
+  reasoning-token breakdown required for visible-token scoring;
+- every alias has a reviewed non-null cache-write rate, both tier fields equal `"default"`, the
+  versioned conservative input bound is at most `272_000`, and neither authorization nor reservation
+  can select long-context pricing;
 - the corpus-neutrality edit and warning-severity schema are frozen and validated;
 - the workflow can reconstruct, verify, and resume an exact tarred checkpoint including
   `.laconian.lock`;
@@ -1056,31 +1368,51 @@ The system is ready for the full campaign only when:
   `InvalidEventHoldV1` until approved dismissal or the phase-appropriate STOP, release-block, or
   correction path, and permits zero-dispatch recovery only with exact `never_started` reservation
   evidence; every mutation is serialized and compare-and-swapped against the exact state/hold root;
-- provider jobs have no write token, the minimal publisher has no provider secret, and a dedicated
-  restricted project key is mapped only to the single provider-controller step;
+  the sole `RELEASE_BLOCKED` escape is an atomic `CORRECTION_RESULT_RELEASED`, a correction from
+  `RELEASED` only appends terminal history, and the two typed correction invalidations cannot alias;
+- the exact two-entry audit registry and exact three-entry ordered protocol registry bind numeric
+  IDs, logins, verification modes and fingerprints, the security-evidence fingerprint is non-null,
+  the three ordered attestations/root verify, and neither registry can substitute for the other;
+- the exact ordered 15-path workflow inventory derives its member hashes and common root only from
+  verified C0 bytes, and protocol attestations, generation context, provider projection, and
+  publication all verify that same root;
+- the authority-bound generation-context expectation is reconstructed only in campaign memory,
+  binds campaign/registries/predecessor/generation layer and expected context digest without a hash
+  self-cycle, and carries the tagged hard-scorer plus hard-score, judge, statistics, audit protocols
+  and workflow root through final provider and publication evidence;
+- the repository `GITHUB_TOKEN` is read-only everywhere; the four-job provider boundary is exact;
+  the state-writer, publisher, and release-finalizer Apps are pairwise distinct and repository
+  scoped; and App/provider credentials are mapped only in their fixed, separately authorized steps
+  with no provider-key/model-output overlap;
 - the batch controller proves predecessor-ledger, single-use job receipt, per-attempt reservation,
   permanent STOP, soft-deadline, exact-suffix resume, and zero-subsequent-call behavior for
   authentication, permission, ambiguity, credential exposure, and missing state;
 - preflight and the durable ledger enforce the USD 75 authorized-exposure scheduling bound from
-  the frozen price snapshot and reviewer attestation, and stop before a batch that cannot fit;
+  the frozen default-tier, cache-dimensioned price snapshot and reviewer attestation, account
+  nonzero writes before STOP, retain worst-case exposure for missing write/tier detail, and stop
+  before a batch that cannot fit;
 - the operational pilot completes within its USD 5 bound with consistent returned models and
   complete usage;
-- judge and audit protocols are frozen and hash-bound, every critical judge-pass primary record is
-  audited, and the two reviewer identity-bound commitment/reveal chains verify;
+- judge, statistics, audit, and security protocols are frozen, attested, and hash-bound; every
+  critical judge-pass primary record is audited; and the two audit-reviewer identity-bound
+  commitment/reveal chains verify;
 - model/arm-indexed false-fail sensitivity recomputes semantic quality and brevity, verifies exact
   extrema certificates, and becomes inconclusive on deterministic search-cap exhaustion;
 - the read-only collector rejects an incomplete performance bundle, the prefix/STOP finalizer emits
   only safe invalid-campaign provenance, and the minimal publisher copies only an exact sealed
   allowlist;
-- `PublicationPlanV1` starts from exact current `main` containing every bound audit merge,
-  `ResultReleasePlanV1` binds the reviewed merge tree, and the release finalizer tags only that
-  commit with the sealed asset digests; base/head movement has an exact closed-PR replan transition,
-  and a verified post-merge defect blocks release;
+- `PublicationPlanV1` starts from exact current `main` containing every bound audit merge, the
+  publisher App creates or closes only its exact plan-bound branch/PR, `ResultReleasePlanV1` binds
+  the reviewed merge tree, and the release App creates only the protected annotated tag, verified
+  draft/assets, and one publish transition; base/head movement has an exact closed-PR replan
+  transition, and a verified post-merge defect blocks release;
 - documentation, website, release-note, and social updates are impossible before `RELEASED` and
   remain forbidden for `RESULT_MERGED` or `RELEASE_BLOCKED`;
-- the repository explicitly permits GitHub Actions to create pull requests while branch protection
-  prevents the workflow token from approving or merging its own PR;
-- protected input/result tags and both GitHub environments are configured; and
+- endpoint-policy tests, actor restrictions, expected-OID receipts, protected rulesets, and
+  immutable Releases constrain the technically broader App permissions, and no workflow token can
+  approve or merge a PR;
+- protected input/result tags, all three App installations, actor restrictions, immutable Releases,
+  and both GitHub environments are configured; and
 - the maintainer explicitly approves the live workflow deployment.
 
 The project is ready to claim a model-specific result only after the full campaign also satisfies
