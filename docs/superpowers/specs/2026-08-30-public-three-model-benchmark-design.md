@@ -379,7 +379,7 @@ The exact role-to-subject inventories are:
 |---|---|
 | `statistical_method` | `corpus_case_root`, `estimand_protocol_sha256`, `statistical_protocol_sha256`, `bootstrap_protocol_sha256`, `outcome_classification_protocol_sha256`, `false_fail_sensitivity_protocol_sha256` |
 | `blind_judge_audit_protocol` | `hard_score_protocol_sha256`, `judge_prompt_sha256`, `judge_schema_sha256`, `audit_sampling_protocol_sha256`, `audit_commit_reveal_protocol_sha256`, `audit_adjudication_protocol_sha256` |
-| `security_evidence` | `provider_request_contract_sha256`, `retry_spend_protocol_sha256`, `campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`, `artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`, `identity_registry_bundle_sha256` |
+| `security_evidence` | `provider_request_contract_sha256`, `retry_spend_protocol_sha256`, `campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`, `artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`, `identity_registry_bundle_sha256`, `state_writer_git_identity_sha256` |
 
 Each subject is exactly `{kind, sha256}`. A role's attestation must contain every listed subject once
 in that order and may contain no subject assigned to another role, no unlisted subject, and no
@@ -583,7 +583,8 @@ or explicit new-attempt flow.
 campaign ID, monotonically increasing transition number, current state, previous-state hash,
 triggering `CampaignEventV1` type and hash, input tag object and peeled commit, active phase-plan
 hash, spend-ledger hash, artifact-inventory Merkle root, optional STOP/incident ID, exact
-workflow/job or reviewer identities, and its own hash. Every event is single-use and parent-bound.
+workflow/job or reviewer identities, `state_writer_git_identity_sha256`, and its own hash. Every
+event is single-use and parent-bound.
 Every state or hold mutation runs under the repository-wide concurrency group and performs a
 compare-and-swap against the exact last valid state and unresolved-hold root.
 An unknown event, skipped parent, duplicate event, or hash mismatch is rejected without mutating the
@@ -692,7 +693,7 @@ The allowed durable transitions are:
 
 | From | Event and required evidence | To | Authorized next action |
 |---|---|---|---|
-| none | `PREFLIGHT_SEALED`: valid tag, plans, budget, price snapshot, parentless authority commit, and atomic `expected_absent` ref creation | `PREFLIGHTED` | prepare generation batch |
+| none | `PREFLIGHT_SEALED`: valid tag, plans, budget, price snapshot, canonical `StateWriterGitIdentityV1`, parentless authority commit, and atomic `expected_absent` ref creation | `PREFLIGHTED` | prepare generation batch |
 | `PREFLIGHTED` or `GENERATION_RESUMABLE` | `BATCH_RECEIPT_CONSUMED`: exact unused reservation/job tuple and current-price attestation | `GENERATION_ACTIVE` | execute frozen generation batch |
 | `GENERATION_ACTIVE` | `NO_DISPATCH_PROVED`: exact job evidence proves zero provider dispatch and releases only never-started reservations | `GENERATION_RESUMABLE` | prepare a new exact batch attempt |
 | `GENERATION_ACTIVE` | `VERIFIED_PARTIAL`: exact successor ledger, no STOP, suffix remains | `GENERATION_RESUMABLE` | prepare exact next suffix |
@@ -717,7 +718,9 @@ The allowed durable transitions are:
 | `RESULT_MERGED` | `RELEASE_PLAN_INVALIDATED`: verified tree, bundle, security, or provenance defect | `RELEASE_BLOCKED` | start a correction lineage; do not tag/release |
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INTENT_AUTHORIZED`: exact append-only intent, parent authority OID, plans, object names/roots, prior/new latest pointers, and idempotency keys | same campaign state | execute or recover exact correction publication effect |
 | `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_TAG_RECORDED`, or `CORRECTION_RELEASE_RECORDED`: exact next correction phase and adopted/created effect receipt | same campaign state | execute or recover exact next phase |
-| `RELEASE_BLOCKED` or `RELEASED` | `CORRECTION_INVALIDATED`: exactly one typed correction invalidation with allowed phase parent and terminal evidence; publication kind requires `unmerged_invalid` or `merged_invalid` | same campaign state | correction lineage terminal; a new correction ID is required and a contaminated merge must be superseded explicitly |
+| `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`: exact absent/closed PR and publication failure evidence | same campaign state | correction lineage terminal; a new correction ID is required |
+| `RELEASE_BLOCKED` or `RELEASED` with active correction `intent.json` or `publication-receipt.json` parent, observed merged PR, and no valid merge receipt | `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)`: exact `PostMergeAdmissionFailureV1`, contaminated merge/exposure, and no-later-effects evidence | same campaign state | correction lineage terminal; a new correction ID must explicitly supersede the failed correction and contaminated merge |
+| `RELEASE_BLOCKED` or `RELEASED` with active correction valid `merge-receipt.json`, `tag-receipt.json`, or `release-receipt.json` parent | `CORRECTION_INVALIDATED(kind=correction_release_invalidation)`: exact release-phase failure and external-object evidence | same campaign state | correction lineage terminal; a new correction ID is required |
 | `RELEASE_BLOCKED` | `CORRECTION_RESULT_RELEASED`: exact correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | documentation/social follow-up from corrected latest pointer |
 | `RELEASED` | `CORRECTION_RESULT_RELEASED`: exact append-only correction lineage and complete corrected publication/merge/release evidence | `RELEASED` | preserve prior terminal history; follow the new latest pointer |
 | `PREFLIGHTED`, `GENERATION_RESUMABLE`, `GENERATION_ACTIVE`, `GENERATION_COMPLETE`, `HARD_SCORE_COMPLETE`, `JUDGE_RESUMABLE`, `JUDGE_ACTIVE`, `JUDGE_COMPLETE`, `PROVIDER_EVIDENCE_VERIFIED`, `AUDIT_COMPLETE`, `ANALYSIS_COMPLETE`, `BUNDLE_COLLECTED`, or `COMPLETE_PUBLICATION_PR_OPEN` | `PERMANENT_STOP`: exact parent-specific reason and evidence; `credential_exposure` requires `CredentialExposureIncidentEvidenceV1`; an open complete publication PR requires its exact close receipt | `STOPPED_INVALID` | prefix/STOP finalizer only |
@@ -1474,7 +1477,7 @@ performs the expected-OID CAS itself; no installation token is returned to any A
 `<trigger-ref>` has exactly one of two forms selected by the caller row: the campaign's exact
 protected input tag `refs/tags/<campaign-input-tag>`, with `ref_type=tag`, `sha=C0`, and both
 workflow SHA claims equal to C0; or exact `refs/heads/main`, with `ref_type=branch`, `sha` and both
-workflow SHA claims equal to the dispatch's current main commit. Except for the five post-merge
+workflow SHA claims equal to the dispatch's current main commit. Except for the six post-merge
 events defined below, that main commit must be the single SHA already bound by the
 applicable audit, analysis, collection, publication, release, dismissal, or correction plan. For
 every main run the broker reads both workflow members at that commit and requires their bytes to
@@ -1493,13 +1496,16 @@ the triggering event reported by these OIDC tokens. The closed caller/ref/event 
 | `benchmark-collect-complete.yml` | exact plan-bound `main` | `COMPLETE_BUNDLE_SEALED`, `PERMANENT_STOP` |
 | `benchmark-finalize-invalid.yml` | exact campaign input tag | `INVALID_PREFIX_SEALED` |
 | `benchmark-dismiss-hold.yml` | exact plan-bound `main` | `INVALID_EVENT_DISMISSED`, `PERMANENT_STOP` |
-| `benchmark-publish.yml` | exact plan-bound `main`, except the exact post-merge rule for its three merge-recording and two merge-invalidation events | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation)` |
+| `benchmark-publish.yml` | exact plan-bound `main`, except the exact post-merge rule for its three merge-recording, two ordinary merge-invalidation, and one correction merged-invalid event | `PUBLICATION_INTENT_AUTHORIZED`, `COMPLETE_PUBLICATION_PR_OPENED`, `INVALID_PUBLICATION_PR_OPENED`, `COMPLETE_PUBLICATION_PLAN_INVALIDATED`, `INVALID_PUBLICATION_PLAN_INVALIDATED`, `RESULT_MERGED`, `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGED`, `INVALID_PREFIX_MERGE_INVALIDATED`, `PERMANENT_STOP`, `CORRECTION_INTENT_AUTHORIZED`, `CORRECTION_PUBLICATION_RECORDED`, `CORRECTION_MERGE_RECORDED`, `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=unmerged_invalid)`, and `CORRECTION_INVALIDATED(kind=correction_publication_invalidation, publication_outcome=merged_invalid)` |
 | `benchmark-release.yml` | exact plan-bound `main` | `RESULT_RELEASE_INTENT_AUTHORIZED`, `RESULT_RELEASED`, `RELEASE_PLAN_INVALIDATED`, `CORRECTION_TAG_RECORDED`, `CORRECTION_RELEASE_RECORDED`, `CORRECTION_RESULT_RELEASED`, and `CORRECTION_INVALIDATED(kind=correction_release_invalidation)` |
 
 `RESULT_MERGED`, `INVALID_PREFIX_MERGED`, and `CORRECTION_MERGE_RECORDED` are the only successful
 post-merge admissions. `RESULT_MERGE_INVALIDATED` and `INVALID_PREFIX_MERGE_INVALIDATED` are the
-only ordinary-publication failed-admission records. Those five events are the only event-specific
-post-merge main exceptions. Their pre-merge plan cannot and must not claim to know
+only ordinary-publication failed-admission records. The exact
+`CORRECTION_INVALIDATED(kind=correction_publication_invalidation,
+publication_outcome=merged_invalid)` event is the only correction failed-admission record. Those
+six events are the only event-specific post-merge main exceptions. Their pre-merge plan cannot and
+must not claim to know
 the eventual merge commit SHA. Instead it binds the exact PR number, protected base ref and base
 OID, approved head OID, sealed bundle/result-path roots, deterministic expected merge tree, v1 merge
 method `merge_commit`, ordered expected parents `[base_oid, head_oid]`, required-check names and
@@ -1541,6 +1547,20 @@ deduplicated schema-order subset of `unexpected_merge_parent`, `unexpected_merge
 `observation_inconsistent`. Canonicalization is RFC 8785 JSON with the same root rules as other
 authority evidence; missing, extra, reordered, or success-inconsistent fields are rejected. The two
 ordinary merge-invalidation events and correction `merged_invalid` must bind this evidence root.
+
+For the sixth exception, the broker additionally requires the exact active correction ID and
+phase-number lineage; authority parent is exactly that correction's `intent.json` or
+`publication-receipt.json`, no valid `merge-receipt.json` or later phase record exists, and the
+intent-bound plan/PR/base/head/sealed-result-tree roots equal the observed PR. It applies the same
+observed `M` and current-main `H` semantics, double-read, caller/callee workflow-root checks, and
+request receipts as the other five exceptions, then binds `PostMergeAdmissionFailureV1` and exact
+no-tag/no-Release/no-asset/no-latest/no-documentation/no-promotion evidence. Admission authorizes
+only the typed `CORRECTION_INVALIDATED(kind=correction_publication_invalidation,
+publication_outcome=merged_invalid)` authority commit. That commit makes this correction attempt
+terminal; only a new correction ID whose intent explicitly supersedes both the failed-correction
+root and contaminated `M`/exposure root may continue. The sixth exception cannot authorize a
+generic correction invalidation, `unmerged_invalid`, merge receipt, release phase, or any later
+effect.
 
 The corresponding merge event and authority receipt record the observed immutable `M` and current
 `H`. A failed-admission event records the same immutable observations and the exact closed failed
@@ -1602,10 +1622,44 @@ tests prove an unrelated workflow—even on an otherwise allowed ref—cannot ob
 
 #### Authority object and ref protocol
 
+The authority Git identity is the canonical input-tag member
+`benchmark/security/state-writer-git-identity.json`, with this exact closed
+`StateWriterGitIdentityV1` field set:
+
+```text
+schema_version = "StateWriterGitIdentityV1"
+state_writer_app_account_id = <positive canonical JSON integer>
+state_writer_app_login = <exact case-sensitive installed App bot login>
+author_name_ascii = "Laconian Benchmark State Writer"
+author_email_ascii = "laconian-benchmark-state-writer@users.noreply.github.com"
+committer_name_ascii = "Laconian Benchmark State Writer"
+committer_email_ascii = "laconian-benchmark-state-writer@users.noreply.github.com"
+state_writer_git_identity_sha256 = <lowercase 64-hex digest>
+```
+
+Author and committer name/email bytes are deliberately identical. All four values are the literal
+ASCII bytes shown; Unicode normalization, localization, substitution, display-name lookup, or a
+GitHub profile email is forbidden. The App account ID is greater than zero and the login is the
+exact installed actor login, matching ASCII `[A-Za-z0-9-]+(?:\[bot\])?`; its case is significant.
+Every string is valid UTF-8/ASCII and contains no NUL, CR, LF, `<`, `>`, or other control byte.
+Canonical bytes are RFC 8785 JSON over exactly the fields above (object input order is immaterial),
+UTF-8 with no terminal newline, hashing all fields except the final digest with domain separator
+`laconian-state-writer-git-identity-v1`. Missing, extra, null, nonliteral, or digest-mismatched
+fields fail closed.
+
+The installed App account ID/login are therefore not obtained from an undefined “App registry.”
+Preflight reads this exact member from verified C0, matches its account ID/login against the
+repository installation and `StateBrokerCallerPolicyV1`, and requires its digest in the input
+registry and as the ordered `security_evidence` protocol-attestation subject. `PREFLIGHT_SEALED`,
+every `CampaignEventV1`, publication/correction authority intent, `AuthorityMutationRequestV1`, and
+`AuthorityMutationReceiptV1` binds the same digest. A different identity requires a new input tag,
+security attestation, and campaign; no authority ref may mix identity digests.
+
 Every broker request carries one canonical `AuthorityMutationRequestV1`: campaign ID, transition
 number, event type/root, exact source-record bytes and their schema roots, authority ref, mutation
 mode (`expected_absent` or `expected_current_oid`), expected current OID or literal null, proposed
-tree root, commit timestamp, OIDC/run identity root, request idempotency key, and request digest.
+tree root, commit timestamp, `state_writer_git_identity_sha256`, OIDC/run identity root, request
+idempotency key, and request digest.
 The broker accepts no caller-supplied packfile, prebuilt commit, arbitrary path, or arbitrary Git
 object. It independently canonicalizes every schema record, recomputes its SHA-256 root, fetches and
 verifies the exact predecessor tree when one exists, and constructs the candidate Git objects.
@@ -1625,9 +1679,18 @@ modifying prior evidence is forbidden.
 
 Blob content is the exact canonical UTF-8 record bytes. Tree content is Git's canonical sequence of
 `mode SP name NUL raw-object-id`; commit content is exactly `tree <tree-oid>`, then no parent for the
-bootstrap or exactly one `parent <expected-current-oid>` thereafter, fixed author and committer
-identity from the state-writer App registry, identical author/committer epoch and `+0000` timezone
-from the event's canonical `recorded_at`, one blank line, and
+bootstrap or exactly one `parent <expected-current-oid>` thereafter, then these two exact lines:
+
+```text
+author Laconian Benchmark State Writer <laconian-benchmark-state-writer@users.noreply.github.com> <epoch> +0000
+committer Laconian Benchmark State Writer <laconian-benchmark-state-writer@users.noreply.github.com> <epoch> +0000
+```
+
+`<epoch>` is the identical canonical decimal Unix-seconds conversion of the event's whole-second
+UTC `recorded_at` (`YYYY-MM-DDTHH:MM:SSZ`), with no sign or leading zero. The broker clears and
+ignores all system/global/local Git config and author/committer environment variables. No
+`encoding`, `gpgsig`, `mergetag`, extra identity, continuation, or other commit header is present.
+After those identity lines, commit content has one blank line and
 `laconian benchmark authority <campaign-id> transition <20-digit-number>: <event-type>` followed by
 one newline. Preflight freezes the repository object format to SHA-1, matching the required
 40-lowercase-hex authority OIDs; SHA-256-format repositories are outside v1. It also proves that the
@@ -1674,8 +1737,9 @@ Every attempt yields canonical `AuthorityMutationReceiptV1` in the broker's appe
 log and as safe workflow evidence. It contains exactly schema version, campaign/request/idempotency
 IDs, event type/root, ref, mutation mode, expected old OID, ordered blob/tree OIDs, candidate commit
 OID, observed before/after OIDs, create/update/adopt outcome, endpoint-policy digest, ordered GitHub
-request IDs/statuses, App actor ID, OIDC identity root, started/completed timestamps, and receipt
-digest. It contains no App token or record payload. Duplicate request IDs must reproduce the same
+request IDs/statuses, App actor ID/login, `state_writer_git_identity_sha256`, OIDC identity root,
+started/completed timestamps, and receipt digest. It contains no App token or record payload.
+Duplicate request IDs must reproduce the same
 candidate and prior OID; conflicting reuse is denied. This protocol provides only exact authority
 ref creation/advance, not arbitrary repository write authority.
 
@@ -2007,7 +2071,9 @@ Implementation is test-driven and includes:
   release-blocked, correction-intent preauthorization, per-effect receipt CAS, create/adopt retry,
   PR/merge/tag/draft/asset/publish crash-window reconciliation, atomic
   `CORRECTION_RESULT_RELEASED` escape, terminal correction append, distinct phase-bound correction
-  invalidations, `merged_invalid` correction supersession without a wedge, immutable-orphan
+  invalidations, the sixth post-merge broker edge for exact typed `merged_invalid` with its
+  intent/publication-receipt parent and `PostMergeAdmissionFailureV1`, explicit supersession without
+  a wedge, immutable-orphan
   evidence, invalid-finalization, and happy-path property tests;
   canonical golden vectors for `GENERATION_SET_SEALED` require the exact ordered 36 capsule hashes,
   `generation_context_expectation_sha256`, and `verified_generation_context_root`, and reject an
@@ -2017,8 +2083,12 @@ Implementation is test-driven and includes:
   parent, current roots, source upload, scanner and containment receipts, artifact denylist, and
   open-PR close receipt where applicable, and reject every reason alias, secret-bearing field,
   excluded parent, or incomplete receipt;
-- authority-object golden vectors for every permitted tree shape and Git blob/tree/commit byte,
-  SHA-1 OID, fixed identity/time/message, parentless bootstrap and exact one-parent successor;
+- `StateWriterGitIdentityV1` canonical-byte/digest, input-tag/App-account/security-attestation
+  binding, literal ASCII author/committer line, whole-second epoch/timezone, and mixed-digest
+  rejection tests; authority-object golden vectors for every permitted tree shape and Git
+  blob/tree/commit byte, SHA-1 OID, fixed identity/time/message, parentless bootstrap and exact
+  one-parent successor, proving system/global/local Git config, environment identity, Unicode,
+  control bytes, and signature/encoding/mergetag headers cannot change candidate bytes;
   receive-pack policy tests for the all-zero expected-absent creation, expected-current-old-OID
   lease, sibling races, absent/candidate/divergent response-loss reconciliation, duplicate request
   adoption, object-upload interruption, thin-base verification, and rejection of every extra
@@ -2040,7 +2110,9 @@ Implementation is test-driven and includes:
   missing/extra/mismatch, unrelated-workflow, and pull-request-ref denial, token expiry; exact
   downscoped security-attestor token requests proving only Administration/Metadata/Contents read,
   no write scope, and exact rule-suite and immutable-setting endpoints; timely passing/non-bypass
-  rule-suite persistence, pre-merge test-SHA rejection, post-merge double-read/containment, and every
+  rule-suite persistence, pre-merge test-SHA rejection, all six exact post-merge caller/event/phase/
+  H/M/evidence allow and deny vectors, including correction `merged_invalid`, and post-merge
+  double-read/containment, plus every
   closed phase-specific `PERMANENT_STOP` caller/parent/reason allow and deny vector, including every
   allowed and forbidden credential-incident caller/state pair, per-batch environment approval,
   campaign concurrency, batch-controller ordering,
@@ -2055,7 +2127,8 @@ Implementation is test-driven and includes:
   observation, tag, draft, asset, publish, receipt CAS, authority object upload, and ref update,
   including response loss, already-existing exact adoption, divergent conflict, draft-list
   pagination, 422/502 and `starter` assets, publish-before-final-state recovery, zero duplicate or
-  orphan success paths, and pinned `gh release verify`/REST-observation parsing;
+  orphan success paths, with response loss around the sixth merged-invalid broker/CAS edge,
+  and pinned `gh release verify`/REST-observation parsing;
 - post-merge credential-exposure tests proving containment, rotation/revocation, affected-object
   denylisting, current-tree tombstone/removal when appropriate, withdrawn-latest and correction
   lineage behavior, and disclosure of irreversible PR/main/history/fork/fetch exposure without an
@@ -2101,10 +2174,12 @@ After that explicit reapproval and implementation, the release sequence is:
 2. the exact two audit identities and ordered three protocol identities/attestations are frozen,
    and workflow security and statistical review are green against the common workflow root;
 3. the live operational pilot is green;
-4. code, manifests, methods, settings, seeds, and price snapshot are frozen in the input tag;
-5. preflight proves SHA-1 object format and a nonempty repository, canonically constructs the
-   parentless transition-one object closure, and bootstraps the absent authority ref with one
-   all-zero-old-OID receive-pack command and an `AuthorityMutationReceiptV1`;
+4. code, manifests, methods, settings, seeds, price snapshot, and the exact
+   `StateWriterGitIdentityV1` member are frozen in the input tag and security attestation;
+5. preflight verifies that identity against the installed App account ID/login, proves SHA-1 object
+   format and a nonempty repository, canonically constructs the literal-identity parentless
+   transition-one object closure, and bootstraps the absent authority ref with one all-zero-old-OID
+   receive-pack command and an identity-bound `AuthorityMutationReceiptV1`;
 6. each required bounded generation batch receives `benchmark-live` approval and runs in order;
 7. all generation capsules are sealed, the authority-bound generation-context expectation is
    reconstructed, and `GENERATION_SET_SEALED` atomically binds the exact ordered 36 capsule hashes,
@@ -2133,6 +2208,12 @@ After that explicit reapproval and implementation, the release sequence is:
     performs or adopts one publish transition with every receipt reconciled; and
 18. documentation, website, and social result packages are updated from the active, nonwithdrawn
     released lineage.
+
+If a correction PR is observed merged but fails admission, its exact typed `merged_invalid` event
+uses the sixth post-merge broker exception, records `PostMergeAdmissionFailureV1` with no later
+effects, and terminates that correction attempt. Rollout may continue only through a newly approved
+correction ID that explicitly supersedes the failed correction and contaminated merge; it cannot
+resume the failed attempt or skip to tag/release/latest/promotion.
 
 From the first provider artifact upload through `COMPLETE_PUBLICATION_PR_OPEN`, every consuming
 phase scans its exact inputs and proposed outputs before its success transition; the designated
@@ -2245,12 +2326,20 @@ The system is ready for the full campaign only when:
   the sole `RELEASE_BLOCKED` escape is an atomic `CORRECTION_RESULT_RELEASED`, a correction from
   `RELEASED` only appends terminal history, every correction external effect is preauthorized and
   receipt-reconciled/adoptable after crashes, `merged_invalid` terminates and can be explicitly
-  superseded rather than wedging, and the two phase-bound correction invalidations cannot alias;
+  superseded rather than wedging, the exact typed merged-invalid event is reachable only as the
+  sixth post-merge main exception from its correction intent/publication-receipt phase with
+  `PostMergeAdmissionFailureV1` and no-later-effects evidence, and the two phase-bound correction
+  invalidations cannot alias;
 - every authority mutation is constructed by the broker from exact schema bytes into the closed
   SHA-1 blob/tree/commit shape, transition one uses a parentless commit and all-zero-old-OID
   expected-absent receive-pack creation, every successor uses the exact expected old OID and
   one-parent fast-forward child, response loss reconciles only absent/exact/divergent outcomes, and
-  no extra object, ref, parent, tree member, mode, endpoint, or REST pseudo-CAS is admitted;
+  no extra object, ref, parent, tree member, mode, endpoint, or REST pseudo-CAS is admitted; the
+  input-tag `StateWriterGitIdentityV1` fixes the literal ASCII author/committer name/email bytes,
+  exact installed App numeric ID/login and digest, appears in the ordered security attestation and
+  every event/intent/request/receipt, and candidate construction ignores Git config/environment and
+  forbids alternate identity, control/Unicode bytes, signature/encoding/mergetag headers, timestamp,
+  or timezone;
 - every post-upload `credential_exposure` STOP uses the canonical safe
   `CredentialExposureIncidentEvidenceV1`, reproduces the exact current authority/state/ledger/
   inventory/plan/hold roots and affected upload/run/job, binds the closed secret classification,
@@ -2279,7 +2368,8 @@ The system is ready for the full campaign only when:
   `workflow_sha`/`job_workflow_sha` caller/callee semantics, event/check-run/OID tuple, minimal
   reusable job, frozen crypto/audience/subject/time/single-use-token policy, REST-verified rerun
   initiator, phase-specific caller/parent/reason STOP authority, and the exact cross-phase
-  credential-incident matrix, and denies every unrelated workflow, ref, identity,
+  credential-incident matrix, all six exact post-merge main exceptions including correction
+  `merged_invalid`, and denies every unrelated workflow, ref, identity,
   missing/extra/mismatched claim, predecessor, reason alias, artifact, or event; App/provider
   credentials are mapped only in their fixed, separately authorized boundaries with no
   provider-key/model-output overlap; the same exactly-three-App topology supplies a separately
