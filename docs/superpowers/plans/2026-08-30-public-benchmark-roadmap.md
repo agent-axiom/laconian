@@ -4,126 +4,103 @@
 
 **Goal:** Deliver, secure, rehearse, execute, audit, and publish the approved GPT-5.6 Sol/Terra/Luna benchmark without allowing incomplete evidence, uncontrolled spend, or premature public claims.
 
-**Architecture:** Four implementation slices establish an immutable evidence DAG and a separate fail-closed campaign control plane. Foundations make generation evidence shardable, sealable, and transportable. Evaluation defines neutral blind-judging, clustered-inference, and human-audit APIs. Runtime binds each provider job to one exact reservation and state transition. Publication authoritatively stages the live audit/analysis outputs, verifies the complete DAG, copies a sealed allowlist through a separately approved writer, and releases only the reviewed merge tree. Live operations begin only after all code, GitHub, provider-key, and pilot gates pass.
+**Architecture:** Four implementation slices establish an immutable evidence DAG and a separate fail-closed campaign control plane. Foundations own the exact OpenAI request/evidence wire and sealed capsules; Evaluation/Audit owns strict protocol attestations and offline replay; Runtime owns the authority schema, external OIDC broker, provider controller, and three live evaluation methods; Publication owns the four remaining live methods and all branch, PR, merge, release, correction, and promotion effects. Live operations begin only after every code, GitHub, broker, provider-key, and pilot gate passes.
 
-**Tech Stack:** Python 3.11+, Pydantic 2, NumPy PCG64 for the frozen statistical protocol, pytest/Ruff/mypy, GitHub Actions with protected environments and full-SHA action pins, OpenAI Responses API, canonical JSON/SHA-256 attachments, descriptor-safe capsule/tar I/O, and immutable Git tags/releases.
+**Tech Stack:** Python 3.11+, Pydantic 2, OpenAI Python SDK 3.3.1, NumPy PCG64, pytest/Ruff/mypy, GitHub Actions with full-SHA pins, OpenAI Responses API, strict CanonicalJSONV1, SHA-256 evidence, canonical Git SHA-1 objects, smart-HTTP receive-pack leases, descriptor-safe capsule/tar I/O, and protected Git tags/Releases.
 
 ---
 
-## Sources and fixed scope
+## Sources, approval, and fixed scope
 
-- Approved design: `docs/superpowers/specs/2026-08-30-public-three-model-benchmark-design.md`.
-- Design approval: 2026-08-30.
-- Generation models: exactly `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
-- Primary contrast: `concise - if`, reported independently for each model.
-- Full generation plan: 3 models × 12 scenarios × 2 locales × 4 arms × 5 repetitions = 1,440 responses.
-- Full logical partition: exactly 36 model/scenario capsules × 40 plan rows.
-- Potential semantic judgments: at most 1,440; only deterministic hard-pass responses are dispatched.
-- Full authorized request-exposure cap: USD 75. Pilot cap: USD 5 with at most 24 generation and 24 judge attempts and no retry.
-- Documentation, website, release-note, presentation, and social result claims remain blocked until
-  `CampaignStateV1.state == "RELEASED"` and the exact requested initial/correction release receipt is
-  the canonical latest released pointer. A blocked or merely merged correction never authorizes
-  promotion; a successful correction from `RELEASE_BLOCKED` must first apply the immutable
-  `CORRECTION_RESULT_RELEASED -> RELEASED` transition.
+- Normative design: `docs/superpowers/specs/2026-08-30-public-three-model-benchmark-design.md` at `46147ef62b5bb009421d58928e879d92247d84b5`.
+- Approval metadata: `0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, recording the maintainer's exact approval `Одобряю amendment 46147ef` on 2026-08-30.
+- Milestone 0 is complete. Slice implementation is pending and unblocked. Any later normative design amendment re-blocks every affected task until separately and explicitly approved.
+- Generation model IDs are exactly `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; returned provider model IDs are recorded separately and must be consistent per requested-model campaign, not textually equal to the requested ID.
+- Primary contrast is `concise - if`, independently per model. The plan is 3 models × 12 scenarios × 2 locales × 4 arms × 5 repetitions = 1,440 responses, projected into exactly 36 ordered 40-row shards.
+- Full authorized request exposure is USD 75. Pilot exposure is USD 5 with at most 24 generation and 24 judge attempts and no retry.
+- Promotion requires an active, nonwithdrawn latest pointer at `RELEASED`, no unresolved hold, incident, or correction. `RESULT_MERGED`, `RELEASE_BLOCKED`, `INVALID_PREFIX_MERGED`, and `INVALID_PREFIX_MERGED_INVALID` never authorize a release claim, documentation, presentation, website, release note, or social post.
 
 ## Plan set and dependency graph
 
 ```text
-Approved design -> Milestone 0 amendment + fresh approval
+Approved design 46147ef + approval metadata 0e2981e (Milestone 0 complete)
     |
     v
 Slice 1 — Foundations
-    |-------------------------|
-    v                         v
-Slice 2 — Evaluation/Audit   Slice 3 — Campaign Runtime
-    |                         |
-    |-----------+-------------|
-                v
-Slice 4 — Evidence Collection, Publication, Release
-                |
-                v
-Offline synthetic rollout + two independent reviews
-                |
-                v
-Protected GitHub/provider setup -> pilot C0/C1 freeze/tag -> live pilot
-                |
-                v
-Confirmatory C0/C1 re-freeze/tag -> batches -> audit -> analysis -> publication -> release
-                |
-                v
+    |--------------------------|
+    v                          v
+Slice 2 — Evaluation/Audit    Slice 3 — Runtime (pauses at Slice 2-owned interfaces)
+    |                          |
+    +-------------+------------+
+                  v
+Slice 4 — Publication
+                  |
+                  v
+Offline reconstruction + two independent reviews
+                  |
+                  v
+External trust setup -> live pilot -> confirmatory campaign -> human audit/merge/release
+                  |
+                  v
 Post-RELEASED documentation, presentation, and social package
 ```
 
-The detailed plans are:
+Detailed plans:
 
-1. `docs/superpowers/plans/2026-08-30-public-benchmark-foundations.md`
-2. `docs/superpowers/plans/2026-08-30-public-benchmark-evaluation-audit.md`
-3. `docs/superpowers/plans/2026-08-30-public-benchmark-runtime.md`
-4. `docs/superpowers/plans/2026-08-30-public-benchmark-publication.md`
+1. `docs/superpowers/plans/2026-08-30-public-benchmark-foundations.md` — 12 tasks.
+2. `docs/superpowers/plans/2026-08-30-public-benchmark-evaluation-audit.md` — 15 tasks.
+3. `docs/superpowers/plans/2026-08-30-public-benchmark-runtime.md` — 10 tasks.
+4. `docs/superpowers/plans/2026-08-30-public-benchmark-publication.md` — 15 tasks.
 
-## Milestone 0: Lock names, boundaries, and compatibility
+## Milestone 0: Approved protocol/security contract — complete
 
-- [ ] Amend the approved design before any slice implementation. In Sections 6.2/8, bind the literal
-  Responses `service_tier="default"`, no-write cache mode, distinct cache-read/cache-write accounting
-  and rates, returned-tier evidence, conservative exposure, and the delivery-specific fail-closed
-  status vocabulary. In Sections 12.1/13.2, replace the two-job/two-writer or write-capable repository
-  `GITHUB_TOKEN` assumptions with the four-job provider boundary and three mutually exclusive
-  dedicated Apps defined by the Runtime/Publication plans. Add the two independent reviewer
-  registries, exact frozen 15-workflow inventory/root used by all protocol attestations, and the
-  authority-bound generation-context expectation that fixes tagged hard-scorer source/protocol
-  identity before hard scoring. In Section 7.4 add the sole blocked-release escape
-  `RELEASE_BLOCKED + CORRECTION_RESULT_RELEASED -> RELEASED`, its exact correction-lineage/
-  publication/merge/release evidence bindings, and the rule that a successful correction from an
-  already `RELEASED` campaign appends terminal correction evidence without changing state; no
-  other correction event may rewrite a terminal state or prior history. Record a
-  fresh approval in the design approval block. Keep the experiment estimands, caps, evidence, audit,
-  publication, and human-merge invariants unchanged. Until this single protocol/security amendment
-  is merged and reapproved, every slice task is blocked; neither the old writer topology nor an
-  implicit default/cache policy is an implementation fallback.
-- [ ] Read all four slice plans and enforce this already-resolved cross-slice contract:
+- [x] Amend and independently review the normative design.
+- [x] Bind literal `service_tier: "default"`, literal `prompt_cache_options: {"mode":"explicit","ttl":"30m"}`, recursive absence of `prompt_cache_breakpoint`, distinct cache-read/cache-write evidence and pricing, exact returned response paths and status vocabularies, SDK 3.3.1/`uv.lock`, and the `<=272_000` conservative input bound.
+- [x] Bind the two-person audit registry, ordered three-person protocol registry, exact role subject inventories, CanonicalJSONV1 attestations, authority-only in-memory generation capability, and exact generation seal roots.
+- [x] Bind `CampaignStateSchemaV1`, external OIDC state broker, canonical Git object/receive-pack lease protocol, `StateWriterGitIdentityV1`, exactly three Apps, direct-merge admission, durable initial/correction intents and receipts, six post-merge exceptions, credential-exposure containment, release recovery, invalid-prefix terminality, and seven-offline/seven-live entrypoint isolation.
+- [x] Receive explicit maintainer approval for normative commit `46147ef62b5bb009421d58928e879d92247d84b5`; record it without changing normative content at `0e2981e32b5d8982e78c73a5e413b36e2b1495e9`.
 
-| Boundary | Owning module | Stable public names |
-|---|---|---|
-| Generation seal | `laconian_eval.capsule.seal_models` / `finalize` | `SealV1`, `capsule_sha256`, `FinalizeResultV1`, `finalize_capsule` |
-| Shard evidence | `laconian_eval.capsule.sharding` / `scorable` / `sidecars` | `ShardPlanV1`, `ScoredAttemptV2`, `VerifiedScoredCapsuleV2`, `load_verified_scored_capsule` |
-| Artifact wire | `laconian_eval.campaign.artifact_wire` | `ArtifactEnvelopeV1`, `UploadAuthorizationV1`; Runtime owns these before any provider upload and Slice 4 reuses them |
-| Hard score and judge | `laconian_eval.benchmark.hard_score` / `judge` | `HardScoreRequestSetV1`, `JudgeRequestAttachmentV1`, `JudgeAttemptEvidenceV1`, `JudgeAttemptRootIndexV1`, `JudgeAttachmentV1` and their exact writers/loaders/verifiers |
-| Neutral context/provider bridge | `laconian_eval.benchmark.context` / `provider_evidence` plus `campaign.benchmark_adapter` / `benchmark_stage` | `ProtocolReviewerRegistryV1`, `LayerRootIndexV1`, `GenerationContextExpectationV1`, `VerifiedGenerationContextExpectationV1`, `GenerationContextIndexV1`, `VerifiedGenerationContextIndexV1` (owned by `context`); `VerifiedBenchmarkProviderEvidenceV1` (owned by `provider_evidence`, constructible only with the external in-memory verified expectation); authority-verified generation-context, hard-score, prepare-judge, and seal-judge stage adapters |
-| Audit and analysis | `laconian_eval.benchmark.audit_sampling` / `reporting` plus `laconian_eval.campaign.evaluation_stage` | `VerifiedAuditSampleRootV1`, `write_audit_sample_root`, `load_verified_audit_sample_root`, `VerifiedAuditEvidenceV1`, `VerifiedAnalysisEvidenceV1`, their fixed neutral writers/loaders, and Publication-owned authority-bound sample-audit, seal-audit, and analyze-plus-verify stage adapters |
-| Campaign registry | `laconian_eval.campaign.preflight` | `CampaignSeedV1`, `CampaignPlanIndexV1`, `CampaignRegistryV1`, `RepositoryTrustBoundaryAttestationV1`, `BenchmarkWorkflowInventoryV1`, `BENCHMARK_WORKFLOW_PATHS_V1`, `build_benchmark_workflow_inventory`, and sealed preflight; it imports the neutral protocol-reviewer registry |
-| Runtime authority | `laconian_eval.campaign.state` / `authority` | `CampaignEventV1`, `CampaignStateV1`, `InvalidEventHoldV1`, `TerminalEvidenceMutationV1`, `HoldDismissalMutationV1`, `AuthorityMutationV1`, `DurableAuthorityCheckpointV1`, `ReconstructedAuthorityV1`, `require_no_unresolved_hold`, `apply_campaign_event`, append/dismiss/composite mutations |
-| Spend and batches | `laconian_eval.campaign.spend` / `batch` / `controller` | `SpendLedgerV1`, `VerifiedPhasePlanV1`, `BatchPlanV1`, `ConsumedBatchReceiptV1`, `CredentialScanReceiptV1` |
-| Exact artifact/publication/release | `laconian_eval.campaign.github_records` / `artifacts` / `publication` / `release` | `ExactArtifactLocatorV1`, `VerifiedArtifactArchive`, `PublicationPlanV1`, `PublicationMergeReceiptV1`, `BlockedReleaseObjectsV1`, `LatestPublicationPointerV1`, `CorrectionProgressV1`, `CorrectionLineageV1`, `ResultReleasePlanV1`, `ResultReleaseReceiptV1` |
-| Local command surfaces | `laconian_eval.benchmark.cli` / `campaign.cli` | `laconian-benchmark` seven fixed offline/non-evidentiary replay commands; all seven live derivations use fixed campaign-side adapters/tools (Runtime owns hard-score, prepare-judge, and seal-judge; Publication owns sample-audit, seal-audit, and combined analyze-plus-verify); `laconian-campaign` sixteen fixed secret-free/runtime commands; state, publisher, and release writers remain separate narrow tools |
+Cross-slice ownership is fixed:
 
-- [ ] Grow one cumulative `tests/test_public_contract.py` contract only at serialized owners: Slice 1
-  Tasks 1, 3, and 9 respectively pin corpus, provider/tier, and final capsule/scored-sidecar names;
-  Slice 2 Task 14 pins methodology/evidence language and Task 15 pins final layer/context/
-  judge-attempt/provider/audit/analysis names plus seven commands; Slice 3 Task 7 pins adapter
-  handoffs and Task 8 pins runtime
-  names/six commands; Slice 4 Tasks 7, 8, 10, 11, and 13 pin their newly exported records/workflow
-  owners and the final sixteen campaign commands. Every owning task lists and stages the file; rebase
-  before the next owner and never edit it concurrently.
-- [ ] Use `src/laconian_eval/campaign/` for campaign authority/runtime/publication control and `src/laconian_eval/benchmark/` for hard score, judge, statistics, audit, and reports.
-- [ ] Keep the dependency direction `campaign -> benchmark -> verified capsule`. Generic capsule verification must never import GitHub authority or spend control.
-- [ ] Preserve legacy v1 CLI, replay smoke, `RawAttempt`, `ScoredAttempt`, and `RunSummary` behavior.
-- [ ] Freeze the cross-slice names in `tests/test_public_contract.py` so later renames fail visibly.
-- [ ] Run:
+| Boundary | Sole owner |
+|---|---|
+| Versioned public benchmark request/policy, OpenAI wire/evidence, price schema, seals, shards, checkpoints | Foundations |
+| CanonicalJSONV1, reviewer registries, `ProtocolAttestationV1`, protocol subjects, neutral attachments, seven public offline commands | Evaluation/Audit |
+| `CampaignStateSchemaV1`, state/authority broker, `StateWriterGitIdentityV1`, spend/batches, `Runtime.hard_score`, `.prepare_judge`, `.seal_judge`, reusable `benchmark-publication-state.yml` | Runtime |
+| `Publication.campaign.evaluation_stage.sample_audit`, `.seal_audit`, `.analyze`, `.verify`, collection, publication, merge admission, release, correction, documentation gate | Publication |
 
-```bash
-uv run pytest -p no:cacheprovider tests/test_public_contract.py tests/test_package.py -q
+The public console entrypoint remains `laconian_eval.cli:main`. Its exact offline tuple is
+`hard-score`, `prepare-judge`, `seal-judge`, `sample-audit`, `seal-audit`, `analyze`, `verify`, and
+every handler imports only `laconian_eval.replay`. Live authority is available only through the
+three Runtime and four Publication methods above; no public campaign-authority console exists.
+
+The frozen workflow tuple is literal, ordered, and derived from verified C0 bytes:
+
+```text
+.github/workflows/audit-pr-validate.yml
+.github/workflows/benchmark-analysis.yml
+.github/workflows/benchmark-audit.yml
+.github/workflows/benchmark-batch.yml
+.github/workflows/benchmark-collect-complete.yml
+.github/workflows/benchmark-dismiss-hold.yml
+.github/workflows/benchmark-docs-validate.yml
+.github/workflows/benchmark-evidence.yml
+.github/workflows/benchmark-finalize-invalid.yml
+.github/workflows/benchmark-hard-score.yml
+.github/workflows/benchmark-preflight.yml
+.github/workflows/benchmark-publication-state.yml
+.github/workflows/benchmark-publish.yml
+.github/workflows/benchmark-release.yml
+.github/workflows/publication-pr-validate.yml
 ```
 
-Expected GREEN after the final interface-owning task in each implemented slice; before a later slice
-exists, its rows remain documentation-only and are not imported by an earlier slice.
+## Milestone 1: Implement Foundations
 
-## Milestone 1: Implement Slice 1 foundations
-
-- [ ] Execute `2026-08-30-public-benchmark-foundations.md` task by task.
-- [ ] Remove evaluator-invented sentence limits and freeze material/critical warning severity before observing pilot outputs.
-- [ ] Bind explicit medium reasoning, medium verbosity, omitted reasoning mode, and reasoning-token usage into manifests, requests, identities, attempts, and verification.
-- [ ] Materialize exactly three 480-row parent plans and 36 disjoint, ordered, hash-bound 40-row shard projections.
-- [ ] Add public finalize/seal, scorable projections, sealed verification, and strict uncompressed checkpoint pack/restore.
+- [ ] Execute the 12 Foundations tasks in order with RED/GREEN/commit and two-stage review per task.
+- [ ] Preserve legacy `GenerationRequest` bytes; add a versioned benchmark-only request/policy carrying the exact tier/cache TTL contract.
+- [ ] Pin OpenAI SDK 3.3.1 and exact C0 `uv.lock`; verify typed request/response fields before credential access.
+- [ ] Carry the five non-null price dimensions, requested/returned IDs, exact response paths, separate status/source-digest fields, and ordinary-uncached input through manifest, plan, attempt, seal, replay, and verification.
+- [ ] Freeze corpus neutrality/severity, three exact parent plans, 36×40 shards, seal/finalize, verified scored sidecars, and safe deterministic checkpoints.
 - [ ] Obtain one capsule-integrity review and one hostile-archive/security review.
 - [ ] Gate:
 
@@ -133,64 +110,34 @@ uv run ruff check src/laconian_eval/capsule src/laconian_eval/providers tests/ca
 uv run mypy src
 ```
 
-## Milestone 2A: Implement Slice 2 evaluation and audit
+## Milestone 2A: Implement Evaluation/Audit
 
-- [ ] Start only after Slice 1 exposes verified sealed/scorable evidence.
-- [ ] Execute `2026-08-30-public-benchmark-evaluation-audit.md` task by task.
-- [ ] Seal one `HardScoreRequestSetV1` and one judge attachment for every generation capsule, including zero-request attachments.
-- [ ] Prove the judge request is blind to arm, generation model, order, length, usage, latency, and cost.
-- [ ] Implement fixed-denominator H/S quality, scenario-cluster bootstrap with 10,000 PCG64 vectors and type-7 quantiles, exact outcome precedence, and all limitation fields.
-- [ ] Implement the exact 144-record certainty/stratified human sample, two-person commit-reveal, dual-signoff adjudication, weighted agreement/false-pass intervals, and model/arm-indexed false-fail sensitivity.
-- [ ] Fail closed on missing records, fewer than 9,990 valid bootstrap replicates, zero audit denominators, unverifiable certificates, or search-cap exhaustion.
+- [ ] Begin after Slice 1 verified sealed/scorable evidence is available; execute all 15 tasks in order.
+- [ ] Implement strict CanonicalJSONV1, both reviewer registries, all three mode-discriminated signatures, exact `ProtocolAttestationV1` fields/order/subjects/root, and fixed Git-object/signature verification.
+- [ ] Bind every hard-score, judge, audit, analysis, and final evidence attachment to both registries, `protocol_attestations_root`, exact tagged protocols, and `workflow_root`.
+- [ ] Require judge requests to use the same explicit/30m/no-breakpoint, SDK/lock, tier/cache evidence/status contract as generation.
+- [ ] Implement fixed-denominator scoring, 10,000-vector PCG64 scenario bootstrap, outcome precedence, 144-record two-person audit, adjudication, weighted metrics, and exact false-fail certificates.
+- [ ] Add only the seven offline replay handlers through `laconian_eval.cli:main`; prove the replay import/call graph contains no live capability or campaign constructor.
 - [ ] Obtain one statistical-method review and one blind-judge/audit-protocol review.
 - [ ] Gate:
 
 ```bash
 uv run pytest -p no:cacheprovider tests/benchmark -q
-uv run ruff check src/laconian_eval/benchmark tests/benchmark
+uv run ruff check src/laconian_eval/benchmark src/laconian_eval/replay tests/benchmark
 uv run mypy src
 ```
 
-## Milestone 2B: Implement Slice 3 campaign runtime
+## Milestone 2B: Implement Runtime
 
-- [ ] After Slice 1, start Runtime Task 1 campaign models, tag binding, trust/pricing schemas,
-  state/hold authority, exact spend, and generation batch planning while Slice 2 proceeds. Pause
-  Runtime at Task 2's neutral-context integration checkpoint: Task 2 may not turn GREEN or commit,
-  and serialized Runtime Tasks 3–6 may not start, until Slice 2 Task 3 owns/exports the neutral
-  reviewer registries, `GenerationContextIndexV1`, and verified context loader. Slice 2 Task 8 only
-  extends the post-judge provider bridge. Resume Runtime task order from Task 2 after Task 3 lands.
-- [ ] Integrate generation/judge adapters and judge batch planning only after Slice 2 locks its
-  request, judge-attempt, layer/context, and attachment contracts.
-- [ ] Runtime Task 7's generation/context and hard-score/prepare-judge stage work may use Slice 2
-  Tasks 3–4, but its seal-judge/provider-evidence half may not turn GREEN or commit until Slice 2
-  Task 8 owns `VerifiedBenchmarkProviderEvidenceV1` and the post-judge bridge.
-- [ ] At Runtime Task 7 completion, run the real generation-authority adapter tests. Require the
-  retained expectation/predecessor/final-root binding; exact statistics/hard-score/judge/audit and
-  workflow roots; direct neutral Task 3/4/8 composition for hard-score, prepare-judge, and
-  seal-judge; external expectation passed to the provider loader; and zero Runtime import/invocation
-  of `laconian_eval.benchmark.cli`.
-- [ ] Execute `2026-08-30-public-benchmark-runtime.md` task by task.
-- [ ] Prove every provider attempt has a reservation and every batch has a new single-use job receipt.
-- [ ] Price uncached input, cached input, cache writes, and output from the frozen price snapshot for
-  the literal requested Responses service tier `default`; require the
-  versioned conservative input bound to be `<= 272_000` and mark any larger request
-  `definitely_not_sent`. Long-context rates may be attested but are never authorized or reserved.
-- [ ] Bind and emit exact Responses `service_tier="default"` in every generation/judge manifest,
-  request, identity, reservation, attempt, price snapshot, and approval attestation. Preserve the
-  returned tier/accounting status. Only independently definitely-not-sent/rejected attempts with no
-  response/usage may use the matching closed `not_applicable_definitely_not_sent` or
-  `not_applicable_definitely_rejected` value (so a proven 429 can retry); for response-received or
-  unknown delivery, missing/non-default evidence retains worst-case exposure, stops later calls, and
-  can never be silently reconciled as standard-tier usage.
-- [ ] Require reviewed nonnull cache-write rates and explicit/no-breakpoint cache-mode support for
-  all frozen generation/judge aliases; omitted write usage retains worst-case exposure, and any
-  nonzero write under the forbidden-write contract stops the campaign after cost is recorded.
-- [ ] Prove only structured, definitely rejected 429 responses retry; 401/403 STOP; timeout/connection/408/409/5xx/unknown delivery never retry.
-- [ ] Prove a soft-deadline exit is resumable only after a verified partial checkpoint and runner loss never silently recreates uncertain work.
-- [ ] Prove `CampaignStateV1` rejects illegal transitions without changing the last valid state and atomically creates `InvalidEventHoldV1`.
-- [ ] Prove the protected `benchmark-authority/<campaign-id>` ref is the only authoritative head and
-  that a non-force fast-forward remote CAS rejects every stale sibling.
-- [ ] Obtain one state-machine/accounting review and one Actions credential-boundary review.
+- [ ] Execute the 10 Runtime tasks in order. Runtime Task 2 waits for Evaluation Task 3 types; Runtime Task 7 waits for Evaluation Tasks 4 and 8 evidence types.
+- [ ] Generate state/event enums, transition table, evidence selectors, reachability, liveness, caller/ref/reason matrices, and broker policy from `CampaignStateSchemaV1` only; reject table-only, broker-only, wildcard, unreachable, cross-kind, or wedged edges.
+- [ ] Store the state-writer App key only in the external broker. Actions has no state key/token secret. The minimal reusable writer job performs only OIDC bootstrap plus the pinned broker client and receives no installation token.
+- [ ] Build exact canonical SHA-1 blob/tree/commit objects with frozen identity bytes and publish only through smart-HTTP receive-pack using all-zero expected-absent bootstrap or exact-old-OID successor leases; reconcile absent/exact/divergent response-loss outcomes.
+- [ ] Bind five-component default-tier reservations and trusted charges; no long-context price class can authorize, reserve, or reconcile spend.
+- [ ] Allow automatic retry only for a proven no-result/no-usage 429 whose tier/applied/read/write statuses are the matching `not_applicable_definitely_rejected` values.
+- [ ] Implement the three private Runtime live methods and prove no serialized capability and no dependency on replay handlers.
+- [ ] Create `.github/workflows/benchmark-publication-state.yml` in Runtime Task 9. Prove four-job provider separation, the exact three-App topology, and a downscoped read-only security-attestor token from the release-finalizer installation.
+- [ ] Obtain one state/accounting review and one OIDC/Actions/authority review.
 - [ ] Gate:
 
 ```bash
@@ -199,23 +146,22 @@ uv run ruff check src/laconian_eval/campaign tests/campaign .github/workflows
 uv run mypy src
 ```
 
-## Milestone 3: Implement Slice 4 collection, publication, and release
+## Milestone 3: Implement Publication
 
-- [ ] Start after Slices 1–3 publish stable hashes/types and Slice 2 exposes the fixed neutral
-  audit/analysis writers and verified loaders; Slice 4 authoritatively stages and seals their live
-  outputs.
-- [ ] Execute `2026-08-30-public-benchmark-publication.md` task by task.
-- [ ] At Publication Task 7 completion, run the real `campaign.evaluation_stage` and workflow tests.
-  Require the exact provider/sample/seal/analyze-plus-verify boundaries, state/event-bound roots,
-  external in-memory expectation, authority-bound statistics protocol, deterministic bootstrap,
-  private byte-identical sample rematerialization after reviewer-artifact expiry, cross-sample
-  rejection, and zero raw `laconian-benchmark` invocation in a live workflow.
-- [ ] Verify exact run, run-attempt, job, deployment, approval, artifact ID, service digest, detached commit, workflow hash, and capsule/attachment lineage.
-- [ ] Keep the provider-evidence verifier read-only and prohibit it from accepting audit/statistical outputs.
-- [ ] Keep complete collection and invalid-prefix finalization separate; the invalid path must contain no performance estimate.
-- [ ] Prove the minimal publisher copies only the sealed fixed inventory byte-for-byte and cannot parse or execute model output.
-- [ ] Prove publication base/head movement forces replan; post-merge defects force `RELEASE_BLOCKED`; release finalization tags only the verified merge commit.
-- [ ] Obtain one supply-chain/publication review and one independent complete-DAG review.
+- [ ] Execute all 15 Publication tasks after stable Slice 1–3 types exist.
+- [ ] Publication Task 7 creates `campaign/publication.py`, the private constructor, and four exact live methods; it modifies the reusable state workflow created by Runtime Task 9. Task 8 modifies those interfaces.
+- [ ] Keep complete and invalid-prefix plans/states/events disjoint. Invalid-prefix publication ends at `INVALID_PREFIX_MERGED` or `INVALID_PREFIX_MERGED_INVALID` and can never create a result release, correction, documentation, presentation, or social effect.
+- [ ] Persist intent before every initial/correction branch, PR, tag, draft, asset, publish, finalization, or invalidation effect; test create-or-adopt/reconcile at every response-loss and receipt-CAS window.
+- [ ] Admit only `merge_commit` with parents `[base, head]` and exact tree. Persist `PostMergeAdmissionEvidenceV1` or `PostMergeAdmissionFailureV1`, including double-read current main, unchanged result subtree for a verified first-parent descendant, approvals/checks/actor, and timely historical passing non-bypass rule-suite evidence.
+- [ ] Cover all six post-merge broker exceptions: the three success events `RESULT_MERGED`,
+  `INVALID_PREFIX_MERGED`, `CORRECTION_MERGE_RECORDED`, and the three phase-bound failure events
+  `RESULT_MERGE_INVALIDATED`, `INVALID_PREFIX_MERGE_INVALIDATED`, and
+  `CORRECTION_INVALIDATED(kind="correction_publication_invalidation",
+  publication_outcome="merged_invalid")`.
+- [ ] Reconcile releases with fully paginated authenticated draft lookup, exact-ID reads, published-only by-tag recovery, upload-host asset POST, paginated asset listing, and the sole draft-to-published PATCH. Treat timeout/422/502 with relist/adopt; divergent or `starter` assets terminate.
+- [ ] Verify the immutable-Releases setting, exact Release fields/assets, pinned tool digest, and `gh release verify` output as `ImmutableReleaseVerificationV1`; make no claim that a Release or Git history is undeletable.
+- [ ] Handle credential exposure before publication, with a complete PR open, after merge, and after release; close an open complete PR, withdraw latest after release, preserve immutable history truth, and require a clean corrected lineage before promotion.
+- [ ] Obtain one supply-chain/publication review and one complete-DAG review.
 - [ ] Gate:
 
 ```bash
@@ -227,11 +173,11 @@ uv run mypy src
 
 ## Milestone 4: Full offline synthetic rollout
 
-- [ ] Run a provider-free campaign that reconstructs all 36 generation capsules, 36 hard-score request sets, 36 judge attachments, audit, analysis, complete bundle, publication plan, and release plan.
-- [ ] Include deterministic cases for one 429 retry, ordinary terminal rejection, zero-call judge attachment, partial checkpoint/resume, STOP branch, invalid-prefix bundle, publication replan, and release block.
-- [ ] Rebuild the human report exclusively from published-style artifacts and compare every checksum.
-- [ ] Scan the complete synthetic artifact inventory for known canaries, credential patterns, environment dumps, private paths, unsafe Markdown/HTML, duplicate paths, and unbound files.
-- [ ] Run the entire repository suite twice from clean temporary output roots:
+- [ ] Reconstruct all 36 generation capsules, 36 hard-score sets, 36 judge attachments, audit, analysis, complete bundle, publication intent/plan/receipts, merge admission, release intent/plan/receipts, and final active latest pointer without provider or network access.
+- [ ] Exercise the full matrix: 429 exact retry; definitely rejected terminal; zero-call judge attachment; partial resume; every STOP parent/reason/caller allow and deny; budget exhaustion; both invalid-prefix merge outcomes; complete merge success/failure; all six post-merge exceptions; both correction invalidations including `merged_invalid`; correction success from `RELEASE_BLOCKED` and `RELEASED`; every branch/PR/tag/draft/asset/publish effect-response/receipt-CAS loss window; expected-absent and competing receive-pack races; paginated draft and asset reads; timeout/422/502 reconciliation; divergent and `starter` assets; and credential exposure prepublication, with complete PR open, after merge, and after release.
+- [ ] Rebuild the human report only from published-style artifacts and compare every checksum.
+- [ ] Scan every synthetic artifact for canaries, credential patterns, environment dumps, private paths, unsafe Markdown/HTML, duplicate paths, and unbound files.
+- [ ] Run twice from clean temporary roots:
 
 ```bash
 uv sync --all-extras --dev
@@ -243,147 +189,52 @@ uv run mypy src
 git diff --check
 ```
 
-- [ ] Record command, commit SHA, platform, start/end timestamps, exit code, and test count for both runs.
-- [ ] Require two independent reviews with no unresolved P0/P1 findings before repository setup.
+- [ ] Record commit/platform/timestamps/exit/test count for both runs and obtain two independent reviews with no unresolved P0/P1 finding.
 
 ## Milestone 5: Configure external trust boundaries
 
-This milestone changes external repository/provider state and requires explicit maintainer authorization at execution time.
+This milestone changes external state and needs explicit maintainer authorization at execution time.
 
-- [ ] Confirm `benchmark-live` contains `OPENAI_API_KEY` without reading or printing its value.
-  Plan-authoring note (2026-08-30): the maintainer reports that the secret is already present; keep
-  this gate unchecked until execution-time read-only name/presence confirmation and the independent
-  restriction/rotation attestation below. Never retrieve the value.
-- [ ] Independently attest that the secret is a dedicated restricted project key, has only required API capability, has no unrelated consumers, has a provider-side spend guard where available, and has a written rotate/revoke procedure.
-- [ ] Protect `benchmark-live` with required reviewers, prevent self-review, disable admin bypass, and allow deployments only from `benchmark-input-*` tags.
-- [ ] Create equally protected `benchmark-publish` without `OPENAI_API_KEY`.
-- [ ] Keep default repository workflow permissions read-only and the combined **Allow GitHub Actions
-  to create and approve pull requests** setting disabled. Require full-SHA action pinning.
-- [ ] Register three repository-scoped, pairwise-distinct GitHub Apps and attest their numeric App/
-  installation IDs, slugs/bot logins, exact permission responses, owners, private-key fingerprints,
-  and rotation procedure: state writer (`contents:write` beyond metadata); publisher
-  (`actions:read`, `deployments:read`, `contents:write`, `pull_requests:write`); release finalizer
-  (`actions/deployments:read`, `contents:write`). Store state-App credentials as repository secrets
-  mapped only by fixed writer steps; store publisher/release triples only in `benchmark-publish`.
-  Do not create `benchmark-state` or `benchmark-release` environments. Treat every endpoint exposed
-  by each broad GitHub permission as technically reachable; fixed hashed tools, endpoint-policy
-  tests, rulesets, immutable Releases, and before/after receipts—not capability claims—enforce the
-  narrower operational roles.
-- [ ] Add immutable input/result tag rules. Enable immutable GitHub Releases. Permit result tag/
-  release creation only to the release-finalizer App; it must create a draft, upload/verify both
-  assets, then perform one draft-to-published transition and prove the release is immutable.
-- [ ] Protect `benchmark-authority/*` against deletion, force-push, and human updates; allow only the
-  exact state-writer App to create/non-force-fast-forward with expected-OID CAS.
-- [ ] Protect `refs/heads/benchmark-result-pr/*` for publisher-created result refs; the static
-  ruleset restricts the namespace/actor while the fixed publisher and validator enforce the exact
-  plan-derived branch grammar. Forbid force/delete/reuse/update after the initial push. Protect
-  `main` with required human review/checks and restrict merge/update actors to preregistered non-bot
-  maintainers, explicitly excluding all benchmark Apps and GitHub Actions. Publisher
-  `pull_requests:write` is API-capable of merge, so ruleset exclusion—not a capability claim—is the
-  enforcement boundary.
-- [ ] Register the always-present `publication-pr-validate`, `audit-pr-validate`, and
-  `benchmark-docs-validate` check jobs, then add their exact names to `main` protection. Each workflow
-  runs on every pull request (and `merge_group` when merge queue is enabled) and returns a successful
-  explicit no-op for irrelevant paths; no required workflow uses top-level path filters.
-- [ ] Confirm artifact retention is 90 days and schedule campaign/audit completion inside that window.
-- [ ] Preregister each required check's exact name, GitHub Actions source App ID, trusted workflow
-  path, and workflow hash; same-name checks from another source do not count.
-- [ ] Capture and independently sign `RepositoryTrustBoundaryAttestationV1`: repository, two
-  environments, every ruleset, three Apps/permissions, default read token, disabled global PR toggle,
-  immutable releases, required-check provenance, 90-day retention, safe API-record root, capture
-  actor/time. Re-fetch readable settings and require a fresh signed admin-only observation at
-  preflight. Record no secret value, token, PEM, or raw privileged response.
+- [ ] Confirm by secret-name/presence metadata only that `benchmark-live` contains `OPENAI_API_KEY`; never retrieve or print its value. Independently attest restriction, spend guard, sole consumers, and rotate/revoke procedure.
+- [ ] Protect `benchmark-live` and `benchmark-publish` with required reviewers, no self-review/admin bypass, and approved deployment refs. Keep repository `GITHUB_TOKEN` read-only and global Actions PR approval disabled.
+- [ ] Register exactly three pairwise-distinct repository-scoped Apps: state writer, publisher, release finalizer. The state private key exists only in the external OIDC broker. Publisher/release credentials exist only in `benchmark-publish`; the release-finalizer broker may mint a separate `security_attestor` token downscoped to `administration:read`, `metadata:read`, `contents:read` and no write scope.
+- [ ] Protect `benchmark-authority/*` for brokered expected-old-OID receive-pack only; protect result branches, `main`, input tags, and result tags with exact actors/checks and human merge. Enable immutable Releases and record the setting without claiming object undeletability.
+- [ ] Register all required checks with exact names/source App/workflow hashes. Retain historical passing rule suites promptly. Confirm 90-day artifact retention.
+- [ ] Capture and independently sign the safe repository trust record, including exact three-App permissions, OIDC broker policy, returned attestor permissions, rule suites, immutable setting, actors, and timestamps—never tokens, keys, PEMs, or raw privileged responses.
 
-Gate: no live workflow reference to `benchmark-live` is dispatched until every checkbox in this milestone is complete and reviewed.
+No live provider workflow may run until this milestone is complete and reviewed.
 
 ## Milestone 6: Run the non-evidentiary live pilot
 
-- [ ] Execute the first explicit live-package freeze task (the sole owner deferred by Runtime Task
-  2). Create the three live `evals/manifests/public-benchmark-gpt-5.6-*.yaml` files;
-  `benchmarks/campaigns/public-three-model-v1/{campaign-seed.json,price-snapshot.yaml,reviewers.yaml,protocol-reviewers.yaml,repository-trust-boundary.json,repository-trust-boundary-signature.json}`;
-  and all seven `benchmarks/protocols/public-three-model-v1/*.json` files in reviewed source commit
-  `C0-pilot`, together with final code/workflows. Set mode `pilot`, requested service tier `default`,
-  and current signed price/trust evidence. Do not yet create `campaign.yaml` or
-  `protocol-review-attestations.jsonl`.
-- [ ] Obtain the exact three role-bound GitHub approvals of `C0-pilot`, capture their canonical API
-  records, then create sole-child freeze commit `C1-pilot` whose only two changed paths are
-  `benchmarks/campaigns/public-three-model-v1/campaign.yaml` and
-  `benchmarks/campaigns/public-three-model-v1/protocol-review-attestations.jsonl`. The package binds
-  `C0-pilot`; tag protected `benchmark-input-YYYYMMDD.N` at `C1-pilot`. Any extra delta, stale/
-  dismissed review, expired settings capture, or self-reference restarts the two-commit freeze.
-- [ ] Create the separately labeled pilot identity only from that verified tag.
-- [ ] Run secret-free preflight and verify exactly 24 generation plus at most 24 judge attempts, zero retries, and reserved exposure no greater than USD 5.
-- [ ] Review current official pricing against the committed snapshot and record the reviewer attestation.
-- [ ] Approve and run each bounded pilot batch through `benchmark-live`.
-- [ ] Verify request parameters, returned-model consistency, reasoning/visible token accounting, checkpoint transport, judge schema, exact artifact provenance, and spend reconciliation.
-- [ ] Treat pilot outputs as operational evidence only; never merge them into the confirmatory result or tune thresholds for a favorable effect.
-- [ ] If any protocol fix is required, create a new pilot identity and repeat this milestone from preflight.
-- [ ] Revoke/rotate the pilot key if incident policy requires it.
+- [ ] Freeze the complete code/input/protocol/workflow package at one protected `benchmark-input-YYYYMMDD.N` tag; verify its annotated/lightweight object and peel exactly to C0. Derive all 15 workflow hashes and `workflow_root` from that C0 tree in literal order.
+- [ ] Include both reviewer registries, exact three attestations, price evidence, `StateWriterGitIdentityV1`, trust evidence, and generation-context expectation inputs; no self-referential context capability is serialized.
+- [ ] Run secret-free preflight, approve exact bounded provider jobs, verify at most 24 generation and 24 judge attempts, zero retry, USD 5 exposure, exact explicit/30m/default wire, SDK/lock, response paths/statuses/digests, returned-model consistency, checkpoints, and broker receipts.
+- [ ] Treat pilot output as operational evidence only. Any protocol change creates a new approved normative version/tag and repeats the pilot. Revoke or rotate the key when incident policy requires.
 
-Gate: the confirmatory input tag is forbidden until the complete pilot lineage is green and implementation/protocol inputs are frozen again.
+## Milestone 7: Execute the confirmatory campaign
 
-## Milestone 7: Freeze and execute the confirmatory campaign
-
-- [ ] Repeat the explicit two-commit freeze after the accepted pilot with new
-  `C0-confirmatory -> C1-confirmatory`. `C0-confirmatory` owns the same live manifest/campaign-input/
-  seven-protocol paths, final corpus/arm/dependency/runner/workflow bytes, mode `confirmatory`, new
-  preregistered seed, `service_tier: default`, current official price snapshot, and fresh signed trust
-  attestation. It contains neither final `campaign.yaml` nor review-attestation JSONL.
-- [ ] Obtain three new exact role-bound approvals of `C0-confirmatory`; make `C1-confirmatory` its sole
-  child and change only `campaign.yaml` plus `protocol-review-attestations.jsonl`. Create the next
-  protected `benchmark-input-YYYYMMDD.N` tag at `C1-confirmatory`. Preflight rejects reuse of pilot
-  identity/reviews, any third changed path, or a tag at `C0`.
-- [ ] Run secret-free preflight; independently verify the 1,440 rows, 36×40 partition, requested models, first-batch fit, and USD 75 cap.
-- [ ] Approve each bounded generation batch individually; verify predecessor state/spend/inventory before the next approval.
-- [ ] Seal all 36 generation capsules and all 36 hard-score request sets.
-- [ ] Approve each bounded judge batch individually; verify exact request coverage and zero-call attachments.
-- [ ] On STOP, budget exhaustion, ambiguity, missing authority, or credential incident, cease provider work and take only the invalid-prefix path.
-- [ ] Rotate or revoke the provider key after the final provider batch, and immediately after any credential incident.
+- [ ] Create a new protected input tag peeling to the frozen confirmatory C0; preflight verifies 1,440 rows, 36×40 partition, registries/attestations/workflow root, requested models, first-batch fit, and USD 75 cap.
+- [ ] Approve each generation and judge batch separately; before the next approval verify authority OID, state/hold, spend/inventory, receipt, and exact suffix. Seal all 36 generation, hard-score, and judge attachments.
+- [ ] On STOP, budget exhaustion, ambiguity, missing authority, or credential incident, make zero later calls/downloads and take only the schema-authorized invalid-prefix/containment route.
+- [ ] Rotate or revoke the provider key after the final provider batch and immediately on credential incident.
 
 ## Milestone 8: Audit, analyze, collect, publish, and release
 
-- [ ] Seal `EvidenceInventoryV1` before generating the blind audit packet.
-- [ ] Complete both identity-bound commitment PRs before either reveal PR; retain original labels and complete dual-signoff adjudication.
-- [ ] Seal deterministic analysis and one independent model-specific outcome for Sol, Terra, and Luna.
-- [ ] Run the complete collector only with full 36/36/36 evidence, complete audit, and complete analysis; otherwise use the safe invalid-prefix finalizer.
-- [ ] Prepare `PublicationPlanV1` from exact current `main` containing every bound audit merge.
-- [ ] Approve the minimal `benchmark-publish` job to open the exact result PR.
-- [ ] A maintainer verifies the exact PR head and bundle digest, confirms the automatically triggered
-  `publication-pr-validate` check succeeds, submits the required human PR review, and merges through
-  branch protection. There is no fork/workflow-approval action for the App-authored same-repository PR.
-- [ ] The secret-free publication-state workflow re-fetches that exact PR, successful required checks,
-  current human review, merge commit/tree, and bundle, then advances canonical authority to
-  `RESULT_MERGED` by remote CAS, binding a complete durable checkpoint from every transient artifact
-  to byte-identical files in that merge tree. A moved base/head or closed-unmerged PR is closed if still open,
-  recorded as plan invalidation, and replanned from the bundle state; no branch is force-updated.
-- [ ] Prepare `ResultReleasePlanV1` from the exact merge tree.
-- [ ] Approve the separate release finalizer; reproduce the plan-bound annotated-tag object, create
-  `benchmark-result-<campaign-id>`, stage the exact checksum-bound assets on a draft release, and
-  publish once only after both verify.
-- [ ] Verify the durable result directory, annotated tag, release ID, returned asset digests, immutable
-  release attestation, and released extension of the durable checkpoint; transition to `RELEASED`.
-- [ ] Any later correction adds a new sequence-specific result directory, PR, merge, tag, release,
-  and explicit `CorrectionLineageV1` superseding the previous objects; prior paths/tags/releases and
-  terminal campaign state are never rewritten.
+- [ ] Seal the provider inventory, complete the two identity-bound commit/reveal chains and adjudication, then seal deterministic analysis and three independent model outcomes.
+- [ ] Collect only a complete bundle; otherwise finalize only the safe invalid prefix.
+- [ ] Authorize initial publication intent before the exact publisher branch/PR effects. Human-review and direct-merge through protection; reconstruct post-merge evidence/failure and the applicable one of six post-merge events.
+- [ ] For a valid complete merge, authorize release intent before the exact tag/draft/assets/publish effects. Reconcile every crash window and transition to `RELEASED` only after exact verification.
+- [ ] A correction is append-only intent→publication→merge→tag→release→finalization or a phase-specific terminal invalidation. A new correction after `merged_invalid` explicitly supersedes the failed correction and contaminated merge; prior latest remains unchanged until successful finalization.
 
 ## Milestone 9: Present the released result
 
-- [ ] Start only after a fresh verifier proves `RELEASED`, no unresolved hold, and the exact requested
-  initial/correction receipt as the canonical latest released publication pointer.
-- [ ] Require `reconstruct_correction_progress(authority) is None`; an accepted defect or any
-  in-flight correction prefix blocks promotion of the prior pointer.
-- [ ] Update the six localized READMEs, `evals/README.md`, website, changelog, dated release note, presentation, and dated social package from the committed result bundle.
-- [ ] Keep historical alpha release/social files unchanged.
-- [ ] Every numeric statement names model, campaign, date interval, gate, pair/scenario denominator, confidence interval, and limitations link.
-- [ ] For an `invalid_prefix` release, publish only bundle-derived operational status, incident code,
-  completed/missing work, provenance, and limitations. Omit every model/arm performance number,
-  comparison, direction, quality pass/fail claim, interval, ranking, or savings statement; no fake
-  analysis object may satisfy the docs gate.
-- [ ] Explain positive `concise - if` direction beside each value.
-- [ ] Never call visible-output-token reduction billed-output, total-token, monetary, or universal-model savings.
-- [ ] Publish no context-free numeric hero/social image.
-- [ ] Review localized copy and presentation numbers against machine JSON before publication.
+- [ ] Require `RELEASED`, active/nonwithdrawn latest pointer, no open incident, hold, or correction, and fresh verification of the exact release receipt.
+- [ ] Update localized READMEs, `evals/README.md`, website, changelog, dated release note, presentation, and social package only from the committed complete bundle. Keep historical alpha material unchanged.
+- [ ] Every number names model, campaign, interval, gate, denominator, confidence interval, and limitations; explain positive `concise - if`; never call visible-token reduction billed-output, total-token, monetary, or universal savings.
+- [ ] Invalid-prefix terminal outcomes remain only in their reviewed authority/incident history; they
+  trigger no release, documentation, site, presentation, release-note, social, or correction effect
+  and never enter this promotion milestone.
 
-## Roadmap completion definition
+## Completion definition
 
-The work is complete only when the chosen campaign lineage is `RELEASED`, its public evidence and checksums are durable, the provider key is rotated/revoked as planned, and the post-release presentation/social package contains only bundle-derived claims. A positive result is not required; valid negative, inconclusive, and operationally invalid outcomes are all publishable through their specified paths.
+Implementation is complete when all four slice plans, synthetic reconstruction, quality gates, and two independent reviews are green. A result campaign is publishable only when its complete lineage is `RELEASED`, active and nonwithdrawn, public checksums are durable, provider credentials are contained as planned, and every public claim derives from that exact bundle. Positive, negative, and inconclusive model outcomes are acceptable; invalid-prefix outcomes remain incident evidence rather than releases.

@@ -6,21 +6,21 @@
 
 **Architecture:** Slice 2 consumes only verified, sealed generation evidence and strict scored-attempt projections supplied by Slice 1. It writes a content-addressed attachment DAG: generation capsule → hard-score request set → judge attachment → audit and analysis attachments, then derives each model outcome independently with fixed denominators, scenario-clustered uncertainty, and fail-closed audit sensitivity. Legacy v1 smoke scoring and reporting remain separate and byte-compatible.
 
-**Tech Stack:** Python 3.11+, Pydantic 2 strict frozen models, NumPy Generator(PCG64), canonical JSON/SHA-256 primitives already in laconian_eval.capsule, pytest, Ruff, mypy, uv.
+**Tech Stack:** Python 3.11+, Pydantic 2 strict frozen models, NumPy Generator(PCG64), a new strict
+CanonicalJSONV1 validator/encoder at the registry/attestation boundary (the existing capsule encoder
+alone is insufficient), SHA-256, pytest, Ruff, mypy, uv.
 
 ---
 
 ## Authoritative design and scope
 
-**Protocol-amendment prerequisite:** Before Task 1, merge and reapprove roadmap Milestone 0. The
-current design did not approve the literal default-tier/cache/accounting additions or the neutral
-reviewer/workflow-root and generation-authority-expectation contracts used here. Until that
-amendment is merged and freshly approved,
-every Slice 2 task is blocked and this document is a proposed implementation contract only.
-
-After that prerequisite, implement against the freshly approved
-[Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md),
-especially sections 6.3, 9, 10, 11, 13.1, and 14.1.
+Implement against the normative
+[Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md)
+at full SHA `46147ef62b5bb009421d58928e879d92247d84b5`, especially Sections 6.2–6.6,
+7.1, 7.7, 9–11, 13.1, and 14.1. Approval metadata is full SHA
+`0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, recording explicit maintainer approval on
+2026-08-30. Milestone 0 is complete; implementation is pending and unblocked. Any later normative
+amendment re-blocks the affected tasks until separately approved.
 
 This is Slice 2. It starts only after Slice 1 exposes these public, tested interfaces:
 
@@ -69,7 +69,7 @@ Out of scope for this slice:
 Create:
 
 - src/laconian_eval/benchmark/__init__.py — public Slice 2 exports only.
-- src/laconian_eval/benchmark/attachments.py — canonical attachment digests, rational values, and no-replace writers.
+- src/laconian_eval/benchmark/attachments.py — strict CanonicalJSONV1, attachment digests, rational values, and no-replace writers.
 - src/laconian_eval/benchmark/seeds.py — normative 128-bit domain-derived seeds.
 - src/laconian_eval/benchmark/context.py — campaign-neutral layer-root indexes, reviewer/protocol bindings, and the sealed pre-judge generation context.
 - src/laconian_eval/benchmark/hard_score.py — HardScoreRequestSetV1 models and builder.
@@ -83,7 +83,7 @@ Create:
 - src/laconian_eval/benchmark/audit_metrics.py — design weights, Hajek estimates, descriptive weighted Wilson intervals, design-consistent one-sided false-fail bounds, confusion tables, and audit gates.
 - src/laconian_eval/benchmark/sensitivity.py — model/arm false-fail bounds, exact search, certificates, and verifier.
 - src/laconian_eval/benchmark/reporting.py — verified audit/analysis root loaders and atomic machine-analysis/Markdown artifact writers.
-- src/laconian_eval/benchmark/cli.py — seven fixed secret-free offline non-evidentiary validation commands only.
+- src/laconian_eval/replay/ — seven fixed secret-free offline non-evidentiary handlers reached only through the existing `laconian_eval.cli:main` dispatcher.
 - tests/benchmark/__init__.py
 - tests/benchmark/helpers.py — deterministic 36-capsule/1,440-row synthetic evidence builders.
 - tests/benchmark/test_attachments.py
@@ -102,11 +102,12 @@ Create:
 - tests/benchmark/test_sensitivity_certificate.py
 - tests/benchmark/test_reporting.py
 - tests/benchmark/test_synthetic_analysis.py
-- tests/benchmark/test_cli.py
+- tests/benchmark/test_cli.py — existing dispatcher compatibility and seven-handler import/call graph.
 
 Modify:
 
-- pyproject.toml — add the normative NumPy runtime dependency and `laconian-benchmark` entry point.
+- pyproject.toml — add NumPy and route the benchmark script to compatible `laconian_eval.cli:main`
+  while preserving the existing legacy `entrypoint` path.
 - uv.lock — lock the NumPy dependency.
 - benchmarks/methodology.md — replace the no-interval limitation with the frozen public method.
 - evals/README.md — document the new derived evidence layers.
@@ -154,6 +155,22 @@ def test_attachment_digest_is_domain_separated_and_excludes_only_its_id() -> Non
     assert attachment_digest("laconian-other-v1", payload) != expected
 
 
+def test_canonical_json_v1_is_strict_and_has_no_terminal_newline() -> None:
+    assert canonical_json_v1({"é": 1, "a": [2], "verified": True}) == (
+        b'{"a":[2],"verified":true,"\xc3\xa9":1}'
+    )
+    with pytest.raises(CanonicalJSONV1Error):
+        canonical_json_v1({"e\\u0301": 1})
+    for forbidden in (1.0, float("nan")):
+        with pytest.raises(CanonicalJSONV1Error):
+            canonical_json_v1({"value": forbidden})
+    for forbidden_bytes in (
+        b'{"a":1}\n', b'{ "a":1}', b'{"a":1,"a":1}', b'{"e\\u0301":1}'
+    ):
+        with pytest.raises(CanonicalJSONV1Error):
+            parse_canonical_json_v1(forbidden_bytes)
+
+
 def test_write_attachment_is_canonical_fsynced_and_never_overwrites(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,7 +194,8 @@ Run:
 uv run pytest -q tests/benchmark/test_attachments.py
 ~~~
 
-Expected: collection fails because laconian_eval.benchmark.attachments does not exist.
+Expected: collection fails because `laconian_eval.benchmark.attachments` and
+`canonical_json_v1` do not exist.
 
 - [ ] **Step 3: Implement the strict primitives**
 
@@ -188,14 +206,80 @@ from __future__ import annotations
 
 import math
 import os
+import json
+import hashlib
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Self
+from typing import NoReturn, Self
 
 from pydantic import model_validator
 
 from laconian_eval.capsule.canonical import canonical_json, stable_digest
 from laconian_eval.capsule.schema import CapsuleModel
+
+
+class CanonicalJSONV1Error(ValueError):
+    pass
+
+
+def _canonical_json_v1_tree(value: object) -> object:
+    # JSON booleans remain booleans; "integers only" excludes non-integer numbers,
+    # not the `verified: true` member required by SignatureEvidenceV1.
+    if value is None or type(value) in (bool, int):
+        return value
+    if type(value) is str:
+        if unicodedata.normalize("NFC", value) != value:
+            raise CanonicalJSONV1Error("strings must already be NFC")
+        return value
+    if type(value) in (list, tuple):
+        return [_canonical_json_v1_tree(item) for item in value]
+    if type(value) is dict:
+        if not all(type(key) is str for key in value):
+            raise CanonicalJSONV1Error("object keys must be strings")
+        items = sorted(value.items(), key=lambda item: item[0].encode("utf-8"))
+        return {str(_canonical_json_v1_tree(key)): _canonical_json_v1_tree(item) for key, item in items}
+    raise CanonicalJSONV1Error("only null, strings, integer JSON, arrays, and objects are allowed")
+
+
+def canonical_json_v1(value: object) -> bytes:
+    """UTF-8 CanonicalJSONV1: NFC strings, bytewise keys, integer JSON, no LF."""
+    return json.dumps(
+        _canonical_json_v1_tree(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def parse_canonical_json_v1(data: bytes) -> object:
+    def reject_number(_: str) -> NoReturn:
+        raise CanonicalJSONV1Error("only integer JSON numbers are allowed")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        if len({key for key, _ in pairs}) != len(pairs):
+            raise CanonicalJSONV1Error("duplicate object key")
+        return dict(pairs)
+
+    try:
+        text = data.decode("utf-8", errors="strict")
+        parsed = json.loads(
+            text,
+            parse_float=reject_number,
+            parse_constant=reject_number,
+            object_pairs_hook=unique_object,
+        )
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CanonicalJSONV1Error("invalid CanonicalJSONV1 bytes") from error
+    canonical = canonical_json_v1(parsed)
+    if canonical != data:
+        raise CanonicalJSONV1Error("noncanonical CanonicalJSONV1 bytes")
+    return parsed
+
+
+def canonical_json_v1_digest(domain: str, value: object) -> str:
+    if unicodedata.normalize("NFC", domain) != domain or not domain:
+        raise CanonicalJSONV1Error("digest domain must be nonempty NFC")
+    return hashlib.sha256(domain.encode("utf-8") + b"\0" + canonical_json_v1(value)).hexdigest()
 
 
 class RationalV1(CapsuleModel):
@@ -393,7 +477,7 @@ git commit -m "feat: freeze benchmark seed derivation"
 
 This task owns the complete pre-judge `context.py` contract:
 `LayerKindV1`, both discriminated layer-member models, `LayerRootIndexV1`, both reviewer registries
-and canonical digest helpers, `ProtocolReviewAttestationBindingV1`, `GenerationContextIndexV1`,
+and canonical digest helpers, `ProtocolAttestationV1`, `GenerationContextIndexV1`,
 `GenerationContextExpectationV1`, both verified context wrappers,
 `write_layer_root_index`, `load_layer_root_index`,
 `write_generation_context_index`, and `load_verified_generation_context_index`. Implement and test
@@ -411,8 +495,10 @@ In tests/benchmark/helpers.py, build one verified 40-row model/scenario fixture 
 arms × five repetitions. Give each row a unique ordinal, plan_item_id, terminal ScoredAttemptV2,
 and exact captured case. Include one provider rejection, one deterministic format failure, and 38
 hard passes. The fixture must expose a nonnull generation capsule hash and must fail construction
-if Slice 1 returns an unsealed capsule. The expectation fixture binds the campaign registry,
-predecessor/final authority roots, generation layer, and expected context digest. The context fixture binds the exact generation layer,
+if Slice 1 returns an unsealed capsule. The expectation fixture binds campaign ID, both reviewer
+registry digests, attestation root, predecessor authority root, generation layer, expected context
+digest, and workflow root; its in-memory wrapper separately binds the reconstructed final authority
+root. The context fixture binds the exact generation layer,
 campaign/input identities, tagged hard-scorer source/protocol, judge protocol, requested tier,
 statistics and audit protocols, both reviewer registries, all three attestations, and their shared
 verified C0 workflow root.
@@ -426,13 +512,13 @@ First create `tests/benchmark/test_context.py` with these exact pre-judge contra
 - `test_generation_layer_member_binds_capsule_and_scored_sidecar_paths_and_hashes`.
 - `test_generation_context_index_binds_verified_plaintext_seed_commit_and_36_generation_parents`.
 - `test_generation_context_binds_default_tier_code_protocol_registries_and_workflow_root`.
-- `test_generation_context_binds_statistics_protocol_for_later_authority_checked_analysis`.
+- `test_generation_context_binds_statistical_protocol_for_later_authority_checked_analysis`.
 - `test_reviewer_registry_hash_recomputes_from_exact_canonical_bindings_including_signing_mode`.
 - `test_audit_and_protocol_reviewer_registries_have_separate_canonical_bytes_and_digests`.
 - `test_protocol_reviewer_registry_requires_three_ordered_distinct_role_bound_identities`.
-- `test_protocol_reviewer_registry_requires_nonnull_exact_signing_fingerprint_for_every_role`.
+- `test_protocol_reviewer_registry_requires_null_github_fingerprint_and_exact_keyed_fingerprints`.
 - `test_protocol_attestations_bind_both_registry_digests_role_identity_and_workflow_root`.
-- `test_generation_context_and_all_three_attestations_bind_same_c0_workflow_inventory_root`.
+- `test_generation_context_and_all_three_attestations_bind_same_c0_workflow_root`.
 - `test_generation_context_expectation_binds_registry_predecessor_generation_root_and_context`.
 - `test_runtime_adapter_constructs_expectation_wrapper_only_after_bound_digest_predecessor_and_final_root_verify`.
 - `test_context_loader_rejects_forged_context_with_rehashed_index_against_external_expectation`.
@@ -515,18 +601,37 @@ model, scenario, one canonical relative path, and its attachment hash. A discrim
 `(generation_model UTF-8 bytes, scenario_uid raw digest bytes)` order, ordinals `0..35`, a matching
 member kind, unique safe paths under the kind's fixed subtree, and the domain-separated self digest.
 
-`ReviewerAccountBindingV1` carries reviewer ID, strict positive numeric GitHub account ID, exact
-login, `git-verify-commit-v1`, and its optional exact signing fingerprint. The independently hashed
-`ProtocolReviewerRegistryV1` carries exactly three distinct `ProtocolReviewerBindingV1` values in
-the fixed roles `statistical_method`, `blind_judge_audit_protocol`, and `security_evidence`; every
-protocol reviewer has a strict positive numeric account ID and a required nonnull exact signing
-fingerprint. `ProtocolReviewAttestationBindingV1` carries role, account ID/login, both registry
-digests, the frozen C0 `workflow_inventory_root_sha256`, and the verified attestation digest.
-Canonical registry helpers regenerate exact newline-terminated bytes, and the attestation-root
-helper hashes the three ordered complete bindings.
+`AuditReviewerRegistryV1` contains exactly two distinct ordered audit reviewers, including audit
+role. `ProtocolReviewerRegistryV1` contains exactly three distinct entries in role order
+`statistical_method`, `blind_judge_audit_protocol`, `security_evidence`. Both use the closed
+`github_verified_commit | ssh_sha256 | openpgp_fingerprint` vocabulary. GitHub mode requires null
+fingerprint; keyed modes require an exact fingerprint; `security_evidence` always requires nonnull
+fingerprint and therefore cannot use GitHub mode. Registry and attestation bytes use Task 1
+`CanonicalJSONV1` with no terminal newline and distinct domains.
+
+`ProtocolSubjectV1` is exactly `{kind, sha256}`. `ProtocolAttestationV1` has, in schema order,
+`schema_version`, `role`, `protocol_registry_sha256`, `reviewer_numeric_account_id`,
+`reviewer_login`, `verification_mode`, `signing_fingerprint`, `input_tag_object_sha256`,
+`peeled_c0_sha256`, `workflow_root`, `subjects`, `subject_root`, `signed_at`,
+`signature_evidence`, `attestation_sha256`; extra fields are forbidden. GitHub signature evidence
+has exactly `commit_oid`, `verified: true`, `reason: "valid"`, signer numeric ID/login. Keyed modes
+add exact matching `fingerprint`. `subject_root` hashes the ordered subject array; the three complete
+attestations hash in registry role order to `protocol_attestations_root`.
+
+Exact subject inventories are owned by tasks: Task 4 owns `hard_score_protocol_sha256`,
+`judge_prompt_sha256`, `judge_schema_sha256`; Task 5 owns `corpus_case_root`,
+`estimand_protocol_sha256`, `statistical_protocol_sha256`; Task 6 owns
+`bootstrap_protocol_sha256`; Task 7 owns `outcome_classification_protocol_sha256`; Task 8 owns
+`audit_sampling_protocol_sha256`; Task 9 owns `audit_commit_reveal_protocol_sha256` and
+`audit_adjudication_protocol_sha256`; Tasks 11–12 own `false_fail_sensitivity_protocol_sha256`.
+The security role owns exactly `provider_request_contract_sha256`, `retry_spend_protocol_sha256`,
+`campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`,
+`artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`,
+`identity_registry_bundle_sha256`, `state_writer_git_identity_sha256`; Runtime supplies and verifies
+the last subject. No role may omit, reorder, duplicate, add, or borrow a subject.
 
 `GenerationContextIndexV1` is strict, frozen, extra-forbid, and contains exactly: schema version,
-campaign ID, verified campaign-registry digest, plaintext 64-hex campaign seed and its domain digest,
+campaign ID, plaintext 64-hex campaign seed and its domain digest,
 peeled 40-hex input commit,
 hard-scorer source hash, hard-score protocol hash, judge protocol hash, literal requested tier
 `default`, literal wire field `service_tier`, statistics protocol hash, audit protocol hash, frozen
@@ -538,17 +643,20 @@ own domain-separated digest. Its validator requires all three attestations to re
 same workflow root and both recomputed registry digests and to match the corresponding role-bound
 account ID/login. No self-asserted verification Boolean is accepted.
 
-`GenerationContextExpectationV1` is the separate external authority anchor. It is strict, frozen,
-extra-forbid, and contains exactly schema version, campaign ID, the verified campaign-registry
-digest, predecessor authority-root digest, generation layer-root-index digest,
-`expected_context_index_sha256`, and its own domain-separated
-`generation_context_expectation_sha256`. Runtime constructs this neutral projection from its
-read-only reconstructed predecessor authority, binds the expectation digest in the
-`GENERATION_COMPLETE` transition, and retains the canonical file at the exact authority-package
-path `GENERATION_COMPLETE/generation-context-expectation.json`. A context file and generation root
-cannot manufacture or overwrite that external expectation.
+`GenerationContextExpectationV1` is strict/frozen/extra-forbid and binds exactly campaign ID, both
+registry digests, `protocol_attestations_root`, predecessor authority root, full generation-layer
+root, `expected_context_index_sha256`, `workflow_root`, and its own domain-separated digest. Runtime
+reconstructs it privately from current authority and keeps the verified wrapper only in memory.
+Serialized expectation bytes may be ordinary offline replay evidence but never a capability. The
+context payload additionally binds hard-scorer source, hard-score/judge/statistical/audit protocol
+roots, provider-projection root, and ordered capsule roots. `GENERATION_SET_SEALED` later requires
+the ordered 36 capsule hashes plus `generation_context_expectation_sha256` and
+`verified_generation_context_root`; the expectation digest does not contain itself.
 
 ~~~python
+import re
+
+
 LayerKindV1 = Literal["generation", "hard-score", "judge-request", "judge"]
 
 
@@ -635,7 +743,9 @@ class LayerRootIndexV1(BaseModel):
         return self
 
 
-CommitSigningVerificationModeV1 = Literal["git-verify-commit-v1"]
+SignatureVerificationModeV1 = Literal[
+    "github_verified_commit", "ssh_sha256", "openpgp_fingerprint"
+]
 ProtocolReviewRoleV1 = Literal[
     "statistical_method",
     "blind_judge_audit_protocol",
@@ -643,26 +753,69 @@ ProtocolReviewRoleV1 = Literal[
 ]
 
 
+def validate_signature_mode_fingerprint(
+    mode: SignatureVerificationModeV1,
+    fingerprint: str | None,
+    *,
+    require_keyed: bool = False,
+) -> None:
+    if mode == "github_verified_commit":
+        if fingerprint is not None or require_keyed:
+            raise ValueError("GitHub verification requires null fingerprint")
+    elif mode == "ssh_sha256":
+        if fingerprint is None or re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", fingerprint) is None:
+            raise ValueError("SSH verification requires an exact SHA256 fingerprint")
+    elif fingerprint is None or re.fullmatch(r"(?:[0-9A-F]{40}|[0-9A-F]{64})", fingerprint) is None:
+        raise ValueError("OpenPGP verification requires an uppercase primary-key fingerprint")
+
+
 class ReviewerAccountBindingV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     reviewer_id: str
-    github_account_id: int = Field(gt=0)
-    github_login: str
-    commit_signing_verification_mode: CommitSigningVerificationModeV1
+    reviewer_numeric_account_id: int = Field(gt=0)
+    reviewer_login: str
+    verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
-        default=None,
         pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
     )
+    role: Literal["audit_reviewer"]
+
+    @model_validator(mode="after")
+    def validate_verification_mode(self) -> Self:
+        validate_signature_mode_fingerprint(self.verification_mode, self.signing_fingerprint)
+        return self
+
+
+class AuditReviewerRegistryV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["benchmark-reviewer-registry-v1"]
+    reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1]
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_audit_reviewer_registry(self) -> Self:
+        keys = tuple(item.reviewer_id.encode("utf-8") for item in self.reviewers)
+        if keys != tuple(sorted(keys)) or len(set(keys)) != 2:
+            raise ValueError("audit reviewer IDs must be distinct and bytewise ordered")
+        if (
+            len({item.reviewer_numeric_account_id for item in self.reviewers}) != 2
+            or len({item.reviewer_login for item in self.reviewers}) != 2
+        ):
+            raise ValueError("audit reviewer identities must be distinct")
+        if self.audit_reviewer_registry_sha256 != compute_audit_reviewer_registry_sha256(
+            self.reviewers
+        ):
+            raise ValueError("audit reviewer registry digest mismatch")
+        return self
 
 
 class ProtocolReviewerBindingV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     role: ProtocolReviewRoleV1
-    reviewer_id: str
-    github_account_id: int = Field(gt=0)
-    github_login: str
-    commit_signing_verification_mode: CommitSigningVerificationModeV1
-    signing_fingerprint: str = Field(
+    reviewer_numeric_account_id: int = Field(gt=0)
+    reviewer_login: str
+    verification_mode: SignatureVerificationModeV1
+    signing_fingerprint: str | None = Field(
         pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
     )
 
@@ -687,38 +840,166 @@ class ProtocolReviewerRegistryV1(BaseModel):
         if tuple(reviewer.role for reviewer in self.reviewers) != expected_roles:
             raise ValueError("protocol reviewer role order mismatch")
         if (
-            len({reviewer.reviewer_id for reviewer in self.reviewers}) != 3
-            or len({reviewer.github_account_id for reviewer in self.reviewers}) != 3
-            or len({reviewer.github_login for reviewer in self.reviewers}) != 3
+            len({reviewer.reviewer_numeric_account_id for reviewer in self.reviewers}) != 3
+            or len({reviewer.reviewer_login for reviewer in self.reviewers}) != 3
         ):
             raise ValueError("protocol reviewer identities must be distinct")
+        for reviewer in self.reviewers:
+            validate_signature_mode_fingerprint(
+                reviewer.verification_mode,
+                reviewer.signing_fingerprint,
+                require_keyed=reviewer.role == "security_evidence",
+            )
         expected = compute_protocol_reviewer_registry_sha256(self.reviewers)
         if self.protocol_reviewer_registry_sha256 != expected:
             raise ValueError("protocol reviewer registry digest mismatch")
         return self
 
 
-class ProtocolReviewAttestationBindingV1(BaseModel):
+ProtocolSubjectKindV1 = Literal[
+    "corpus_case_root",
+    "estimand_protocol_sha256",
+    "statistical_protocol_sha256",
+    "bootstrap_protocol_sha256",
+    "outcome_classification_protocol_sha256",
+    "false_fail_sensitivity_protocol_sha256",
+    "hard_score_protocol_sha256",
+    "judge_prompt_sha256",
+    "judge_schema_sha256",
+    "audit_sampling_protocol_sha256",
+    "audit_commit_reveal_protocol_sha256",
+    "audit_adjudication_protocol_sha256",
+    "provider_request_contract_sha256",
+    "retry_spend_protocol_sha256",
+    "campaign_state_schema_sha256",
+    "workflow_endpoint_policy_sha256",
+    "artifact_security_protocol_sha256",
+    "publication_correction_protocol_sha256",
+    "identity_registry_bundle_sha256",
+    "state_writer_git_identity_sha256",
+]
+
+
+class ProtocolSubjectV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    kind: ProtocolSubjectKindV1
+    sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+class GitHubSignatureEvidenceV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    verified: Literal[True]
+    reason: Literal["valid"]
+    signer_numeric_account_id: int = Field(gt=0)
+    signer_login: str
+
+
+class KeyedSignatureEvidenceV1(GitHubSignatureEvidenceV1):
+    fingerprint: str = Field(
+        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$"
+    )
+
+
+SignatureEvidenceV1 = GitHubSignatureEvidenceV1 | KeyedSignatureEvidenceV1
+
+
+class ProtocolAttestationV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["protocol-attestation-v1"]
     role: ProtocolReviewRoleV1
-    github_account_id: int = Field(gt=0)
-    github_login: str
-    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    workflow_inventory_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    reviewer_numeric_account_id: int = Field(gt=0)
+    reviewer_login: str
+    verification_mode: SignatureVerificationModeV1
+    signing_fingerprint: str | None = Field(
+        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
+    )
+    input_tag_object_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    peeled_c0_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    subjects: tuple[ProtocolSubjectV1, ...]
+    subject_root: str = Field(pattern="^[0-9a-f]{64}$")
+    signed_at: str
+    signature_evidence: SignatureEvidenceV1
     attestation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_role_subjects_signature_and_digest(self) -> Self:
+        expected_subjects: dict[ProtocolReviewRoleV1, tuple[ProtocolSubjectKindV1, ...]] = {
+            "statistical_method": (
+                "corpus_case_root", "estimand_protocol_sha256",
+                "statistical_protocol_sha256", "bootstrap_protocol_sha256",
+                "outcome_classification_protocol_sha256",
+                "false_fail_sensitivity_protocol_sha256",
+            ),
+            "blind_judge_audit_protocol": (
+                "hard_score_protocol_sha256", "judge_prompt_sha256",
+                "judge_schema_sha256", "audit_sampling_protocol_sha256",
+                "audit_commit_reveal_protocol_sha256",
+                "audit_adjudication_protocol_sha256",
+            ),
+            "security_evidence": (
+                "provider_request_contract_sha256", "retry_spend_protocol_sha256",
+                "campaign_state_schema_sha256", "workflow_endpoint_policy_sha256",
+                "artifact_security_protocol_sha256",
+                "publication_correction_protocol_sha256",
+                "identity_registry_bundle_sha256", "state_writer_git_identity_sha256",
+            ),
+        }
+        if tuple(item.kind for item in self.subjects) != expected_subjects[self.role]:
+            raise ValueError("protocol attestation subject inventory/order mismatch")
+        validate_signature_mode_fingerprint(
+            self.verification_mode,
+            self.signing_fingerprint,
+            require_keyed=self.role == "security_evidence",
+        )
+        keyed = self.verification_mode != "github_verified_commit"
+        if keyed != (self.signing_fingerprint is not None):
+            raise ValueError("protocol attestation mode/fingerprint mismatch")
+        if keyed:
+            if not isinstance(self.signature_evidence, KeyedSignatureEvidenceV1):
+                raise ValueError("keyed attestation requires keyed signature evidence")
+            if self.signature_evidence.fingerprint != self.signing_fingerprint:
+                raise ValueError("keyed signature fingerprint mismatch")
+        elif isinstance(self.signature_evidence, KeyedSignatureEvidenceV1):
+            raise ValueError("GitHub verification forbids fingerprint evidence")
+        if (
+            self.signature_evidence.signer_numeric_account_id
+            != self.reviewer_numeric_account_id
+            or self.signature_evidence.signer_login != self.reviewer_login
+        ):
+            raise ValueError("protocol attestation signer identity mismatch")
+        expected_subject_root = canonical_json_v1_digest(
+            "laconian-protocol-attestation-subject-root-v1",
+            [item.model_dump(mode="json") for item in self.subjects],
+        )
+        if self.subject_root != expected_subject_root:
+            raise ValueError("protocol attestation subject root mismatch")
+        expected = canonical_json_v1_digest(
+            "laconian-protocol-attestation-v1",
+            self.model_dump(mode="json", exclude={"attestation_sha256"}),
+        )
+        if self.attestation_sha256 != expected:
+            raise ValueError("protocol attestation digest mismatch")
+        return self
 
 
 def canonical_reviewer_registry_bytes(
     reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1],
 ) -> bytes:
-    """Return the exact newline-terminated two-audit-reviewer projection."""
+    return canonical_json_v1(
+        {
+            "schema_version": "benchmark-reviewer-registry-v1",
+            "reviewers": [item.model_dump(mode="json") for item in reviewers],
+        }
+    )
 
 
-def compute_reviewer_registry_sha256(
+def compute_audit_reviewer_registry_sha256(
     reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1],
 ) -> str:
-    """Hash freshly regenerated canonical audit-reviewer bytes."""
+    return hashlib.sha256(canonical_reviewer_registry_bytes(reviewers)).hexdigest()
 
 
 def canonical_protocol_reviewer_registry_bytes(
@@ -728,7 +1009,12 @@ def canonical_protocol_reviewer_registry_bytes(
         ProtocolReviewerBindingV1,
     ],
 ) -> bytes:
-    """Return the separate newline-terminated three-role projection."""
+    return canonical_json_v1(
+        {
+            "schema_version": "benchmark-protocol-reviewer-registry-v1",
+            "reviewers": [item.model_dump(mode="json") for item in reviewers],
+        }
+    )
 
 
 def compute_protocol_reviewer_registry_sha256(
@@ -738,45 +1024,99 @@ def compute_protocol_reviewer_registry_sha256(
         ProtocolReviewerBindingV1,
     ],
 ) -> str:
-    """Hash freshly regenerated canonical protocol-reviewer bytes."""
+    return hashlib.sha256(canonical_protocol_reviewer_registry_bytes(reviewers)).hexdigest()
 
 
-def compute_protocol_review_attestations_root_sha256(
+def compute_protocol_attestations_root(
     attestations: tuple[
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
     ],
 ) -> str:
-    """Hash the fixed ordered three-role verified-attestation projection."""
+    expected_roles: tuple[ProtocolReviewRoleV1, ...] = (
+        "statistical_method",
+        "blind_judge_audit_protocol",
+        "security_evidence",
+    )
+    if tuple(item.role for item in attestations) != expected_roles:
+        raise ValueError("protocol attestation root role order mismatch")
+    return canonical_json_v1_digest(
+        "laconian-protocol-review-attestations-root-v1",
+        [item.model_dump(mode="json") for item in attestations],
+    )
+
+
+class BenchmarkProtocolBindingsV1(BaseModel):
+    """One centrally owned immutable projection repeated by every downstream attachment."""
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
+    hard_scorer_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
+    estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    false_fail_sensitivity_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+def protocol_bindings_from_context(
+    context: "GenerationContextIndexV1",
+) -> BenchmarkProtocolBindingsV1:
+    return BenchmarkProtocolBindingsV1.model_validate(
+        {
+            name: getattr(context, name)
+            for name in BenchmarkProtocolBindingsV1.model_fields
+        }
+    )
 
 
 class GenerationContextIndexV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["benchmark-generation-context-index-v1"]
     campaign_id: str
-    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
     campaign_seed: str = Field(pattern="^[0-9a-f]{64}$")
     campaign_seed_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     input_tag_commit: str = Field(pattern="^[0-9a-f]{40}$")
     hard_scorer_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_requested_service_tier: Literal["default"]
     judge_service_tier_wire_field: Literal["service_tier"]
-    statistics_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    workflow_inventory_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1]
+    corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    false_fail_sensitivity_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry: AuditReviewerRegistryV1
     protocol_reviewer_registry: ProtocolReviewerRegistryV1
-    protocol_review_attestations: tuple[
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
+    protocol_attestations: tuple[
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
     ]
-    protocol_review_attestations_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     generation_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
     ordered_generation_capsule_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
     generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
@@ -794,15 +1134,16 @@ class GenerationContextIndexV1(BaseModel):
             raise ValueError("generation context campaign seed digest mismatch")
         if len(set(self.ordered_generation_capsule_sha256s)) != 36:
             raise ValueError("generation context requires 36 unique capsule parents")
-        reviewer_keys = tuple(reviewer.reviewer_id.encode("utf-8") for reviewer in self.reviewers)
+        reviewers = self.audit_reviewer_registry.reviewers
+        reviewer_keys = tuple(reviewer.reviewer_id.encode("utf-8") for reviewer in reviewers)
         if (
             reviewer_keys != tuple(sorted(reviewer_keys))
             or len(set(reviewer_keys)) != 2
-            or len({reviewer.github_account_id for reviewer in self.reviewers}) != 2
-            or len({reviewer.github_login for reviewer in self.reviewers}) != 2
+            or len({reviewer.reviewer_numeric_account_id for reviewer in reviewers}) != 2
+            or len({reviewer.reviewer_login for reviewer in reviewers}) != 2
         ):
             raise ValueError("generation context requires two ordered distinct reviewers")
-        if self.reviewer_registry_sha256 != compute_reviewer_registry_sha256(self.reviewers):
+        if self.audit_reviewer_registry_sha256 != compute_audit_reviewer_registry_sha256(reviewers):
             raise ValueError("generation context reviewer registry digest mismatch")
         expected_roles: tuple[ProtocolReviewRoleV1, ...] = (
             "statistical_method",
@@ -810,15 +1151,14 @@ class GenerationContextIndexV1(BaseModel):
             "security_evidence",
         )
         protocol_reviewers = self.protocol_reviewer_registry.reviewers
-        if tuple(item.role for item in self.protocol_review_attestations) != expected_roles:
+        if tuple(item.role for item in self.protocol_attestations) != expected_roles:
             raise ValueError("generation context requires the ordered protocol review roles")
         if tuple(reviewer.role for reviewer in protocol_reviewers) != expected_roles:
             raise ValueError("generation context protocol reviewer role order mismatch")
         if (
-            len({item.attestation_sha256 for item in self.protocol_review_attestations}) != 3
-            or len({reviewer.reviewer_id for reviewer in protocol_reviewers}) != 3
-            or len({reviewer.github_account_id for reviewer in protocol_reviewers}) != 3
-            or len({reviewer.github_login for reviewer in protocol_reviewers}) != 3
+            len({item.attestation_sha256 for item in self.protocol_attestations}) != 3
+            or len({reviewer.reviewer_numeric_account_id for reviewer in protocol_reviewers}) != 3
+            or len({reviewer.reviewer_login for reviewer in protocol_reviewers}) != 3
         ):
             raise ValueError("generation context requires three distinct protocol reviewers")
         if self.protocol_reviewer_registry.protocol_reviewer_registry_sha256 != (
@@ -826,23 +1166,22 @@ class GenerationContextIndexV1(BaseModel):
         ):
             raise ValueError("generation context protocol reviewer registry digest mismatch")
         for attestation, reviewer in zip(
-            self.protocol_review_attestations,
+            self.protocol_attestations,
             protocol_reviewers,
             strict=True,
         ):
             if (
                 attestation.role != reviewer.role
-                or attestation.github_account_id != reviewer.github_account_id
-                or attestation.github_login != reviewer.github_login
-                or attestation.audit_reviewer_registry_sha256 != self.reviewer_registry_sha256
-                or attestation.protocol_reviewer_registry_sha256
+                or attestation.reviewer_numeric_account_id != reviewer.reviewer_numeric_account_id
+                or attestation.reviewer_login != reviewer.reviewer_login
+                or attestation.protocol_registry_sha256
                 != self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
-                or attestation.workflow_inventory_root_sha256
-                != self.workflow_inventory_root_sha256
+                or attestation.workflow_root
+                != self.workflow_root
             ):
                 raise ValueError("generation context protocol attestation identity mismatch")
-        if self.protocol_review_attestations_root_sha256 != (
-            compute_protocol_review_attestations_root_sha256(self.protocol_review_attestations)
+        if self.protocol_attestations_root != (
+            compute_protocol_attestations_root(self.protocol_attestations)
         ):
             raise ValueError("generation context protocol review root mismatch")
         expected = stable_digest(
@@ -858,10 +1197,13 @@ class GenerationContextExpectationV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["benchmark-generation-context-expectation-v1"]
     campaign_id: str
-    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
     predecessor_authority_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    generation_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    generation_layer_root: str = Field(pattern="^[0-9a-f]{64}$")
     expected_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
     generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -917,22 +1259,27 @@ def load_verified_generation_context_index(
 ~~~
 
 The two registry byte contracts are exact and independent:
-`canonical_json({"schema_version": "benchmark-reviewer-registry-v1", "reviewers": [...]}) + b"\n"`
-for the two bytewise-reviewer-ID-ordered audit bindings, and
-`canonical_json({"schema_version": "benchmark-protocol-reviewer-registry-v1", "reviewers": [...]}) + b"\n"`
-for the three fixed-role protocol bindings. Each digest is raw SHA-256 over its own freshly
+`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v1", "reviewers":
+[item.model_dump(mode="json") for item in audit_reviewers]})` for the two
+bytewise-reviewer-ID-ordered audit bindings, and
+`canonical_json_v1({"schema_version": "benchmark-protocol-reviewer-registry-v1", "reviewers":
+[item.model_dump(mode="json") for item in protocol_reviewers]})` for the three fixed-role protocol
+bindings. Neither byte string has a terminal newline. Each digest
+is raw SHA-256 over its own freshly
 regenerated bytes. The attestation root is
-`stable_digest("laconian-protocol-review-attestations-root-v1", {"attestations": [...]})` in fixed
-role order. Tests reject any cross-population reuse, reordered identity, string/Boolean numeric ID,
+`canonical_json_v1_digest("laconian-protocol-review-attestations-root-v1",
+[item.model_dump(mode="json") for item in protocol_attestations])` over the three complete
+attestations in fixed role order. Tests reject any cross-population reuse, reordered identity, string/Boolean numeric ID,
 login rename, omitted protocol fingerprint, or digest copied without exact byte equality.
 
 `context.py` intentionally provides no raw-file-to-verified-expectation loader. The fixed
-campaign-side module `laconian_eval.campaign.benchmark_stage` owns that trust transition: it
+campaign-side module `laconian_eval.campaign.runtime` owns that trust transition: it
 reconstructs the predecessor and final `GENERATION_COMPLETE` authority roots read-only, parses the
-fixed expectation child canonically, recomputes its self digest, verifies its campaign-registry and
-generation-layer roots, requires the final authority root to bind that exact expectation digest,
+fixed expectation child canonically, recomputes its self digest, verifies every expectation field
+against the campaign registry and generation-layer roots, requires the final authority root to bind
+that exact expectation digest,
 and only then constructs `VerifiedGenerationContextExpectationV1` in memory. Its three stage
-functions `run_hard_score_stage`, `run_prepare_judge_stage`, and `run_seal_judge_stage` import and
+functions `Runtime.hard_score`, `Runtime.prepare_judge`, and `Runtime.seal_judge` import and
 call the benchmark loaders/builders with that wrapper. These are the Runtime-owned first three of
 the seven live boundaries frozen in Task 15; Publication's four exact `evaluation_stage` boundaries
 reconstruct/reuse the same wrapper for provider/audit/analysis loading. `context.py`,
@@ -948,8 +1295,8 @@ The loader accepts only the exact `GENERATION/generation-context.json` file and 
 capsule/sidecar pair with `load_verified_scored_capsule`, and requires the ordered vector and every
 model/scenario identity to match. Before reading context authority fields it derives the expected
 digest only from `expectation.expectation.expected_context_index_sha256`, requires the parsed
-context self digest to equal that value, and requires campaign and generation-root digests to match
-the expectation, including exact campaign-registry equality. There is no raw expected-digest
+context self digest to equal that value, and requires campaign, both reviewer registries,
+attestation, workflow, and generation-root digests to match the expectation. There is no raw expected-digest
 argument, argv option, environment value, or value read from the context/index under test. Runtime
 Task 7 is the sole producer adapter; it constructs this
 campaign-neutral record from verified `CampaignRegistryV1` and the class-bound tagged C0 inventory,
@@ -997,6 +1344,7 @@ class HardScoreRequestSetV1(CapsuleModel):
     hard_scorer_source_sha256: Sha256
     hard_score_protocol_sha256: Sha256
     judge_protocol_sha256: Sha256
+    protocol_bindings: BenchmarkProtocolBindingsV1
     records: tuple[HardScoreRecordV1, ...] = Field(min_length=1, max_length=40)
     ordered_judge_request_ids: tuple[Sha256, ...]
     hard_score_request_set_sha256: Sha256
@@ -1119,7 +1467,14 @@ Create tests named:
 - `test_judge_attachment_builder_and_verifier_require_external_verified_context_expectation`.
 - `test_provider_ready_judge_request_hashes_literal_service_tier_default_wire_field`.
 - `test_judge_attempt_records_requested_and_returned_service_tier_without_inference`.
-- `test_judge_attempt_reuses_foundation_service_tier_accounting_status_without_alias`.
+- `test_judge_wire_uses_exact_explicit_30m_cache_control_and_no_recursive_breakpoint`.
+- `test_judge_response_uses_only_canonical_applied_read_write_reasoning_tier_model_paths`.
+- `test_judge_requires_openai_3_3_1_and_tagged_uv_lock_before_credentials`.
+- `test_judge_attempt_tracks_requested_and_returned_judge_model_ids_separately`.
+- `test_judge_success_requires_reported_exact_read_zero_write_zero`.
+- `test_judge_nonzero_missing_mismatched_or_invalid_cache_evidence_is_terminal_stop_evidence`.
+- `test_judge_sanitized_nulls_retain_independent_applied_read_write_tier_usage_reasoning_model_source_digests`.
+- `test_judge_attempt_reuses_foundation_service_tier_status_without_alias`.
 - `test_runtime_to_benchmark_handoff_round_trips_all_five_exact_tier_statuses`.
 - `test_judge_request_builder_and_verifier_require_verified_generation_context`.
 - `test_judge_request_builder_has_no_raw_campaign_seed_or_protocol_tier_identity_parameters`.
@@ -1136,11 +1491,16 @@ Create tests named:
 The injection fixture must contain closing XML, a Markdown fence, an instruction to call a tool,
 an absolute path, and a forged JSON judgment. Assert that each byte remains only inside one
 length-prefixed candidate-data field and never changes the authority, schema, or settings block.
-The no-alias test imports `ServiceTierAccountingStatus` from `laconian_eval.providers`, requires the
-attempt field annotation's `get_args()` to equal its exact five arguments in Foundation order, and
+The no-alias test imports `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and
+`ServiceTierStatus` from `laconian_eval.providers`, requires each exact Foundation vocabulary, and
 statically rejects any benchmark-local status `Literal` declaration. The handoff test canonical-JSON
 round-trips one Runtime-shaped attempt for each status, mutates status/value/delivery independently,
-and proves that only the exact derived combination validates.
+and proves that only the exact derived combination validates. A response may enter a successful
+judge attachment only with applied `explicit`/`30m`, `reported_exact`, read `reported_zero`, write
+`reported_zero`, and tier `reported_default`. Nonzero, missing, mismatched, or invalid applied/read/
+write evidence is a terminal STOP attachment with retained raw-source digests, never a semantic
+judgment or retry. The returned judge model ID may differ from `JUDGE_REQUESTED_MODEL_ID`, but all
+successful judge responses in one campaign must report one byte-identical returned ID.
 
 - [ ] **Step 2: Run RED**
 
@@ -1235,13 +1595,16 @@ must see the actual warning requirement they are evaluating.
 Add:
 
 ~~~python
-JUDGE_MODEL = "gpt-5.6-sol"
+JUDGE_REQUESTED_MODEL_ID = "gpt-5.6-sol"
 JUDGE_REASONING_EFFORT = "low"
 JUDGE_TEXT_VERBOSITY = "low"
 JUDGE_MAX_OUTPUT_TOKENS = 768
 JUDGE_TOOLS: tuple[()] = ()
 JUDGE_REQUESTED_SERVICE_TIER: Literal["default"] = "default"
 JUDGE_SERVICE_TIER_WIRE_FIELD: Literal["service_tier"] = "service_tier"
+JUDGE_PROMPT_CACHE_MODE: Literal["explicit"] = "explicit"
+JUDGE_PROMPT_CACHE_TTL: Literal["30m"] = "30m"
+JUDGE_OPENAI_SDK_VERSION: Literal["3.3.1"] = "3.3.1"
 
 
 def derive_blind_id(*, judge_request_id: str, campaign_seed: str) -> str:
@@ -1263,7 +1626,10 @@ pretty-printed or provider-normalized derivative. `JudgeProviderRequestV1` addit
 exact provider wire mapping. Its hash uses domain `laconian-judge-provider-wire-request-v1` over the
 canonical kwargs with model `gpt-5.6-sol`, rendered prompt input, low reasoning, low text verbosity,
 the exact strict structured-output format, maximum output 768, `store=False`, no tools, and the
-literal API pair `"service_tier": "default"`. The key is exactly `service_tier`; omitting it,
+literal members `"service_tier": "default"` and
+`"prompt_cache_options": {"mode": "explicit", "ttl": "30m"}`. Recursively reject
+`prompt_cache_breakpoint` under canonical instructions/input and forbid `prompt_cache_key`,
+`prompt_cache_retention`, and every other cache control. The key is exactly `service_tier`; omitting it,
 passing an alias, using `auto|flex|priority`, or relying on an SDK default changes/rejects the hash.
 The blind request remains the content-only schema asserted in Step 1; service tier is authority
 metadata in this provider-ready wrapper and cannot be supplied by candidate text.
@@ -1276,6 +1642,10 @@ class JudgeProviderRequestV1(BaseModel):
     blind_request: BlindJudgeRequestV1
     requested_service_tier: Literal["default"]
     service_tier_wire_field: Literal["service_tier"]
+    prompt_cache_mode: Literal["explicit"]
+    prompt_cache_ttl: Literal["30m"]
+    openai_sdk_version: Literal["3.3.1"]
+    uv_lock_member_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     provider_wire_request_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
@@ -1288,9 +1658,12 @@ class JudgeRequestAttachmentV1(BaseModel):
     generation_capsule_sha256: str
     hard_score_request_set_sha256: str
     judge_protocol_sha256: str
+    protocol_bindings: BenchmarkProtocolBindingsV1
     campaign_seed_sha256: str
     requested_service_tier: Literal["default"]
     service_tier_wire_field: Literal["service_tier"]
+    prompt_cache_mode: Literal["explicit"]
+    prompt_cache_ttl: Literal["30m"]
     requests: tuple[JudgeProviderRequestV1, ...]
     judge_request_attachment_sha256: str
 
@@ -1321,6 +1694,13 @@ ordered IDs. Both attachment-level tier fields and every wrapper must equal the 
 and every wire-request hash is independently regenerated from the rendered prompt/settings. The request attachment digest
 excludes only its own field and uses domain `laconian-judge-request-attachment-v1`. A zero-request
 hard-score set produces a sealed empty request attachment and no provider input rows.
+Before credentials, verify installed OpenAI SDK `3.3.1`, the C0-derived `uv.lock` member hash, and
+typed support for the frozen wire/response members. Judge evidence reads only
+`response.service_tier`, `response.prompt_cache_options.mode/ttl`,
+`response.usage.input_tokens`, `response.usage.input_tokens_details.cached_tokens`,
+`response.usage.input_tokens_details.cache_write_tokens`, `response.usage.output_tokens`,
+`response.usage.output_tokens_details.reasoning_tokens`, `response.usage.total_tokens`, and
+`response.model`, retaining an independent source digest for each dimension.
 The boundary ordinal selects the same generation member used by the hard-score set. Both functions
 first require the separately supplied verified Runtime-bound expectation to equal the wrapper held
 by the context, derive its expected context digest, and require that digest to equal the context
@@ -1334,7 +1714,13 @@ hash, tier, wire field, generation model, scenario, or independently supplied ev
 - [ ] **Step 5: Add capsule-bound judge attachments and exact coverage verification**
 
 ~~~python
-from laconian_eval.providers import ServiceTierAccountingStatus
+from laconian_eval.providers import (
+    AppliedCacheControlStatus,
+    CacheReadStatus,
+    CacheWriteStatus,
+    ProviderMetadataString,
+    ServiceTierStatus,
+)
 
 
 JudgeAttemptDispositionV1 = Literal[
@@ -1346,6 +1732,8 @@ JudgeAttemptDispositionV1 = Literal[
     "ambiguous_delivery",
     "service_tier_unverified",
     "service_tier_mismatch",
+    "cache_control_policy_incident",
+    "cache_read_policy_incident",
     "cache_write_policy_incident",
 ]
 JudgeDeliveryCertaintyV1 = Literal[
@@ -1355,7 +1743,7 @@ JudgeDeliveryCertaintyV1 = Literal[
     "unknown",
 ]
 JudgeUsageAvailabilityV1 = Literal["complete", "partial", "unavailable"]
-JudgeUsageAccountingV1 = Literal["reported", "not_reported", "not_applicable", "invalid"]
+ReasoningAccountingStatusV1 = Literal["reported", "not_reported", "not_applicable", "invalid"]
 JudgeCostAvailabilityV1 = Literal[
     "trusted_usage",
     "definitely_rejected_zero",
@@ -1368,13 +1756,14 @@ class JudgeAttemptUsageV1(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
-    cached_input_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
+    ordinary_uncached_input_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
     availability: JudgeUsageAvailabilityV1
-    cache_read_accounting: JudgeUsageAccountingV1
-    cache_write_accounting: JudgeUsageAccountingV1
-    reasoning_accounting: JudgeUsageAccountingV1
+    cache_read_status: CacheReadStatus
+    cache_write_status: CacheWriteStatus
+    reasoning_accounting: ReasoningAccountingStatusV1
 
     @model_validator(mode="after")
     def validate_usage(self) -> Self:
@@ -1384,7 +1773,7 @@ class JudgeAttemptUsageV1(BaseModel):
             value is not None
             for value in (
                 *core,
-                self.cached_input_tokens,
+                self.cache_read_tokens,
                 self.cache_write_tokens,
                 self.reasoning_tokens,
             )
@@ -1397,27 +1786,31 @@ class JudgeAttemptUsageV1(BaseModel):
             or self.total_tokens != self.input_tokens + self.output_tokens  # type: ignore[operator]
         ):
             raise ValueError("complete judge usage is inconsistent")
-        detail_fields = (
-            (self.cache_read_accounting, self.cached_input_tokens),
-            (self.cache_write_accounting, self.cache_write_tokens),
-            (self.reasoning_accounting, self.reasoning_tokens),
-        )
-        if any(
-            (accounting == "reported") != (value is not None)
-            for accounting, value in detail_fields
+        for status, value in (
+            (self.cache_read_status, self.cache_read_tokens),
+            (self.cache_write_status, self.cache_write_tokens),
         ):
-            raise ValueError("judge usage detail/accounting mismatch")
+            if (status in {"reported_zero", "reported_nonzero"}) != (value is not None):
+                raise ValueError("judge cache status/value mismatch")
+            if status == "reported_zero" and value != 0:
+                raise ValueError("judge reported_zero requires zero")
+            if status == "reported_nonzero" and (value is None or value <= 0):
+                raise ValueError("judge reported_nonzero requires positive value")
         if (
-            (self.cached_input_tokens is not None or self.cache_write_tokens is not None)
+            (self.cache_read_tokens is not None or self.cache_write_tokens is not None)
             and self.input_tokens is None
         ):
             raise ValueError("judge cache components require input tokens")
         if (
             self.input_tokens is not None
-            and (self.cached_input_tokens or 0) + (self.cache_write_tokens or 0)
+            and (self.cache_read_tokens or 0) + (self.cache_write_tokens or 0)
             > self.input_tokens
         ):
             raise ValueError("judge cache components exceed input")
+        if self.input_tokens is not None and self.ordinary_uncached_input_tokens != (
+            self.input_tokens - (self.cache_read_tokens or 0) - (self.cache_write_tokens or 0)
+        ):
+            raise ValueError("judge ordinary uncached input mismatch")
         if (
             self.reasoning_tokens is not None
             and (
@@ -1440,6 +1833,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
     hard_score_request_set_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_request_attachment_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_bindings: BenchmarkProtocolBindingsV1
     judge_request_id: str = Field(pattern="^[0-9a-f]{64}$")
     blind_id: str = Field(pattern="^[0-9a-f]{64}$")
     blind_request_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1462,18 +1856,26 @@ class JudgeAttemptEvidenceV1(BaseModel):
     disposition: JudgeAttemptDispositionV1
     requested_service_tier: Literal["default"]
     service_tier_wire_field: Literal["service_tier"]
+    applied_prompt_cache_mode: ProviderMetadataString | None
+    applied_prompt_cache_ttl: ProviderMetadataString | None
+    applied_cache_control_status: AppliedCacheControlStatus
     provider_wire_request_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    service_tier_accounting_status: ServiceTierAccountingStatus
-    returned_service_tier: str | None = Field(
-        default=None,
-        pattern=r"^[\x21-\x7E]{1,64}$",
-    )
+    service_tier_status: ServiceTierStatus
+    returned_service_tier: ProviderMetadataString | None = None
     cost_availability: JudgeCostAvailabilityV1
     provider_request_id: str | None = Field(
         default=None,
         pattern=r"^[\x21-\x7E]{1,512}$",
     )
-    returned_judge_model: str | None
+    requested_judge_model_id: Literal["gpt-5.6-sol"]
+    returned_judge_model_id: ProviderMetadataString | None
+    applied_cache_control_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    cache_read_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    cache_write_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    service_tier_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    usage_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    reasoning_tokens_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    returned_judge_model_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     raw_response_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
     usage: JudgeAttemptUsageV1
     judgment: StructuredJudgmentV1 | None
@@ -1482,31 +1884,31 @@ class JudgeAttemptEvidenceV1(BaseModel):
 
     @model_validator(mode="after")
     def validate_attempt(self) -> Self:
-        expected_tier_accounting_status: ServiceTierAccountingStatus
+        expected_service_tier_status: ServiceTierStatus
         if self.returned_service_tier == "default":
-            expected_tier_accounting_status = "reported_default"
+            expected_service_tier_status = "reported_default"
         elif self.returned_service_tier is not None:
-            expected_tier_accounting_status = "mismatch"
+            expected_service_tier_status = "mismatch"
         elif self.delivery_certainty == "definitely_not_sent":
-            expected_tier_accounting_status = "not_applicable_definitely_not_sent"
+            expected_service_tier_status = "not_applicable_definitely_not_sent"
         elif self.delivery_certainty == "definitely_rejected":
-            expected_tier_accounting_status = "not_applicable_definitely_rejected"
+            expected_service_tier_status = "not_applicable_definitely_rejected"
         else:
-            expected_tier_accounting_status = "missing"
-        if self.service_tier_accounting_status != expected_tier_accounting_status:
-            raise ValueError("judge service-tier accounting mismatch")
-        if self.service_tier_accounting_status.startswith("not_applicable_") and (
+            expected_service_tier_status = "missing"
+        if self.service_tier_status != expected_service_tier_status:
+            raise ValueError("judge service-tier status mismatch")
+        expected_not_applicable = {
+            "definitely_not_sent": "not_applicable_definitely_not_sent",
+            "definitely_rejected": "not_applicable_definitely_rejected",
+        }.get(self.delivery_certainty)
+        if expected_not_applicable is not None and (
             self.usage.availability != "unavailable"
-            or any(
-                status != "not_applicable"
-                for status in (
-                    self.usage.cache_read_accounting,
-                    self.usage.cache_write_accounting,
-                    self.usage.reasoning_accounting,
-                )
-            )
+            or self.usage.cache_read_status != expected_not_applicable
+            or self.usage.cache_write_status != expected_not_applicable
+            or self.applied_cache_control_status != expected_not_applicable
+            or self.usage.reasoning_accounting != "not_applicable"
             or self.provider_request_id is not None
-            or self.returned_judge_model is not None
+            or self.returned_judge_model_id is not None
             or self.raw_response_sha256 is not None
             or self.judgment is not None
         ):
@@ -1538,22 +1940,21 @@ class JudgeAttemptEvidenceV1(BaseModel):
         ):
             raise ValueError("only a structured 429 may schedule or exhaust a retry")
         if self.disposition == "success":
-            expected_cost_availability: JudgeCostAvailabilityV1 = (
-                "trusted_usage"
-                if self.usage.availability == "complete"
-                and self.usage.cache_read_accounting == "reported"
-                and self.usage.cache_write_accounting == "reported"
-                else "retained_worst_case"
-            )
             if (
                 not self.terminal
                 or self.delivery_certainty != "response_received"
-                or self.service_tier_accounting_status != "reported_default"
+                or self.service_tier_status != "reported_default"
                 or self.returned_service_tier != "default"
-                or self.cost_availability != expected_cost_availability
+                or self.cost_availability != "trusted_usage"
+                or self.usage.availability != "complete"
+                or self.applied_prompt_cache_mode != "explicit"
+                or self.applied_prompt_cache_ttl != "30m"
+                or self.applied_cache_control_status != "reported_exact"
+                or self.usage.cache_read_status != "reported_zero"
+                or self.usage.cache_write_status != "reported_zero"
                 or (self.usage.cache_write_tokens or 0) != 0
                 or self.provider_request_id is None
-                or self.returned_judge_model != "gpt-5.6-sol"
+                or self.returned_judge_model_id is None
                 or self.raw_response_sha256 is None
                 or self.judgment is None
                 or self.judgment.judge_request_id != self.judge_request_id
@@ -1567,7 +1968,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 self.terminal
                 or self.attempt_number >= 6
                 or self.delivery_certainty != "definitely_rejected"
-                or self.service_tier_accounting_status
+                or self.service_tier_status
                 != "not_applicable_definitely_rejected"
                 or self.cost_availability != "definitely_rejected_zero"
                 or self.usage.availability != "unavailable"
@@ -1578,7 +1979,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                     for value in (
                         self.returned_service_tier,
                         self.provider_request_id,
-                        self.returned_judge_model,
+                        self.returned_judge_model_id,
                         self.raw_response_sha256,
                         self.judgment,
                     )
@@ -1590,12 +1991,12 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 (
                     self.delivery_certainty == "response_received"
                     and self.returned_service_tier is None
-                    and self.service_tier_accounting_status == "missing"
+                    and self.service_tier_status == "missing"
                 )
                 if self.disposition == "service_tier_unverified"
                 else (
                     self.returned_service_tier not in {None, "default"}
-                    and self.service_tier_accounting_status == "mismatch"
+                    and self.service_tier_status == "mismatch"
                 )
             )
             if (
@@ -1615,22 +2016,32 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 or self.retry_evidence_sha256 is not None
             ):
                 raise ValueError("invalid judge service-tier incident")
-        elif self.disposition == "cache_write_policy_incident":
+        elif self.disposition in {
+            "cache_control_policy_incident",
+            "cache_read_policy_incident",
+            "cache_write_policy_incident",
+        }:
+            cache_incident = (
+                self.applied_cache_control_status != "reported_exact"
+                if self.disposition == "cache_control_policy_incident"
+                else self.usage.cache_read_status != "reported_zero"
+                if self.disposition == "cache_read_policy_incident"
+                else self.usage.cache_write_status != "reported_zero"
+            )
             if (
                 not self.terminal
                 or self.delivery_certainty != "response_received"
-                or self.service_tier_accounting_status != "reported_default"
+                or self.service_tier_status != "reported_default"
                 or self.returned_service_tier != "default"
-                or self.usage.cache_write_accounting != "reported"
-                or self.usage.cache_write_tokens is None
-                or self.usage.cache_write_tokens <= 0
+                or not cache_incident
+                or self.cost_availability != "retained_worst_case"
                 or self.provider_request_id is None
                 or self.raw_response_sha256 is None
                 or self.judgment is not None
                 or self.terminal_evidence_sha256 is None
                 or self.retry_evidence_sha256 is not None
             ):
-                raise ValueError("invalid judge cache-write policy incident")
+                raise ValueError("invalid judge cache policy incident")
         else:
             expected_delivery = {
                 "retry_exhausted": "definitely_rejected",
@@ -1658,7 +2069,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 or (
                     self.disposition == "ambiguous_delivery"
                     and (
-                        self.service_tier_accounting_status != "missing"
+                        self.service_tier_status != "missing"
                         or self.cost_availability != "retained_worst_case"
                     )
                 )
@@ -1667,7 +2078,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                     for value in (
                         self.returned_service_tier,
                         self.provider_request_id,
-                        self.returned_judge_model,
+                        self.returned_judge_model_id,
                         self.raw_response_sha256,
                         self.judgment,
                     )
@@ -1829,9 +2240,9 @@ class JudgeRecordV1(BaseModel):
     judge_request_id: str
     blind_id: str
     raw_judge_attempt_sha256: str
-    returned_judge_model: str
+    returned_judge_model_id: ProviderMetadataString
     requested_service_tier: Literal["default"]
-    service_tier_accounting_status: Literal["reported_default"]
+    service_tier_status: Literal["reported_default"]
     returned_service_tier: Literal["default"]
     judgment: StructuredJudgmentV1
 
@@ -1846,7 +2257,8 @@ class JudgeAttachmentV1(BaseModel):
     hard_score_request_set_sha256: str
     judge_request_attachment_sha256: str
     judge_protocol_sha256: str
-    requested_judge_model: Literal["gpt-5.6-sol"]
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    requested_judge_model_id: Literal["gpt-5.6-sol"]
     requested_service_tier: Literal["default"]
     service_tier_wire_field: Literal["service_tier"]
     records: tuple[JudgeRecordV1, ...]
@@ -1878,7 +2290,7 @@ def verify_judge_attachment(
 
 `JudgeAttemptEvidenceV1` is the campaign-neutral Slice 3→Slice 2 handoff: it imports no campaign,
 controller, batch, spend, or authority model. Runtime Task 7 imports this benchmark type and writes
-it; Runtime's `run_seal_judge_stage` never reads a controller-private attempt object or reconstructs
+it; Runtime's `Runtime.seal_judge` never reads a controller-private attempt object or reconstructs
 evidence from a directory name. `blind_request_sha256` is raw SHA-256 of the exact canonical
 `BlindJudgeRequestV1` bytes already sealed in the request attachment. `judge_attempt_id` is
 `stable_digest("laconian-judge-attempt-id-v1", {"judge_request_id": judge_request_id,
@@ -1892,14 +2304,18 @@ evidence, parsed judgment, and retry lineage without
 depending on a campaign class.
 
 Validate the attempt truth table exactly. A `success` is terminal, has delivery
-`response_received`, nonnull provider request ID, returned model exactly `gpt-5.6-sol`, raw response
+`response_received`, nonnull provider request ID, a nonnull returned model ID recorded separately
+from `requested_judge_model_id="gpt-5.6-sol"`, raw response
 hash, returned service tier exactly `default`, judgment, and terminal-evidence hash, and its judgment
 request/blind IDs equal the sealed request. It repeats the literal requested tier/wire-field and exact
 provider-wire-request hash from `JudgeProviderRequestV1`, and records
-`service_tier_accounting_status="reported_default"`. `retry_scheduled` is nonterminal, has delivery
+`service_tier_status="reported_default"`, `applied_cache_control_status="reported_exact"`, and
+cache read/write statuses both `reported_zero`. Across successful judge responses the returned model
+ID must be one consistent value but need not equal the requested ID. `retry_scheduled` is nonterminal, has delivery
 `definitely_rejected`, `structured_retry_status=429`, nonnull retry evidence,
-`service_tier_accounting_status="not_applicable_definitely_rejected"`,
-unavailable usage whose three detail-accounting fields are `not_applicable`, zero definitely
+`service_tier_status="not_applicable_definitely_rejected"`,
+unavailable usage whose applied/read/write statuses are all
+`not_applicable_definitely_rejected` and reasoning status is `not_applicable`, zero definitely
 rejected cost, null terminal evidence, and no provider request/model/response/judgment fields. A
 structured pre-response 429 with that exact evidence is therefore retryable even though no Responses
 object or returned service tier exists, except that attempt six cannot schedule a seventh call.
@@ -1919,14 +2335,15 @@ delivery is terminal `service_tier_mismatch`. The two tier dispositions respecti
 every provider request ID, response hash, returned tier, and usage field that exists, and require
 `cost_availability="retained_worst_case"`, null accepted judgment/retry evidence, and STOP/terminal
 evidence. A `response_received` incident requires its provider request ID and raw response hash;
-unknown delivery may lack both. A reported nonzero cache write is likewise a terminal
-`cache_write_policy_incident`, preserves the usage/charge evidence, and cannot become success.
+unknown delivery may lack both. A nonzero cache read or write, applied-control
+missing/mismatch/invalid, or read/write missing/invalid is terminal STOP evidence, preserves every
+usage/charge/source digest, and cannot become success. A nonzero write is charged before STOP.
 Attempt one has null retry parent/authorization; attempt n>1 must point
 to the immediately preceding evidence hash for the same request and carry the exact retry
 authorization emitted by that preceding row. Only a preceding `retry_scheduled` row permits it, and
 the prior row's `retry_evidence_sha256` must equal the next row's `retry_authorization_sha256`. There
 is exactly one terminal row per nonempty request history and
-no later row. A completed root accepted by Runtime's `run_seal_judge_stage` requires that terminal
+no later row. A completed root accepted by Runtime's `Runtime.seal_judge` requires that terminal
 row to be `success`;
 a stopped, tier-mismatched/unverified, policy-incident, ambiguous, failed, missing, duplicated, or
 nonterminal-only request cannot be converted to a judge record.
@@ -1941,7 +2358,7 @@ cost and integrity limitations, and nonzero writes remain policy-incident eviden
 folded into cached or uncached input or used in the visible-token objective. Failure attempts may
 retain usage when the provider supplied it.
 
-Import `ServiceTierAccountingStatus` from `laconian_eval.providers`; do not redeclare or normalize a
+Import `ServiceTierStatus` from `laconian_eval.providers`; do not redeclare or normalize a
 benchmark-only alias. Its exact five-state vocabulary is `reported_default`,
 `not_applicable_definitely_not_sent`, `not_applicable_definitely_rejected`, `missing`, and
 `mismatch`. `reported_default` requires returned tier `default`; `mismatch` requires a nonnull
@@ -1978,9 +2395,9 @@ complete root before handing it to Slice 2.
 matching expected context digest, the verified attempt-root wrapper, and one boundary ordinal,
 selects each request's sole terminal success, and constructs `JudgeRecordV1` with
 `raw_judge_attempt_sha256 == judge_attempt_evidence_sha256`. It has no overload accepting arbitrary
-records or raw provider output. Immediately after building, Runtime's `run_seal_judge_stage`
+records or raw provider output. Immediately after building, Runtime's `Runtime.seal_judge`
 canonical-byte compares each record, including the derived accepted-only
-`service_tier_accounting_status="reported_default"`, to its source terminal attempt
+`service_tier_status="reported_default"`, to its source terminal attempt
 before discarding controller-private input authority;
 `verify_judge_attachment` first repeats the context/expectation equality check, then rechecks the
 self-contained request/blind/decision/attempt-hash bindings and self digest used by the later
@@ -2049,7 +2466,8 @@ Expected: collection fails because `laconian_eval.benchmark.aggregation` does no
 
 - [ ] **Step 3: Materialize one row per planned observation**
 
-Implement:
+Import `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and
+`ServiceTierStatus` from the Foundations owner without aliases, then implement:
 
 ~~~python
 TerminalZeroReason = Literal[
@@ -2061,7 +2479,6 @@ TerminalZeroReason = Literal[
 
 ArmName = Literal["baseline", "caveman", "if", "concise"]
 GateName = Literal["hard", "semantic"]
-CacheAccountingV1 = Literal["reported", "not_reported", "not_applicable"]
 CachePolicyStatusV1 = Literal[
     "conformant_zero_write",
     "terminal_no_usage",
@@ -2099,11 +2516,13 @@ class PlannedObservationV1(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
-    cached_input_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
-    uncached_input_tokens: int | None = Field(default=None, ge=0)
-    cache_accounting: CacheAccountingV1
-    cache_write_accounting: CacheAccountingV1
+    ordinary_uncached_input_tokens: int | None = Field(default=None, ge=0)
+    applied_cache_control_status: AppliedCacheControlStatus
+    cache_read_status: CacheReadStatus
+    cache_write_status: CacheWriteStatus
+    service_tier_status: ServiceTierStatus
     cache_policy_status: CachePolicyStatusV1
     total_tokens: int | None = Field(default=None, ge=0)
     visible_output_tokens: int | None = Field(default=None, ge=0)
@@ -2135,36 +2554,43 @@ class PlannedObservationV1(BaseModel):
     @model_validator(mode="after")
     def validate_cache_and_cost_projection(self) -> Self:
         cache_fields = (
-            (self.cache_accounting, self.cached_input_tokens),
-            (self.cache_write_accounting, self.cache_write_tokens),
+            (self.cache_read_status, self.cache_read_tokens),
+            (self.cache_write_status, self.cache_write_tokens),
         )
-        if any((status == "reported") != (value is not None) for status, value in cache_fields):
-            raise ValueError("cache accounting/count mismatch")
-        complete_cache_detail = all(status == "reported" for status, _ in cache_fields)
+        for status, value in cache_fields:
+            if status == "reported_zero" and value != 0:
+                raise ValueError("reported_zero requires zero")
+            if status == "reported_nonzero" and (value is None or value <= 0):
+                raise ValueError("reported_nonzero requires a positive count")
+            if status not in {"reported_zero", "reported_nonzero"} and value is not None:
+                raise ValueError("missing/invalid/not-applicable cache status forbids a count")
+        complete_cache_detail = all(
+            status in {"reported_zero", "reported_nonzero"} for status, _ in cache_fields
+        )
         if complete_cache_detail and self.input_tokens is not None:
-            assert self.cached_input_tokens is not None
+            assert self.cache_read_tokens is not None
             assert self.cache_write_tokens is not None
-            expected_uncached = (
-                self.input_tokens - self.cached_input_tokens - self.cache_write_tokens
+            expected_ordinary_uncached = (
+                self.input_tokens - self.cache_read_tokens - self.cache_write_tokens
             )
-            if expected_uncached < 0 or self.uncached_input_tokens != expected_uncached:
+            if expected_ordinary_uncached < 0 or self.ordinary_uncached_input_tokens != expected_ordinary_uncached:
                 raise ValueError("uncached input projection mismatch")
-        elif self.uncached_input_tokens is not None:
+        elif self.ordinary_uncached_input_tokens is not None:
             raise ValueError("uncached input requires complete cache detail")
         if (self.cost_availability == "unavailable") != (self.reconciled_cost_usd is None):
             raise ValueError("cost availability/value mismatch")
-        if self.response_id is not None and self.cache_write_accounting == "not_reported":
+        if self.response_id is not None and self.cache_write_status in {"missing", "invalid"}:
             if (
                 self.cache_policy_status != "missing_write_detail"
                 or self.cost_availability != "retained_worst_case"
             ):
                 raise ValueError("missing cache-write detail must retain worst-case cost")
-        if self.response_id is not None and self.cache_write_accounting == "not_applicable":
+        if self.response_id is not None and self.cache_write_status.startswith("not_applicable_"):
             raise ValueError("explicit cache policy requires write accounting on success")
-        if self.cache_write_accounting == "reported":
+        if self.cache_write_status in {"reported_zero", "reported_nonzero"}:
             expected_status = (
                 "conformant_zero_write"
-                if self.cache_write_tokens == 0
+                if self.cache_write_status == "reported_zero"
                 else "forbidden_nonzero_write"
             )
             if self.cache_policy_status != expected_status:
@@ -2227,7 +2653,7 @@ visible_output_tokens = output_tokens - reasoning_tokens
 Reject negative values. If either provider value is absent, leave visible tokens unavailable; do
 not substitute billed output, total tokens, tokenizer estimates, or character counts. Preserve
 provider cache reads and cache writes as separate accounting statuses and counts. Derive
-`uncached_input_tokens = input_tokens - cached_input_tokens - cache_write_tokens` only when both
+`ordinary_uncached_input_tokens = input_tokens - cache_read_tokens - cache_write_tokens` only when both
 cache details are reported; never infer a zero cache-write count from omission or fold writes into
 cached/uncached input. Keep input, uncached input, cached reads, cache writes, visible output,
 reasoning output, provider output, total, reconciled cost, cost availability, latency, and characters
@@ -2528,13 +2954,13 @@ Create tests named:
 - `test_generation_and_provider_indexes_bind_two_ordered_numeric_reviewer_accounts`.
 - `test_protocol_attestations_bind_both_registry_digests_and_exact_role_identity`.
 - `test_adapter_rejects_protocol_attestation_not_verified_against_role_fingerprint`.
-- `test_provider_index_projection_and_loader_reject_workflow_inventory_root_substitution`.
-- `test_provider_index_projection_and_loader_bind_authority_checked_statistics_protocol`.
+- `test_provider_index_projection_and_loader_reject_workflow_root_substitution`.
+- `test_provider_index_projection_and_loader_bind_authority_checked_statistical_protocol`.
 - `test_benchmark_neutral_records_do_not_duplicate_runtime_workflow_inventory_type`.
 - `test_generation_and_provider_indexes_bind_exact_three_role_protocol_review_root`.
 - `test_prepare_judge_requires_generation_context_index_before_provider_index_exists`.
 - `test_provider_evidence_index_binds_plaintext_seed_commit_registry_and_four_layer_indexes`.
-- `test_provider_index_copies_complete_context_expectation_and_bound_final_authority_root`.
+- `test_provider_index_copies_expectation_digest_and_bound_final_authority_root_without_serializing_capability`.
 - `test_provider_writer_requires_the_same_live_expectation_wrapper_and_final_root`.
 - `test_verified_provider_loader_requires_external_live_expectation_wrapper_and_never_mints_one`.
 - `test_verified_provider_loader_rejects_expectation_predecessor_or_final_authority_mismatch`.
@@ -2548,7 +2974,7 @@ Create tests named:
 - `test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent_members`.
 - `test_benchmark_provider_projection_is_campaign_package_independent_and_input_read_only`.
 - `test_benchmark_provider_projection_preserves_cache_write_evidence_and_accounting_status`.
-- `test_benchmark_provider_projection_preserves_closed_judge_service_tier_accounting`.
+- `test_benchmark_provider_projection_preserves_closed_judge_service_tier_status`.
 - `test_audit_population_is_a_bijection_over_verified_judged_records`.
 - `test_audit_population_attachment_binds_every_provider_evidence_parent`.
 - `test_audit_population_parents_require_exact_36_unique_index_aligned_chains`.
@@ -2583,34 +3009,78 @@ Import the exact Task 3 context types and helpers from `laconian_eval.benchmark.
 redefine or re-export shadow copies. The block below begins only the downstream
 `provider_evidence.py` and audit schemas. That module may import `context.py`, `hard_score.py`, and
 `judge.py`; none of those earlier modules may import `provider_evidence.py`.
+Import `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`,
+`ProviderMetadataString`, and `ServiceTierStatus` from their Foundations owner; never redeclare or
+alias their vocabularies.
 
 ~~~python
+class RequestedReturnedModelEvidenceV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    purpose: Literal["generation", "judge"]
+    requested_model_id: Literal["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    returned_model_id: ProviderMetadataString
+    returned_model_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+class PublicBenchmarkCacheEvidenceV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    attempt_id: str = Field(pattern="^[0-9a-f]{64}$")
+    applied_prompt_cache_mode: ProviderMetadataString | None
+    applied_prompt_cache_ttl: ProviderMetadataString | None
+    applied_cache_control_status: AppliedCacheControlStatus
+    ordinary_uncached_input_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_read_status: CacheReadStatus
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cache_write_status: CacheWriteStatus
+    visible_output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    requested_service_tier: Literal["default"]
+    returned_service_tier: ProviderMetadataString | None
+    service_tier_status: ServiceTierStatus
+    applied_cache_control_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    cache_read_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    cache_write_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    service_tier_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    usage_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    reasoning_tokens_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+
 class ProviderEvidenceIndexV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["benchmark-provider-evidence-index-v1"]
     campaign_id: str
-    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     campaign_seed: str = Field(pattern="^[0-9a-f]{64}$")
     campaign_seed_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     input_tag_commit: str = Field(pattern="^[0-9a-f]{40}$")
     hard_scorer_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_requested_service_tier: Literal["default"]
     judge_service_tier_wire_field: Literal["service_tier"]
-    statistics_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    workflow_inventory_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1]
+    corpus_case_root: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    estimand_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    bootstrap_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    outcome_classification_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    false_fail_sensitivity_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry: AuditReviewerRegistryV1
     protocol_reviewer_registry: ProtocolReviewerRegistryV1
-    protocol_review_attestations: tuple[
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
-        ProtocolReviewAttestationBindingV1,
+    protocol_attestations: tuple[
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
+        ProtocolAttestationV1,
     ]
-    protocol_review_attestations_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    generation_context_expectation: GenerationContextExpectationV1
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
     generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     bound_generation_complete_authority_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -2630,10 +3100,24 @@ class ProviderEvidenceIndexV1(BaseModel):
         max_length=36,
     )
     ordered_judge_attachment_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
+    requested_returned_model_ids: tuple[RequestedReturnedModelEvidenceV1, ...]
+    generation_cache_evidence: tuple[PublicBenchmarkCacheEvidenceV1, ...]
+    judge_cache_evidence: tuple[PublicBenchmarkCacheEvidenceV1, ...]
     provider_evidence_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_closed_index(self) -> Self:
+        exact_model_projection = (
+            ("generation", "gpt-5.6-sol"),
+            ("generation", "gpt-5.6-terra"),
+            ("generation", "gpt-5.6-luna"),
+            ("judge", "gpt-5.6-sol"),
+        )
+        if tuple(
+            (item.purpose, item.requested_model_id)
+            for item in self.requested_returned_model_ids
+        ) != exact_model_projection:
+            raise ValueError("provider index requested/returned model projection mismatch")
         vectors = (
             self.ordered_generation_capsule_sha256s,
             self.ordered_hard_score_request_set_sha256s,
@@ -2643,32 +3127,32 @@ class ProviderEvidenceIndexV1(BaseModel):
         )
         if any(len(set(vector)) != 36 for vector in vectors):
             raise ValueError("provider index requires 36 unique parents per bound source")
-        reviewer_keys = tuple(reviewer.reviewer_id.encode("utf-8") for reviewer in self.reviewers)
+        reviewers = self.audit_reviewer_registry.reviewers
+        reviewer_keys = tuple(reviewer.reviewer_id.encode("utf-8") for reviewer in reviewers)
         if (
             reviewer_keys != tuple(sorted(reviewer_keys))
             or len(set(reviewer_keys)) != 2
-            or len({reviewer.github_account_id for reviewer in self.reviewers}) != 2
-            or len({reviewer.github_login for reviewer in self.reviewers}) != 2
+            or len({reviewer.reviewer_numeric_account_id for reviewer in reviewers}) != 2
+            or len({reviewer.reviewer_login for reviewer in reviewers}) != 2
         ):
             raise ValueError("provider index requires two ordered distinct reviewers")
-        if self.reviewer_registry_sha256 != compute_reviewer_registry_sha256(self.reviewers):
+        if self.audit_reviewer_registry_sha256 != compute_audit_reviewer_registry_sha256(reviewers):
             raise ValueError("provider index reviewer registry digest mismatch")
         expected_roles: tuple[ProtocolReviewRoleV1, ...] = (
             "statistical_method",
             "blind_judge_audit_protocol",
             "security_evidence",
         )
-        if tuple(item.role for item in self.protocol_review_attestations) != expected_roles:
+        if tuple(item.role for item in self.protocol_attestations) != expected_roles:
             raise ValueError("provider index requires the three ordered protocol review roles")
-        if len({item.attestation_sha256 for item in self.protocol_review_attestations}) != 3:
+        if len({item.attestation_sha256 for item in self.protocol_attestations}) != 3:
             raise ValueError("provider index requires three distinct protocol reviews")
         protocol_reviewers = self.protocol_reviewer_registry.reviewers
         if tuple(reviewer.role for reviewer in protocol_reviewers) != expected_roles:
             raise ValueError("provider index protocol reviewer role order mismatch")
         if (
-            len({reviewer.reviewer_id for reviewer in protocol_reviewers}) != 3
-            or len({reviewer.github_account_id for reviewer in protocol_reviewers}) != 3
-            or len({reviewer.github_login for reviewer in protocol_reviewers}) != 3
+            len({reviewer.reviewer_numeric_account_id for reviewer in protocol_reviewers}) != 3
+            or len({reviewer.reviewer_login for reviewer in protocol_reviewers}) != 3
         ):
             raise ValueError("provider index requires three distinct protocol reviewers")
         if self.protocol_reviewer_registry.protocol_reviewer_registry_sha256 != (
@@ -2676,24 +3160,22 @@ class ProviderEvidenceIndexV1(BaseModel):
         ):
             raise ValueError("provider index protocol reviewer registry digest mismatch")
         for attestation, reviewer in zip(
-            self.protocol_review_attestations,
+            self.protocol_attestations,
             protocol_reviewers,
             strict=True,
         ):
             if (
                 attestation.role != reviewer.role
-                or attestation.github_account_id != reviewer.github_account_id
-                or attestation.github_login != reviewer.github_login
-                or attestation.audit_reviewer_registry_sha256
-                != self.reviewer_registry_sha256
-                or attestation.protocol_reviewer_registry_sha256
+                or attestation.reviewer_numeric_account_id != reviewer.reviewer_numeric_account_id
+                or attestation.reviewer_login != reviewer.reviewer_login
+                or attestation.protocol_registry_sha256
                 != self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
-                or attestation.workflow_inventory_root_sha256
-                != self.workflow_inventory_root_sha256
+                or attestation.workflow_root
+                != self.workflow_root
             ):
                 raise ValueError("provider index protocol attestation identity mismatch")
-        if self.protocol_review_attestations_root_sha256 != (
-            compute_protocol_review_attestations_root_sha256(self.protocol_review_attestations)
+        if self.protocol_attestations_root != (
+            compute_protocol_attestations_root(self.protocol_attestations)
         ):
             raise ValueError("provider index protocol review root mismatch")
         expected_seed_sha256 = stable_digest(
@@ -2706,17 +3188,6 @@ class ProviderEvidenceIndexV1(BaseModel):
         )
         if self.campaign_seed_sha256 != expected_seed_sha256:
             raise ValueError("provider index campaign seed digest mismatch")
-        expectation = self.generation_context_expectation
-        if (
-            self.generation_context_expectation_sha256
-            != expectation.generation_context_expectation_sha256
-            or expectation.campaign_id != self.campaign_id
-            or expectation.campaign_registry_sha256 != self.campaign_registry_sha256
-            or expectation.generation_root_index_sha256 != self.generation_root_index_sha256
-            or expectation.expected_context_index_sha256
-            != self.generation_context_index_sha256
-        ):
-            raise ValueError("provider index generation expectation mismatch")
         expected_index_sha256 = stable_digest(
             "laconian-benchmark-provider-evidence-index-v1",
             self.model_dump(
@@ -2737,8 +3208,9 @@ class BenchmarkProviderEvidenceProjectionV1(BaseModel):
     generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     bound_generation_complete_authority_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    workflow_inventory_root_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    statistics_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     generation_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     hard_score_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     judge_request_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -2755,6 +3227,9 @@ class BenchmarkProviderEvidenceProjectionV1(BaseModel):
         max_length=36,
     )
     ordered_judge_attachment_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
+    requested_returned_model_ids: tuple[RequestedReturnedModelEvidenceV1, ...]
+    generation_cache_evidence: tuple[PublicBenchmarkCacheEvidenceV1, ...]
+    judge_cache_evidence: tuple[PublicBenchmarkCacheEvidenceV1, ...]
     benchmark_provider_evidence_sha256: str
 
     @model_validator(mode="after")
@@ -2780,6 +3255,7 @@ class VerifiedBenchmarkProviderEvidenceV1:
     generation_evidence: tuple[VerifiedScoredCapsuleV2, ...]
     hard_score_request_sets: tuple[HardScoreRequestSetV1, ...]
     judge_request_attachments: tuple[JudgeRequestAttachmentV1, ...]
+    judge_attempt_root: VerifiedJudgeAttemptRootV1
     judge_attachments: tuple[JudgeAttachmentV1, ...]
 
 
@@ -2787,6 +3263,9 @@ class AuditPopulationAttachmentV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["audit-population-attachment-v1"]
     campaign_id: str
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     provider_evidence_index_sha256: str
     benchmark_provider_evidence_sha256: str
     judge_attempt_root_index_sha256: str
@@ -2865,6 +3344,7 @@ class AuditSampleManifestV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["audit-sample-manifest-v1"]
     campaign_id: str
+    protocol_bindings: BenchmarkProtocolBindingsV1
     population_attachment_sha256: str
     target: int = Field(ge=144)
     total_certainty_count: int = Field(ge=0)
@@ -2924,7 +3404,7 @@ def write_provider_evidence_index(
 def load_provider_evidence_index(
     provider_index_path: Path,
 ) -> ProviderEvidenceIndexV1:
-    """Load canonical index and recompute nested expectation, seed, registries, and self digests."""
+    """Load the canonical index and recompute seed, registries, roots, and self digest."""
 
 
 def load_verified_benchmark_provider_evidence(
@@ -2933,10 +3413,11 @@ def load_verified_benchmark_provider_evidence(
     generation_root: Path,
     hard_score_root: Path,
     judge_request_root: Path,
+    judge_attempt_root: Path,
     judge_root: Path,
     generation_expectation: VerifiedGenerationContextExpectationV1,
 ) -> VerifiedBenchmarkProviderEvidenceV1:
-    """Verify the caller's live expectation capability plus four roots and return the projection."""
+    """Verify the live capability, four layer roots, and separate attempt root."""
 
 
 def build_audit_population(
@@ -2981,8 +3462,8 @@ parent mismatch. The index digest uses
 domain `laconian-benchmark-layer-root-index-v1` and excludes only
 `layer_root_index_sha256`; changing a path is therefore an integrity change even when file bytes are
 copied. The Slice 3 `GENERATION_COMPLETE` adapter produces the generation index after verifying all
-36 Slice 1 capsule/sidecar pairs. Runtime's campaign-side `run_hard_score_stage`,
-`run_prepare_judge_stage`, and `run_seal_judge_stage` functions respectively produce the other
+36 Slice 1 capsule/sidecar pairs. Runtime's campaign-side `Runtime.hard_score`,
+`Runtime.prepare_judge`, and `Runtime.seal_judge` functions respectively produce the other
 three indexes in the same transaction as their 36 attachment files by calling the neutral library
 APIs directly. No standalone command synthesizes an index by directory enumeration during a later
 phase. The layer loader owns the exact allowlist inside its
@@ -3006,46 +3487,50 @@ that wrapper from argv. `load_verified_generation_context_index` requires that w
 explicit context file, derives the expected context digest only from the wrapper, recomputes the campaign-seed and context digests, reloads the generation
 `LayerRootIndexV1`, requires kind `generation`, campaign/digest/vector equality, and verifies each of
 the 36 capsule/sidecar parents. The adapter obtains `hard_scorer_source_sha256`,
-`hard_score_protocol_sha256`, `judge_protocol_sha256`, `statistics_protocol_sha256`, and
-`audit_protocol_sha256` only from Runtime's class-bound, tagged, verified C0 code/protocol inventory
-under the same `workflow_inventory_root_sha256`; Evaluation carries those neutral hashes and root
+`hard_score_protocol_sha256`, `judge_protocol_sha256`, `judge_prompt_sha256`,
+`judge_schema_sha256`, `estimand_protocol_sha256`, `statistical_protocol_sha256`,
+`bootstrap_protocol_sha256`, `outcome_classification_protocol_sha256`,
+`false_fail_sensitivity_protocol_sha256`, `audit_sampling_protocol_sha256`,
+`audit_commit_reveal_protocol_sha256`, and `audit_adjudication_protocol_sha256` only from Runtime's
+class-bound, tagged, verified C0 code/protocol inventory
+under the same `workflow_root`; Evaluation carries those neutral hashes and root
 but never duplicates or imports the Runtime inventory type. The context self digest binds every
 field, and context loading rejects any source/protocol/root substitution before any hard-score
 attachment can be built.
 
 The two-person audit reviewer-registry projection is exact and shared with Slice 3: its bytes are
-`canonical_json({"schema_version": "benchmark-reviewer-registry-v1", "reviewers":
-[reviewer.model_dump(mode="json") for reviewer in reviewers]}) + b"\n"`, where reviewers are in
+`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v1", "reviewers":
+[reviewer.model_dump(mode="json") for reviewer in reviewers]})`, where reviewers are in
 bytewise reviewer-ID order. `canonical_reviewer_registry_bytes` first class-bound revalidates both
 strict bindings and rejects duplicate reviewer IDs, account IDs, or exact logins;
-`compute_reviewer_registry_sha256` is raw SHA-256 over those exact bytes. Each binding contains the
-numeric account ID, exact login, required closed mode `git-verify-commit-v1`, and an optional exact
-uppercase OpenPGP or `SHA256:` SSH key fingerprint. The Slice 3 adapter copies those complete
+`compute_audit_reviewer_registry_sha256` is raw SHA-256 over those no-newline bytes. Each binding
+contains the numeric account ID, exact login, literal audit role, closed verification mode, and
+mode-dependent null, uppercase OpenPGP, or `SHA256:` SSH fingerprint. The Slice 3 adapter copies those complete
 bindings from the verified `CampaignRegistryV1`, independently regenerates the canonical bytes,
 requires byte equality with the registry's retained projection, and recomputes rather than copies
-`reviewer_registry_sha256`. A field hash with different binding bytes is invalid.
+`audit_reviewer_registry_sha256`. A field hash with different binding bytes is invalid.
 
 Protocol reviewers are a separate authority population and never enter those bytes or change that
 digest. Slice 3 adds a strict tagged `protocol-reviewers.yaml`; its benchmark projection is
 `ProtocolReviewerRegistryV1` with exactly three distinct non-bot identities in role order
 `statistical_method`, `blind_judge_audit_protocol`, `security_evidence`, each carrying numeric
-account ID, exact login, required signing-verification mode, and a required nonnull exact uppercase
-OpenPGP or `SHA256:` SSH fingerprint. The security-evidence role is not allowed a weaker or omitted
-fingerprint. Its exact
-bytes are `canonical_json({"schema_version": "benchmark-protocol-reviewer-registry-v1",
-"reviewers": [...]}) + b"\n"`, and its independent raw SHA-256 is
+account ID, exact login, required signing-verification mode, and its exact mode-discriminated
+fingerprint. GitHub mode requires null; keyed modes require nonnull; `security_evidence` always
+requires nonnull and therefore cannot use GitHub mode. Its exact bytes are
+`canonical_json_v1({"schema_version": "benchmark-protocol-reviewer-registry-v1",
+"reviewers": [item.model_dump(mode="json") for item in protocol_reviewers]})`, and its independent raw SHA-256 is
 `protocol_reviewer_registry_sha256`. The Runtime input-package loader owns both source YAML files and
 retains both canonical projections; substituting either population never silently changes the
 other's digest.
 
 The adapter copies that complete protocol registry plus exactly three
-`ProtocolReviewAttestationBindingV1` records from the verified campaign registry. Each attestation
-binding repeats its role, numeric account ID/login, the unchanged two-person audit-registry digest,
-the separate protocol-registry digest, and the same verified C0
-`workflow_inventory_root_sha256`; all must match the corresponding role-bound protocol reviewer and
-the generation-context root. Their root is
-`stable_digest("laconian-protocol-review-attestations-root-v1", {"attestations":
-[binding.model_dump(mode="json") for binding in attestations]})`; duplicate record hashes, a missing
+`ProtocolAttestationV1` records from the verified campaign registry. Each attestation repeats its
+role, numeric account ID/login, verification mode/fingerprint, the separate protocol-registry
+digest, complete exact role subject inventory, and the same verified C0 `workflow_root`; all must
+match the corresponding role-bound protocol reviewer and generation-context root. The generation
+context, not the attestation schema, separately repeats the audit-registry digest. Their root is
+`canonical_json_v1_digest("laconian-protocol-review-attestations-root-v1",
+[binding.model_dump(mode="json") for binding in attestations])`; duplicate record hashes, a missing
 or fourth role, role/identity reordering, either registry mismatch, or root mismatch fails. Thus the generation context binds the
 runtime's exact three-role review authorization, not an assumed two-reviewer audit count. This is
 accepted only after the Slice 3 registry loader has cryptographically verified each attestation's
@@ -3056,15 +3541,15 @@ record, including the workflow root. Evaluation deliberately carries only this n
 SHA-256: Runtime remains the sole owner of the 15-member workflow inventory schema, canonical-byte
 loader, and member verification, and no Runtime or campaign inventory type is duplicated or
 imported below `laconian_eval.benchmark`. This is
-the only context from which Runtime's `run_prepare_judge_stage` obtains the
+the only context from which Runtime's `Runtime.prepare_judge` obtains the
 plaintext seed, peeled input commit, judge protocol, literal requested service tier `default`, or
-literal wire field `service_tier` and from which Runtime's `run_seal_judge_stage` obtains the audit
+literal wire field `service_tier` and from which Runtime's `Runtime.seal_judge` obtains the audit
 protocol, reviewer registry, or protocol-review root. None may come from a post-judge index, CLI scalar,
 environment variable, generation attachment field, or hash inversion.
 
 `ProviderEvidenceIndexV1` is the sole benchmark-owned bridge for values that cannot be inferred from
 the four evidence roots. After all four roots are sealed, Runtime's Slice 3-facing
-`run_seal_judge_stage` adapter must
+`Runtime.seal_judge` adapter must
 construct it only from the fully verified `GenerationContextIndexV1` plus the exact canonical index
 bytes at the four supplied roots: the context's plaintext campaign seed and `seed_sha256`, peeled
 input commit, judge, statistics, and audit protocol hashes, verified C0 workflow-inventory root, the
@@ -3072,24 +3557,30 @@ hard-scorer source and hard-score protocol hashes,
 audit-registry digest and both exact audit
 reviewer bindings, the exact requested judge service tier/wire field, the complete separate
 three-role protocol-reviewer registry, the exact three
-ordered protocol-review bindings/root, the complete authority-bound generation-context expectation,
-its digest, bound `GENERATION_COMPLETE` authority-root digest, and context digest, plus all four
+ordered protocol-attestation bindings/root, the authority-bound generation-context expectation
+digest (never the expectation object), bound `GENERATION_COMPLETE` authority-root digest, and
+context digest, plus all four
 layer-root-index digests/four ordered 36-member attachment vectors and the separately verified
 `JudgeAttemptRootIndexV1` digest/ordered 36 boundary hashes. It canonical-byte compares every
 generation-context value and the generation root/vector, recomputes both registry hashes and the
 protocol-review root from the copied bindings,
 before construction. It then calls
 `write_provider_evidence_index`; the writer
-requires the same verified in-memory expectation wrapper, exact-compares its canonical expectation
-and bound final authority root with the index, class-bound revalidates, canonicalizes, fsyncs, and
+requires the same verified in-memory expectation wrapper, compares its expectation digest and bound
+final authority root with the index, class-bound revalidates, canonicalizes, fsyncs, and
 installs the single file without replacement.
 There is no command or library overload accepting a raw seed, raw commit, independently supplied
 vector, or inferred parent value in place of this file.
+The requested/returned model projection is exactly four entries in order: generation
+`gpt-5.6-sol`, generation `gpt-5.6-terra`, generation `gpt-5.6-luna`, judge `gpt-5.6-sol`.
+Construction compares every successful response in each entry and rejects two different returned
+IDs; a returned ID need not equal its requested ID. Each returned value binds the digest of the
+exact `response.model` source independently of cache, tier, usage, and reasoning sources.
 The attempt root is a sealed source-provenance parent, not a fifth published evidence layer:
-Runtime's `run_seal_judge_stage` obtains its digest/vector only from
+Runtime's `Runtime.seal_judge` obtains its digest/vector only from
 `VerifiedJudgeAttemptRootV1`, and every emitted judge record names its exact successful attempt
 hash. Later provider loaders carry that immutable root and
-vector through the projection, thereby binding every closed service-tier accounting state including
+vector through the projection, thereby binding every closed service-tier status including
 retryable `not_applicable_definitely_rejected` 429s, usage-free
 `not_applicable_definitely_not_sent` failures, and terminal `missing|mismatch` incidents;
 accepted judge records independently repeat `reported_default`. Slice 4 must match them to the verified `judge_attempt_batch`
@@ -3109,16 +3600,21 @@ benchmark model from a fake campaign-side module and statically proves that
 requires `provider_index_path` to be the exact retained-descriptor child
 `judge_root/provider-evidence-index.json`, requires the caller's
 `generation_expectation: VerifiedGenerationContextExpectationV1`, calls
-`load_provider_evidence_index`, and opens the exact four roots read-only. The provider index must
-contain the complete canonical expectation, its self digest, and the bound final authority-root
-digest copied by Runtime's live `run_seal_judge_stage`. The loader class-bound revalidates that nested
-expectation, canonical-byte compares it and the bound final root to the externally supplied wrapper,
-explicitly requires the nested predecessor-authority binding to equal
-`generation_expectation.expectation.predecessor_authority_root_sha256`, and requires both the
-provider index and projection to repeat the expectation/context digests exactly. The expected
-context digest, campaign-registry digest, and generation-layer root from that same supplied
-expectation must match the freshly loaded context. The loader must never construct a verified
-wrapper from serialized provider-index fields.
+`load_provider_evidence_index`, and opens the exact four layer roots plus the separate
+`judge_attempt_root` read-only. After verifying the judge-request attachments, it calls
+`load_verified_judge_attempt_root(judge_attempt_root,
+expected_request_root_index_sha256=provider_index.judge_request_root_index_sha256,
+request_attachments=judge_request_attachments)`, retains that
+`VerifiedJudgeAttemptRootV1` in the returned wrapper, and requires its index digest and ordered 36
+boundary hashes to equal the provider index and projection. The provider index must
+contain only `generation_context_expectation_sha256`, the context and layer roots, and the bound
+final authority-root digest copied by Runtime's live `Runtime.seal_judge`; it must not nest or copy
+`GenerationContextExpectationV1`. The loader compares those digests and the bound final root to the
+externally supplied in-memory wrapper, then requires the provider index and projection to repeat the
+expectation/context digests exactly. The expected context, two reviewer registries, attestation,
+workflow, and generation-layer roots from that supplied wrapper/context must match the freshly
+loaded context. The loader never constructs a verified wrapper from serialized provider-index
+fields.
 `load_provider_evidence_index` is structural only: it parses/recomputes the serialized index and
 never calls a verified context/root loader or constructs any `Verified*` wrapper. It does not
 confer workflow authority. A live caller first reconstructs the Runtime authority wrapper and
@@ -3136,18 +3632,19 @@ byte-compares each root's canonical index digest to the corresponding
 sets, 36 unique judge-request attachments, and 36 unique judge attachments in canonical
 `(generation_model UTF-8 bytes, scenario_uid raw SHA-256 bytes)` order. At every index require one
 campaign/model/scenario chain, then call `load_verified_scored_capsule`,
-`verify_hard_score_request_set(..., context=generation_context,
+`verify_hard_score_request_set(hard_score_set, context=generation_context,
 expectation=generation_expectation, boundary_ordinal=ordinal)`,
-`verify_judge_request_attachment(..., context=generation_context,
-expectation=generation_expectation, boundary_ordinal=ordinal)`, and
-`verify_judge_attachment(..., context=generation_context,
-expectation=generation_expectation)`. The provider index's generation vector must equal the ordered
+`verify_judge_request_attachment(judge_request_attachment, context=generation_context,
+expectation=generation_expectation, boundary_ordinal=ordinal, request_set=hard_score_set)`, and
+`verify_judge_attachment(judge_attachment, context=generation_context,
+expectation=generation_expectation, request_set=hard_score_set,
+request_attachment=judge_request_attachment)`. The provider index's generation vector must equal the ordered
 `GenerationLayerRootMemberV1.generation_capsule_sha256` values; each other vector must equal the
 corresponding ordered `AttachmentLayerRootMemberV1.attachment_sha256` values. Every campaign ID,
 judge protocol hash, requested service-tier/wire-field pair, judge-request campaign-seed hash, four
 parent link, and ordered attachment digest must exactly equal the explicit provider index. Every
 request wrapper and judge attachment must carry `default`/`service_tier`, and every accepted
-`JudgeRecordV1` must carry returned tier `default` plus tier accounting `reported_default`; a
+`JudgeRecordV1` must carry returned tier `default` plus tier status `reported_default`; a
 missing/nondefault tier is retained only as terminal attempt/STOP and worst-case spend evidence and
 can never enter the judge root. Definite pre-response rejection remains exact
 `not_applicable_definitely_rejected` attempt evidence and may follow the verified structured-429
@@ -3156,15 +3653,16 @@ loader never recovers plaintext seed or input commit from an attachment, hashes,
 directory, or caller inference. It builds a projection that copies the provider-index digest, four
 layer-root-index digests/vectors, the generation-context expectation/context digests, the bound
 `GENERATION_COMPLETE` authority root, the judge-attempt root digest/vector, and the exact
-`workflow_inventory_root_sha256` plus `statistics_protocol_sha256`. The projection self-digest excludes only
+`workflow_root` plus `statistical_protocol_sha256`. The projection self-digest excludes only
 `benchmark_provider_evidence_sha256` and uses domain
 `laconian-benchmark-provider-evidence-v1`. This module must not import
 `laconian_eval.campaign`, GitHub locators, workflow inventory records, deployments, or spend-ledger
 types. Projection construction and every provider/audit loader reject a projection, generation
 context, provider index, or any one of the three attestations whose workflow root differs, even
 when all substituted objects are internally self-hashed.
-The projection must preserve each scored attempt's independent cached-read count/accounting,
-cache-write count/accounting, and reconciled cost basis. Missing or forbidden write evidence is
+The projection must preserve each scored attempt's independent cache-read count/status/source,
+cache-write count/status/source, applied-control mode/TTL/status/source, service-tier status/source,
+usage/reasoning sources, requested/returned model mapping, and reconciled cost basis. Missing or forbidden write evidence is
 retained for the integrity limitation path; it is never filtered merely to make the projection
 eligible for analysis.
 
@@ -3284,14 +3782,17 @@ root/audit/blind-packet.json
 ~~~
 
 `audit_sample_root_sha256` is
-`stable_digest("laconian-audit-sample-root-v1", {"population_attachment_sha256": ...,
-"records_sha256": ..., "sample_manifest_sha256": ..., "blind_packet_sha256": ...})` in that fixed
-field order. The writer class-bound revalidates every argument, calls `verify_audit_sample`, stages
+`stable_digest("laconian-audit-sample-root-v1",
+{"population_attachment_sha256": population.attachment.population_attachment_sha256,
+"records_sha256": population.attachment.records_sha256,
+"sample_manifest_sha256": manifest.sample_manifest_sha256,
+"blind_packet_sha256": packet.packet_sha256})` in that fixed field order. The writer class-bound
+revalidates every argument, calls `verify_audit_sample`, stages
 only beneath an operation-owned empty sibling of an absent `output_root`, emits the four canonical
 members with final newlines, fsyncs every file and directory, installs without replacement, and
 returns only the result of a fresh `load_verified_audit_sample_root` call. The loader descriptor-
 opens that exact allowlist, rejects extras/missing files/symlinks/aliases/noncanonical bytes, calls
-`load_verified_audit_population(root / "audit", provider_evidence=...)`, replays
+`load_verified_audit_population(root / "audit", provider_evidence=provider_evidence)`, replays
 `verify_audit_sample`, recomputes the root digest, and returns the frozen wrapper. Neither function
 accepts a raw seed, index digest, or caller-asserted verified Boolean. On failure the writer removes
 only its validated staging directory and leaves the destination absent.
@@ -3376,14 +3877,14 @@ Implement these closed schemas:
 class ReviewerIdentityV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     reviewer_id: str
-    github_account_id: int = Field(gt=0)
-    github_login: str
-    commit_signing_verification_mode: CommitSigningVerificationModeV1
+    reviewer_numeric_account_id: int = Field(gt=0)
+    reviewer_login: str
+    verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
         default=None,
         pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
     )
-    reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class HumanAuditLabelV1(BaseModel):
@@ -3449,7 +3950,9 @@ class PullRequestProofV1(BaseModel):
     merge_commit_sha: str = Field(pattern="^[0-9a-f]{40}$")
     merge_actor_account_id: int = Field(gt=0)
     merge_actor: str
+    verification_mode: SignatureVerificationModeV1
     head_signing_fingerprint: str | None
+    signature_evidence: SignatureEvidenceV1
     changed_paths: tuple[str, ...]
     exact_pr_api_record_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     pull_request_proof_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -3485,9 +3988,8 @@ def verify_reviewer_chain(
     other_commitment_merge_sha: str,
     packet: BlindAuditPacketV1,
     expected_reviewer: ReviewerAccountBindingV1,
-    expected_reviewer_registry_sha256: str,
-    is_ancestor: Callable[[str, str], bool],
-    verify_commit_signature: Callable[[str, CommitSigningVerificationModeV1], str],
+    expected_audit_reviewer_registry_sha256: str,
+    git_object_database: Path,
 ) -> None:
     """Verify identity, signature, paths, immutable bytes, commitment, order, and coverage."""
 ~~~
@@ -3496,13 +3998,15 @@ The only changed commitment path is
 `benchmarks/audits/<campaign-id>/commitments/<reviewer-id>.json`; the reveal PR adds only immutable
 files under `benchmarks/audits/<campaign-id>/reveals/<reviewer-id>/`. Identity registry digest,
 numeric GitHub account ID, login, commit-signing verification mode, and optional fingerprint must
-exactly equal the corresponding binding in `provider_evidence.index.reviewers`; every
+exactly equal the corresponding binding in
+`provider_evidence.index.audit_reviewer_registry.reviewers`; every
 commitment/reveal PR actor must match both that numeric account ID and login. Before accepting either
-PR proof, `verify_reviewer_chain` resolves its exact head commit from the supplied local Git object
-database and runs the closed `git-verify-commit-v1` verifier over the signed commit object. The
-verifier must return the cryptographically verified primary-key fingerprint; when the registry pins
-a fingerprint, it must match exactly. No caller-supplied `signature_verified` Boolean, GitHub badge
-text, or merely copied `head_signing_fingerprint` authorizes the chain. A login
+PR proof, `verify_reviewer_chain` uses its fixed Git object reader over `git_object_database` to
+parse commit/tree/parent objects and compute ancestry itself. It verifies exact mode-discriminated
+`SignatureEvidenceV1`: captured GitHub verification with `verified=true`, `reason=valid`, numeric
+ID/login and null fingerprint, or keyed SSH/OpenPGP verification with the exact registry
+fingerprint. No injected ancestry/signature callback, caller-supplied Boolean, GitHub badge text, or
+copied fingerprint authorizes the chain. A login
 rename is not silently followed: even with the same stable account ID it requires a newly reviewed
 registry and input tag. The PR proof also binds the numeric repository ID and merge-actor account
 ID/login from the captured API record. Recompute `exact_pr_api_record_sha256` from the canonical
@@ -3514,7 +4018,7 @@ reveal head and reveal merge commit. The original commitment blob hash must rema
 preceding chain field, so both identity/registry fields and both complete PR proofs are immutable.
 Before any identity comparison, both `verify_reviewer_chain` and `verify_audit_chain` class-bound
 revalidate the expected two reviewers, regenerate `canonical_reviewer_registry_bytes`, recompute raw
-`reviewer_registry_sha256`, and require that value to equal the provider index, every identity,
+`audit_reviewer_registry_sha256`, and require that value to equal the provider index, every identity,
 signoff, and audit attachment. A self-consistent substituted hash without the exact two binding
 bytes therefore fails closed.
 
@@ -3559,9 +4063,9 @@ class ExactGitHubReviewSignoffV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["audit-adjudication-github-review-v1"]
     reviewer_id: str
-    github_account_id: int = Field(gt=0)
-    github_login: str
-    reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    reviewer_numeric_account_id: int = Field(gt=0)
+    reviewer_login: str
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     adjudication_core_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     repository_id: int = Field(gt=0)
     pr_number: int = Field(gt=0)
@@ -3590,10 +4094,9 @@ def verify_audit_chain(
     adjudication: AuditAdjudicationV1,
     packet: BlindAuditPacketV1,
     expected_reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1],
-    expected_reviewer_registry_sha256: str,
-    is_ancestor: Callable[[str, str], bool],
-    verify_commit_signature: Callable[[str, CommitSigningVerificationModeV1], str],
-    load_exact_github_review: Callable[[int, int, int], ExactGitHubReviewRecordV1],
+    expected_audit_reviewer_registry_sha256: str,
+    git_object_database: Path,
+    github_review_records: tuple[ExactGitHubReviewRecordV1, ExactGitHubReviewRecordV1],
 ) -> None:
     """Verify reveal chains, core, exact review proofs, final envelope, and append-only PRs."""
 ~~~
@@ -3609,8 +4112,11 @@ head. The only permitted body bytes are
 `b"laconian-audit-adjudication-core-v1\0" + core_hash_ascii + b"\n"`; bind their SHA-256, exact
 repository/PR/review IDs, numeric actor account ID, actor login, reviewed commit, state, submission
 time, reviewer-registry digest, and API-record digest in `ExactGitHubReviewSignoffV1`.
-`load_exact_github_review` must retrieve the canonical captured record by exact numeric repository,
-PR, and review ID, validate `ExactGitHubReviewRecordV1`, recompute
+The private helper has the exact boundary
+`load_exact_github_review(captured_records: tuple[ExactGitHubReviewRecordV1,
+ExactGitHubReviewRecordV1], *, repository_id: int, pr_number: int,
+review_id: int) -> ExactGitHubReviewRecordV1`. It retrieves the canonical captured record by those
+exact numeric IDs, validates `ExactGitHubReviewRecordV1`, recomputes
 `exact_api_record_sha256` with domain `laconian-audit-github-review-record-v1` over every preceding
 field, and canonical-byte compare every duplicated signoff field. It also recomputes
 `fixed_body_sha256` from the record's exact UTF-8 body. No network call, mutable login-only lookup, or
@@ -4465,7 +4971,7 @@ Create tests named:
 - `test_verified_audit_loader_rejects_provider_projection_or_any_of_36_judge_parent_substitutions`
 - `test_verified_analysis_loader_rejects_report_bootstrap_or_attachment_substitution`
 - `test_verified_analysis_loader_rejects_analysis_only_root_without_bound_audit_tree`
-- `test_analysis_builder_and_loader_require_provider_bound_statistics_protocol`.
+- `test_analysis_builder_and_loader_require_provider_bound_statistical_protocol`.
 - `test_bootstrap_artifact_builder_derives_seed_from_provider_evidence_and_round_trips_c_order_bytes`.
 - `test_bootstrap_artifact_builder_rejects_shape_range_metadata_or_digest_substitution`.
 - `test_bootstrap_artifact_builder_has_no_raw_seed_or_protocol_override`.
@@ -4533,8 +5039,8 @@ class DescriptiveUsageV1(BaseModel):
     reasoning_tokens: DistributionSummaryV1
     billed_output_tokens: DistributionSummaryV1
     total_tokens: DistributionSummaryV1
-    uncached_input_tokens: DistributionSummaryV1
-    cached_input_tokens: DistributionSummaryV1
+    ordinary_uncached_input_tokens: DistributionSummaryV1
+    cache_read_tokens: DistributionSummaryV1
     cache_write_tokens: DistributionSummaryV1
     trusted_usage_cost_usd: DistributionSummaryV1
     definitely_rejected_zero_cost_usd: DistributionSummaryV1
@@ -4569,6 +5075,20 @@ class CampaignAnalysisV1(BaseModel):
     schema_version: Literal["campaign-analysis-v1"]
     campaign_id: str
     input_tag_commit: str
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
+    hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     benchmark_provider_evidence_sha256: str
     ordered_generation_capsule_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
     ordered_hard_score_request_set_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
@@ -4584,7 +5104,7 @@ class CampaignAnalysisV1(BaseModel):
     ordered_judge_attachment_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
     audit_evidence_sha256: str
     bootstrap_vectors_sha256: str
-    statistics_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     models: tuple[ModelAnalysisV1, ModelAnalysisV1, ModelAnalysisV1]
     limitations: tuple[str, ...]
     campaign_analysis_sha256: str
@@ -4594,6 +5114,21 @@ class AuditEvidenceAttachmentV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["verified-audit-evidence-v1"]
     campaign_id: str
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
+    hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     provider_evidence_index_sha256: str
     benchmark_provider_evidence_sha256: str
     judge_attempt_root_index_sha256: str
@@ -4608,7 +5143,6 @@ class AuditEvidenceAttachmentV1(BaseModel):
         max_length=36,
     )
     ordered_judge_attachment_sha256s: tuple[str, ...] = Field(min_length=36, max_length=36)
-    reviewer_registry_sha256: str
     population_attachment_sha256: str
     sample_manifest_sha256: str
     blind_packet_sha256: str
@@ -4627,6 +5161,23 @@ class AnalysisEvidenceAttachmentV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["verified-analysis-evidence-v1"]
     campaign_id: str
+    audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
+    workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_bindings: BenchmarkProtocolBindingsV1
+    generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    generation_context_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_evidence_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    benchmark_provider_evidence_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    hard_score_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_prompt_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    judge_schema_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sampling_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_commit_reveal_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_adjudication_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_evidence_sha256: str
     campaign_analysis_sha256: str
     bootstrap_artifact_sha256: str
@@ -4642,8 +5193,8 @@ three distinct model analyses sorted by UTF-8 model ID. The campaign analysis di
 its own digest and uses domain
 `laconian-campaign-analysis-v1`.
 `analyze_campaign` class-bound revalidates `provider_evidence` and sets
-`statistics_protocol_sha256` only from
-`provider_evidence.index.statistics_protocol_sha256`; it has no protocol argument or environment
+`statistical_protocol_sha256` only from
+`provider_evidence.index.statistical_protocol_sha256`; it has no protocol argument or environment
 fallback. The projection's repeated statistics protocol must match that index before analysis.
 For every model, require
 `sensitivity.model_family_proof_sha256 ==
@@ -4657,6 +5208,13 @@ correspond one-to-one; no sequence may be reordered independently. The attachmen
 directly binds all four ordered 36-parent layer vectors, the attempt root/vector, and transitively
 binds both identities and PR proofs, the stored core, signoffs, offline-review records, numeric
 accounts, reviewer registry, and final envelope.
+
+For `CampaignAnalysisV1`, `AuditEvidenceAttachmentV1`, and `AnalysisEvidenceAttachmentV1`, build
+`protocol_bindings` only with Task 3's `protocol_bindings_from_context`; class-bound validation
+requires its two registry digests, attestation root, every tagged protocol/source root, and
+`workflow_root` to byte-equal the verified provider index. Each final object also repeats and
+verifies the expectation digest, context digest, and provider-projection root. Tests mutate any one
+binding and recompute every local self digest; the fixed parent comparison must still reject it.
 
 - [ ] **Step 4: Expose the Slice 4 verified loader boundary**
 
@@ -4695,8 +5253,7 @@ def write_audit_evidence_root(
     github_review_records: tuple[ExactGitHubReviewRecordV1, ExactGitHubReviewRecordV1],
     adjudication: AuditAdjudicationV1,
     metrics: tuple[ModelAuditMetricsV1, ModelAuditMetricsV1, ModelAuditMetricsV1],
-    is_ancestor: Callable[[str, str], bool],
-    verify_commit_signature: Callable[[str, CommitSigningVerificationModeV1], str],
+    git_object_database: Path,
 ) -> AuditEvidenceAttachmentV1:
     """Verify every audit parent, atomically write the exact audit root, and fresh-reload it."""
 
@@ -4739,8 +5296,9 @@ root/audit/metrics.json
 `write_audit_evidence_root` requires an absent destination and first fresh-loads
 `source_sample_root` with `load_verified_audit_sample_root`, requiring canonical equality with the
 supplied `sample`. It reruns `verify_audit_chain` using the two supplied exact review records as a
-closed numeric-ID lookup, the supplied local-Git ancestry callback, and the cryptographic commit-
-signature verifier; then it recomputes all three `ModelAuditMetricsV1` values from the immutable
+closed numeric-ID lookup and the explicit `git_object_database` path consumed by the fixed Git
+object reader and exact mode-discriminated signature verifier; no ancestry/signature callback is
+accepted. It then recomputes all three `ModelAuditMetricsV1` values from the immutable
 sample/chains/adjudication and canonical-byte compares them with `metrics`. It constructs
 `AuditEvidenceAttachmentV1` itself—there is no caller-supplied attachment or digest override.
 
@@ -4774,8 +5332,8 @@ sampling from its exact records. The analysis loader
 passes the same required projection through to the audit loader and additionally requires
 `CampaignAnalysisV1.benchmark_provider_evidence_sha256 ==
 provider_evidence.projection.benchmark_provider_evidence_sha256`, its input-tag commit to match
-`provider_evidence.index.input_tag_commit`, its `statistics_protocol_sha256` to equal both
-`provider_evidence.index.statistics_protocol_sha256` and the repeated projection field, and all four campaign-analysis layer-parent vectors plus
+`provider_evidence.index.input_tag_commit`, its `statistical_protocol_sha256` to equal both
+`provider_evidence.index.statistical_protocol_sha256` and the repeated projection field, and all four campaign-analysis layer-parent vectors plus
 the judge-attempt root/vector to match.
 Reject symlinks, non-regular
 files, duplicate reviewer paths, unexpected members, extra JSON fields, noncanonical JSON or JSONL,
@@ -4792,9 +5350,9 @@ embedded commitment/reveal fields and labels against the dedicated files, exactl
 decimal positive review IDs; aliases, leading-zero IDs, duplicate IDs/inodes, extra records, and
 signoff/filename disagreement are errors. Reload each review record first, recompute its domain
 digest solely from the stable stored API fields, require its account ID/login and
-the signoff's `reviewer_registry_sha256` to match the exact
-`provider_evidence.index.reviewers` binding and the digest freshly computed from
-`canonical_reviewer_registry_bytes(provider_evidence.index.reviewers)`, then require the signoff's
+the signoff's `audit_reviewer_registry_sha256` to match the exact
+`provider_evidence.index.audit_reviewer_registry.reviewers` binding and the digest freshly computed from
+`canonical_reviewer_registry_bytes(provider_evidence.index.audit_reviewer_registry.reviewers)`, then require the signoff's
 `exact_api_record_sha256` and duplicated fields to match. Finally recompute the core digest, both
 signoff-proof digests, and the final adjudication envelope, and require the core, ordered signoffs,
 ordered reviewer-chain proofs/API-record digests, final envelope, provider roots, and reviewer registry to equal
@@ -4853,7 +5411,7 @@ dtype, shape, and canonical C-order bytes. `bootstrap_artifact_sha256` is raw SH
 indices_uint8.tobytes(order="C")`. The builder has no raw seed, protocol, matrix, or digest argument.
 Loaders reconstruct the exact matrix from the JSON integers, reject non-10,000-by-12 shape or values
 outside `[0, 11]`, recompute both metadata and artifact digests, and never regenerate a missing
-matrix. The independently authority-bound `statistics_protocol_sha256` selects/authorizes this
+matrix. The independently authority-bound `statistical_protocol_sha256` selects/authorizes this
 frozen analysis method through `CampaignAnalysisV1`; the preregistered judge-protocol seed input
 remains the Task 2 public randomization contract.
 
@@ -4903,7 +5461,7 @@ Canonical JSON files end with one newline. `bootstrap.json` contains vector meta
 `load_verified_audit_evidence(source_audit_root, provider_evidence=provider_evidence)` and requires
 canonical equality with `audit`. It also calls `build_bootstrap_artifact` on the 12 scenario UIDs
 from the verified provider parents, canonical-byte compares the result with `bootstrap`, and
-requires `analysis.statistics_protocol_sha256` to equal the provider index and projection statistics
+requires `analysis.statistical_protocol_sha256` to equal the provider index and projection statistics
 protocol before accepting either object. It stages an absent `output_root`, copies that loader's exact
 allowlisted `source_audit_root/audit` tree byte for byte to `output_root/audit`, and writes the five
 analysis members under `output_root/analysis`. No reference or symlink back to the source is
@@ -4960,15 +5518,17 @@ attempt-boundary files plus their `JudgeAttemptRootIndexV1`, and 36 judge attach
 least one explicitly empty attempt boundary and sealed zero-call attachment. It constructs the
 provider-ready request/attempt fixtures with literal `service_tier=default`, one definite
 pre-response 429 retry row with
-`service_tier_accounting_status=not_applicable_definitely_rejected`, one rejected
+`service_tier_status=not_applicable_definitely_rejected`, one rejected
 nondefault-tier fixture that retains worst-case exposure and cannot seal, and the accepted
 attachments only from `load_verified_judge_attempt_root`, then builds a fixed synthetic
 `GenerationContextExpectationV1`, authority-wrapper fixture, `GenerationContextIndexV1`, and
 `ProviderEvidenceIndexV1` with independently fixed plaintext
 seed/input commit, the exact two reviewer bindings including signing mode/fingerprint and freshly
 computed canonical audit-registry hash, a separate exact three-role protocol-reviewer registry/hash
-with three required signing fingerprints,
-the three ordered protocol-review bindings/root, their shared frozen workflow-inventory root, the
+with a null fingerprint for an allowed `github_verified_commit` reviewer, a keyed SSH/OpenPGP
+reviewer, and the required nonnull keyed `security_evidence` fingerprint,
+the three exact `ProtocolAttestationV1` records with complete role subject inventories and
+`protocol_attestations_root`, their shared frozen `workflow_root`, the
 authority-tagged statistics protocol, expectation/context digests, and four exact
 layer-root-index digests, followed by the provider-evidence projection and its
 `VerifiedBenchmarkProviderEvidenceV1`, the complete audit-population attachment
@@ -4997,11 +5557,15 @@ Create tests named:
 - `test_synthetic_audit_reload_recomputes_core_review_records_signoffs_and_final_envelope`
 - `test_synthetic_sample_and_audit_atomic_writers_fresh_reload_exact_roots`
 - `test_synthetic_exact_false_fail_bound_keeps_zero_error_noncensus_uncertainty_positive`
+- `test_synthetic_attestations_accept_null_github_and_keyed_fingerprints_by_mode`
+- `test_synthetic_security_attestation_requires_nonnull_keyed_fingerprint`
+- `test_synthetic_attestations_reject_cross_role_reorder_extra_missing_or_duplicate_subject`
+- `test_synthetic_attestations_reject_extra_top_level_field_or_signature_mode_mismatch`
 
 The first test writes and reloads the explicit generation-context and provider-index files, asserts
 the expectation's registry/predecessor/generation/context/final-authority bindings, their
 seed/self digests, separate canonical audit/protocol reviewer-registry bytes/hashes,
-three-role protocol-review root, and identical authority-tagged statistics protocol across context,
+three-role protocol-attestation root with exact subject roots, and identical authority-tagged statistical protocol across context,
 provider index, projection, and analysis,
 all capsule/sidecar pairs, the fixed 36-boundary attempt-root digest, and four layer-root-index digests,
 then asserts four
@@ -5050,7 +5614,7 @@ quality-gate, audit, and outcome sections:
 - H and S use 120 planned keys per model/arm, with terminal zero reasons separated from inference-
   invalid missing or ambiguous evidence;
 - every provider-ready judge request binds the exact API pair `"service_tier": "default"`; returned
-  tier and its closed `service_tier_accounting_status` are captured per attempt using the exact
+  tier and its closed `service_tier_status` are captured per attempt using the exact
   Foundation vocabulary `reported_default`, `not_applicable_definitely_not_sent`,
   `not_applicable_definitely_rejected`, `missing`, and `mismatch`; a definite pre-response rejection
   with no response/usage records
@@ -5062,7 +5626,7 @@ quality-gate, audit, and outcome sections:
   quantiles, at least 9,990 valid replicates, the fixed-campaign conditional scenario target, and
   nominal approximate coverage with only 12 clusters;
 - five-point hard and sensitivity-adjusted semantic non-inferiority;
-- analysis and bootstrap use only the authority-tagged `statistics_protocol_sha256` carried
+- analysis and bootstrap use only the authority-tagged `statistical_protocol_sha256` carried
   identically by generation context, provider index/projection, and campaign analysis;
 - exact 144-record sampling, certainty critical records, Hamilton allocation, two-person
   commit-reveal, design weights, descriptive nonauthorizing weighted Wilson intervals,
@@ -5070,13 +5634,20 @@ quality-gate, audit, and outcome sections:
   model family across IF and concise, equal Bonferroni allocation, model-specific audit gates, and
   bounded exact false-fail certificates;
 - the strict outcome precedence and the phrase “among jointly successful matched responses.”
-- Runtime's live `laconian_eval.campaign.benchmark_stage`
-  hard-score/prepare-judge/seal-judge functions receive an in-memory verified generation-context
-  expectation and call the neutral Task 3/4/8 library boundaries directly;
-  Publication's `laconian_eval.campaign.evaluation_stage` receives the same authority capability
-  for provider loading, audit sampling/sealing, and combined analysis verification via the neutral
-  Task 8/9/10/13 APIs; all seven standalone benchmark commands are offline and non-evidentiary,
-  with the one canonical expectation file and no raw expected-digest flag.
+- Runtime's three live methods are exactly
+  `laconian_eval.campaign.runtime.Runtime.hard_score`,
+  `laconian_eval.campaign.runtime.Runtime.prepare_judge`, and
+  `laconian_eval.campaign.runtime.Runtime.seal_judge`, reachable only from the private
+  `_reconstruct_verified_runtime` constructor; they receive an in-memory verified
+  generation-context expectation and call the neutral Task 3/4/8 library boundaries directly;
+- Publication's four later live methods are exactly
+  `Publication.campaign.evaluation_stage.sample_audit`,
+  `Publication.campaign.evaluation_stage.seal_audit`,
+  `Publication.campaign.evaluation_stage.analyze`, and
+  `Publication.campaign.evaluation_stage.verify`, reachable only from the private
+  `_reconstruct_verified_publication` constructor; `analyze` and `verify` remain separate;
+- all seven standalone benchmark commands are offline and non-evidentiary, use the one canonical
+  expectation file, and accept no raw expected-digest flag.
 
 Update `evals/README.md` so the published-results section names sealed generation evidence, all 36
 hard-score request sets, all 36 judge-request attachments, all 36 judge attachments,
@@ -5091,13 +5662,13 @@ boundaries, the remaining audit root, bootstrap output,
 `reviewer-chains/`, `adjudication-core.json`, both `signoffs/` and `github-review-records/`, machine analysis,
 human-readable report, and immutable checksums as derived layers. Keep fixtures
 explicitly non-evidentiary. State that all seven `laconian-benchmark` commands are offline
-validation only; live counterparts of operations 1–3 use Runtime `campaign.benchmark_stage`, while
-live counterparts of operations 4–7 use Publication `campaign.evaluation_stage`, and neither live
-module imports the CLI. State
+validation only. Name the exact Runtime and Publication method tuple above, the two private
+constructors, and the separate `analyze` and `verify` operations; neither live module imports the
+CLI. State
 that all three protocol attestations, the generation context,
 provider index, and benchmark projection carry the same verified
-`workflow_inventory_root_sha256`, while Runtime alone owns the 15-workflow inventory schema.
-Also state that `statistics_protocol_sha256` is authority-bound through context/provider evidence
+`workflow_root`, while Runtime alone owns the 15-workflow inventory schema.
+Also state that `statistical_protocol_sha256` is authority-bound through context/provider evidence
 and is the only accepted analysis protocol value.
 
 - [ ] **Step 6: Add an exact public-contract regression test**
@@ -5114,13 +5685,13 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "sum(H) / 120",
         "sum(S) / 120",
         '"service_tier": "default"',
-        "service_tier_accounting_status",
+        "service_tier_status",
         "not_applicable_definitely_not_sent",
         "not_applicable_definitely_rejected",
         "missing",
         "mismatch",
         "reported_default",
-        "statistics_protocol_sha256",
+        "statistical_protocol_sha256",
         "10,000",
         "Generator(PCG64)",
         "type-7",
@@ -5138,8 +5709,15 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "among jointly successful matched responses",
         "offline and non-evidentiary",
         "in-memory verified generation-context expectation",
-        "campaign.benchmark_stage",
-        "campaign.evaluation_stage",
+        "Runtime.hard_score",
+        "Runtime.prepare_judge",
+        "Runtime.seal_judge",
+        "Publication.campaign.evaluation_stage.sample_audit",
+        "Publication.campaign.evaluation_stage.seal_audit",
+        "Publication.campaign.evaluation_stage.analyze",
+        "Publication.campaign.evaluation_stage.verify",
+        "_reconstruct_verified_runtime",
+        "_reconstruct_verified_publication",
     )
     for phrase in required:
         assert phrase in methodology
@@ -5149,8 +5727,8 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "LayerRootIndexV1",
         "GenerationContextExpectationV1",
         "GenerationContextIndexV1",
-        "workflow_inventory_root_sha256",
-        "statistics_protocol_sha256",
+        "workflow_root",
+        "statistical_protocol_sha256",
         "JudgeAttemptEvidenceV1",
         "JudgeAttemptRootIndexV1",
         "ProviderEvidenceIndexV1",
@@ -5194,9 +5772,10 @@ git commit -m "test: prove synthetic benchmark analysis"
 
 **Files:**
 
-- Create: `src/laconian_eval/benchmark/cli.py`
+- Modify: `src/laconian_eval/cli.py`
+- Create: `src/laconian_eval/replay/__init__.py`
+- Create: `src/laconian_eval/replay/benchmark.py`
 - Create: `tests/benchmark/test_cli.py`
-- Modify: `src/laconian_eval/benchmark/__init__.py`
 - Modify: `pyproject.toml`
 - Modify: `tests/test_public_contract.py`
 
@@ -5206,22 +5785,24 @@ strictly offline, non-evidentiary structural-validation surface. None constructs
 `VerifiedGenerationContextExpectationV1`, calls an evidence writer, returns a verified authority
 capability, or creates an artifact that a live loader may accept. Runtime Task 7 owns the first
 three campaign-side live functions and depends on neutral Tasks 3/4/8, never Task 15. Publication
-Task 7 owns `laconian_eval.campaign.evaluation_stage` after Evaluation Task 13 and calls the neutral
+Task 7 later creates the `Publication` capability and
+`Publication.campaign.evaluation_stage` contract after Evaluation Task 13, and calls the neutral
 Task 8/9/10/13 provider, sample-root, audit-root, and analysis-root APIs directly. Neither live
-module imports or invokes this Task 15 CLI.
+module imports or invokes this Task 15 CLI. Task 15 records the exact live tuple only as a literal
+cross-slice contract; it neither imports nor fabricates those future modules as proof.
 
 - [ ] **Step 1: Write the exact parser and console-safety tests**
 
 Create tests named:
 
 - `test_help_lists_exact_seven_commands_and_no_abbreviated_command_is_accepted`
-- `test_help_routes_first_three_to_benchmark_stage_and_last_four_to_evaluation_stage`
+- `test_help_lists_offline_replay_only_and_never_names_live_callables`
 - `test_every_option_rejects_abbreviation_and_every_command_rejects_unknown_options`
 - `test_all_seven_commands_require_one_canonical_generation_expectation_path`
 - `test_no_command_accepts_seed_commit_source_protocol_workflow_or_any_digest_flag`
 - `test_all_seven_commands_emit_only_closed_offline_non_evidentiary_kinds`
 - `test_first_six_commands_write_only_one_offline_validation_report_and_no_evidence_tree`
-- `test_verify_analysis_is_read_only_and_emits_only_an_offline_verification_envelope`
+- `test_verify_is_read_only_and_emits_only_an_offline_verification_envelope`
 - `test_offline_validation_reports_are_rejected_by_every_live_complete_root_loader`
 - `test_cli_source_has_no_live_hook_campaign_import_verified_loader_builder_or_evidence_writer_call`
 - `test_cli_cannot_construct_or_import_verified_generation_context_expectation`
@@ -5230,12 +5811,8 @@ Create tests named:
 - `test_offline_seal_judge_checks_36_attempt_boundaries_retry_lineage_and_tier_statuses`
 - `test_offline_sample_audit_checks_provider_projection_and_all_parent_vectors_without_sampling`
 - `test_offline_seal_audit_checks_population_core_signoffs_and_exact_review_records`
-- `test_offline_analyze_checks_audit_and_statistics_protocol_inputs_without_running_analysis`
-- `test_offline_verify_analysis_checks_all_four_layer_vectors_and_attempt_root`
-- `test_runtime_and_publication_stage_contracts_use_direct_library_composition_and_never_cli`
-- `test_publication_stage_contract_enforces_states_private_sample_rematerialization_and_audit_authority_digest`
-- `test_publication_seal_rematerializes_byte_identical_private_sample_without_sample_path_input`
-- `test_publication_seal_rejects_cross_sample_reviews_and_survives_prior_sample_artifact_expiry`
+- `test_offline_analyze_checks_audit_and_statistical_protocol_inputs_without_running_analysis`
+- `test_offline_verify_checks_all_four_layer_vectors_and_attempt_root`
 - `test_commands_are_input_read_only_output_no_replace_and_failure_atomic`
 - `test_every_error_is_canonical_content_free_json_without_path_model_prompt_or_label_text`
 
@@ -5246,54 +5823,27 @@ from the implementation, `EXPECTED_BENCHMARK_SLICE2_EXPORTS` containing every pu
 in that exact order and `EXPECTED_BENCHMARK_COMMANDS` equal to:
 
 ~~~python
-("hard-score", "prepare-judge", "seal-judge", "sample-audit", "seal-audit", "analyze", "verify-analysis")
+("hard-score", "prepare-judge", "seal-judge", "sample-audit", "seal-audit", "analyze", "verify")
 ~~~
 
-All tests invoke only `main`. The first six commands may write exactly one quarantined
-`offline-non-evidentiary.json`; `verify-analysis` is read-only. Tests assert no command writes a
+All tests invoke only `laconian_eval.cli.main` with the benchmark program selector. The first six commands may write exactly one quarantined
+`offline-non-evidentiary.json`; `verify` is read-only. Tests assert no command writes a
 layer index, provider index, audit root, analysis root, or any live schema, and that every live
 complete-root loader rejects the offline report. Task 3/4/8/13 tests remain the owners of real
 artifact production and verification, with Tasks 9–13 owning the review, metric, certificate,
 audit, and analysis layers; Task 15 does not duplicate those live paths.
 
-The live-boundary contract test uses literal adapter fixtures until the later-slice modules exist.
-The Runtime Task 7 fixture requires `run_hard_score_stage`, `run_prepare_judge_stage`, and
-`run_seal_judge_stage` to call neutral Tasks 3/4/8 directly. The Publication Task 7 fixture requires
-exactly `laconian_eval.campaign.evaluation_stage.load_authority_verified_provider_evidence`,
-`run_sample_audit_stage`, `run_seal_audit_stage`, and `run_analyze_and_verify_stage`. The first
-reconstructs the authority wrapper and passes it explicitly to
-`load_verified_benchmark_provider_evidence`; the next three call the Task 8 sample-root writer,
-Task 13 audit-root writer, and Task 13 analysis writer/loader directly. Both fixtures reject every
-reference to `laconian_eval.benchmark.cli`, `main`, or a `laconian-benchmark` command. Runtime and
-Publication replace the fixtures with real-module static tests; Publication's workflow scan invokes
-only those exact live boundaries and rejects every raw CLI command as live or release-authorizing.
-Those later-slice tests are cross-plan release gates, not Task 15 prerequisites.
-
-The Publication fixture also freezes state and artifact capabilities: the authority loader accepts
-only freshly reconstructed authority containing the accepted `PROVIDER_EVIDENCE_VERIFIED`
-transition and requires the provider index/projection digests to equal its
-`EVIDENCE_INVENTORY_SEALED` artifact. Sample creation and audit sealing require current state
-`PROVIDER_EVIDENCE_VERIFIED`; analyze requires current state `AUDIT_COMPLETE`. Sample creation may
-publish an expiring reviewer artifact, but audit sealing accepts no sample path. It deterministically
-rebuilds population/selection into an operation-owned private temporary
-sample root from the same verified provider evidence, requires its root/manifest/packet hashes to
-equal every commitment/reveal/adjudication binding, passes that private path to the neutral
-`write_audit_evidence_root`, and cleans only that owned temporary root. Tests require repeated
-selection to be byte-identical, sealing to succeed after the earlier reviewer artifact expires, and
-cross-sample reviews to fail. Only then may it apply `AUDIT_SEALED` to reach `AUDIT_COMPLETE`.
-`run_analyze_and_verify_stage` accepts only `AUDIT_COMPLETE`, requires `source_audit_root` to equal
-the exact audit root bound by the accepted `AUDIT_SEALED` authority artifact (not an operator path
-or digest), passes the authority-bound statistics protocol through provider evidence, writes and
-fresh-loads the combined result, and only then applies `ANALYSIS_SEALED` to reach
-`ANALYSIS_COMPLETE`.
+Task 15 proves only the offline modules and call graph that exist in this slice. Runtime Task 7 and
+Publication Tasks 7–8 own and test the real live modules after they exist; no fake future-module
+fixture or import is accepted as proof here.
 
 The cumulative test imports `laconian_eval.benchmark`, asserts its `__all__` is exactly
 `EXPECTED_BENCHMARK_SLICE2_EXPORTS` with no missing, extra, or reordered name, imports
-`laconian_eval.benchmark.cli.build_parser` explicitly, extracts the root parser's subparser choices,
+`laconian_eval.replay.benchmark.build_parser` explicitly, extracts the root parser's subparser choices,
 and asserts their tuple is exactly `EXPECTED_BENCHMARK_COMMANDS`. It additionally asserts `cli` and
 `main` are absent from the package `__all__`, importing the package did not import the CLI module,
 and a static scan finds no `laconian_eval.campaign` import anywhere below
-`src/laconian_eval/benchmark`.
+`src/laconian_eval/replay`.
 
 Parametrize every command with a symlink input, non-regular input, wrong campaign parent, malformed
 canonical JSON, injected candidate canary, injected model-ID canary, and injected exception canary;
@@ -5312,15 +5862,15 @@ uv run pytest -q tests/benchmark/test_cli.py::test_help_lists_exact_seven_comman
 uv run pytest -q tests/test_public_contract.py::test_public_benchmark_slice2_exports_and_exact_seven_commands_are_owned
 ~~~
 
-Expected: the first command fails because `laconian_eval.benchmark.cli` does not exist and the
-second fails because the exact Slice 2 `__all__` and seven-command contract are not implemented.
+Expected: the first command fails because the existing dispatcher has no benchmark replay parser,
+and the second fails because the exact Slice 2 export/command contract is not implemented.
 
 - [ ] **Step 3: Add the exact console entry point and non-abbreviating parser**
 
 Add to `pyproject.toml` under `[project.scripts]`:
 
 ~~~toml
-laconian-benchmark = "laconian_eval.benchmark.cli:main"
+laconian-benchmark = "laconian_eval.cli:main"
 ~~~
 
 Implement:
@@ -5333,12 +5883,18 @@ EXIT_OUTPUT_EXISTS = 4
 EXIT_SOFTWARE = 70
 
 
+# src/laconian_eval/replay/benchmark.py
 def build_parser() -> argparse.ArgumentParser:
     """Return the fixed parser with allow_abbrev=False on root and every subparser."""
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Dispatch offline structural validation; no command confers live authority."""
+# src/laconian_eval/cli.py
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    program: str | None = None,
+) -> int:
+    """Preserve legacy dispatch; select replay.build_parser only for laconian-benchmark."""
 
 
 class OfflineValidationReportV1(BaseModel):
@@ -5351,7 +5907,7 @@ class OfflineValidationReportV1(BaseModel):
         "sample-audit",
         "seal-audit",
         "analyze",
-        "verify-analysis",
+        "verify",
     ]
     artifact_kind: Literal[
         "offline-hard-score-validation",
@@ -5360,7 +5916,7 @@ class OfflineValidationReportV1(BaseModel):
         "offline-sample-audit-validation",
         "offline-seal-audit-validation",
         "offline-analyze-validation",
-        "offline-verify-analysis-validation",
+        "offline-verify-validation",
     ]
     generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     ordered_input_sha256s: tuple[str, ...]
@@ -5368,15 +5924,19 @@ class OfflineValidationReportV1(BaseModel):
     offline_report_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 ~~~
 
+`main` computes `effective_program = program or Path(sys.argv[0]).name`. Exact
+`laconian-benchmark` selects the replay parser; exact `laconian` delegates to the existing
+`entrypoint`/legacy parser. Any other program name is a content-free usage error. Tests call `main`
+with the explicit program selector and also invoke both installed console scripts, so direct imports
+and existing monkeypatches keep a compatible `entrypoint` owner.
+
 Use `ArgumentParser(allow_abbrev=False, add_help=True)` for the root and pass
 `allow_abbrev=False` to every subparser. Override parser error handling so usage failures never
 echo supplied values or paths. Subcommand prefixes and option prefixes are errors; there are no
 aliases, environment-derived paths, positional paths, free-form model IDs, shell strings, command
 strings, or arbitrary reason text.
-The exact help description for commands 1–3 begins
-`OFFLINE NON-EVIDENTIARY VALIDATION ONLY; live execution requires campaign.benchmark_stage`; for
-commands 4–7 it begins
-`OFFLINE NON-EVIDENTIARY VALIDATION ONLY; live execution requires campaign.evaluation_stage`.
+The exact help description for every command begins
+`OFFLINE NON-EVIDENTIARY VALIDATION ONLY; replay validates structure but cannot authorize live execution`.
 Thus no standalone surface can be mistaken for a release-authorizing path.
 
 `main` canonical-parses the one expectation file, recomputes its self digest, and uses the contained
@@ -5400,7 +5960,7 @@ Require the command-to-kind mapping above exactly, validate every input digest a
 hexadecimal characters, bytewise-sort `ordered_input_sha256s`, and compute
 `offline_report_sha256` with domain
 `laconian-benchmark-offline-validation-report-v1` over every preceding field. The type is private to
-`benchmark.cli` and must be absent from package `__all__`.
+`replay.benchmark` and must be absent from package `__all__`.
 
 - [ ] **Step 4: Freeze the seven commands and their complete option sets**
 
@@ -5413,7 +5973,7 @@ laconian-benchmark seal-judge --generation-expectation GENERATION_EXPECTATION --
 laconian-benchmark sample-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --output-root OUTPUT
 laconian-benchmark seal-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --review-root REVIEWS --repository-root REPOSITORY --output-root OUTPUT
 laconian-benchmark analyze --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --audit-root AUDIT --output-root OUTPUT
-laconian-benchmark verify-analysis --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --result-root RESULT
+laconian-benchmark verify --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --result-root RESULT
 ~~~
 
 Root meanings are exact: `GENERATION_EXPECTATION`, required by all seven commands, names only the
@@ -5448,39 +6008,28 @@ roots must already come from Runtime's direct library stages, Publication's dire
 or an explicitly non-evidentiary fixture. Help text states this distinction beside every
 `--output-root` option.
 
-The exact live composition is never the raw command text above and never a Task 15 hook. Runtime
-Task 7's fixed `laconian_eval.campaign.benchmark_stage` module reconstructs campaign authority,
-creates the verified expectation wrapper in memory, and calls the neutral Task 3/4/8 APIs directly.
-For hard score it calls `load_verified_generation_context_index`,
-`build_hard_score_request_set`, `verify_hard_score_request_set`, and the layer writer; for judge
-preparation it calls the context loader plus `build_judge_request_attachment` and
-`verify_judge_request_attachment`; for judge sealing it additionally calls
-`load_verified_judge_attempt_root`, `build_judge_attachment`, `verify_judge_attachment`, and
-`write_provider_evidence_index`, followed by a fresh provider-evidence reload with that wrapper.
+The exact live tuple is frozen here, without importing a future live module:
 
-Publication Task 7's fixed `laconian_eval.campaign.evaluation_stage` owns the later live boundary.
-`load_authority_verified_provider_evidence` reconstructs the same authority wrapper and supplies it
-to `load_verified_benchmark_provider_evidence` only after locating and validating the retained
-`PROVIDER_EVIDENCE_VERIFIED` transition. Its fixed stage callers allow current state only
-`PROVIDER_EVIDENCE_VERIFIED` for sample/seal-audit or `AUDIT_COMPLETE` for analyze; no caller state,
-expected hash, or mode argument exists.
-`run_sample_audit_stage` calls `build_audit_population`, `select_audit_sample`, and
-`write_audit_sample_root` to publish the expiring reviewer artifact. `run_seal_audit_stage` and its
-campaign tool accept no sample-root path, digest, or retained-sample capability. They rerun those
-same three neutral operations from the same authority-verified provider evidence into an
-operation-owned private temporary root, require the rebuilt root/manifest/packet hashes to equal
-every commitment, reveal, label, and adjudication binding, and pass only that private path as the
-neutral writer's `source_sample_root`. They then call `write_audit_evidence_root` and clean only the
-owned temporary root. Static tests reject a `source_sample_root` parameter or `--sample-root`
-option on either live interface; integration tests require byte-identical repeated selection,
-successful sealing after the earlier reviewer artifact expires, and rejection of reviews from a
-different sample. Finally,
-`run_analyze_and_verify_stage` requires `AUDIT_COMPLETE` plus the authority-bound accepted audit
-root and calls `build_bootstrap_artifact`/`analyze_campaign`/
-`write_analysis_evidence_root` followed by `load_verified_analysis_evidence`. Runtime and
-Publication static tests require those exact seven
-live operations, forbid either module from importing `laconian_eval.benchmark.cli`, and reject any
-`laconian-benchmark` command in a live workflow.
+~~~python
+EXPECTED_LIVE_METHODS = (
+    "laconian_eval.campaign.runtime.Runtime.hard_score",
+    "laconian_eval.campaign.runtime.Runtime.prepare_judge",
+    "laconian_eval.campaign.runtime.Runtime.seal_judge",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.sample_audit",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.seal_audit",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.analyze",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.verify",
+)
+EXPECTED_PRIVATE_CONSTRUCTORS = (
+    "_reconstruct_verified_runtime",
+    "_reconstruct_verified_publication",
+)
+~~~
+
+Runtime Task 7 and Publication Tasks 7–8 own the live import/call-graph proof after those modules
+exist. This task only asserts that `src/laconian_eval/replay/**` imports no campaign module and
+that the seven offline parser choices equal the literal command tuple; a fake module, monkeypatch,
+or fixture standing in for either live owner is forbidden.
 
 Offline command validation responsibilities are fixed:
 
@@ -5492,7 +6041,7 @@ Offline command validation responsibilities are fixed:
    judge protocol, and the literal `"service_tier":"default"` wire field stored in context. It
    creates no blinded request attachment or provider payload and calls no Task 4 builder.
 3. `seal-judge` additionally checks the exact 36-boundary attempt root, including empty boundaries,
-   request/blind/retry/usage/terminal parentage, and the closed Foundation tier-accounting statuses.
+   request/blind/retry/usage/terminal parentage, and the closed Foundation cache/tier statuses.
    It creates no judge attachment, layer root, or provider index and calls no verified attempt or
    provider loader.
 4. `sample-audit` checks that the explicit provider index projects the same expectation/context,
@@ -5508,7 +6057,7 @@ Offline command validation responsibilities are fixed:
    the provider-bound statistics protocol, exact finite-population proof inputs, and
    cache-write accounting needed by a later live analysis. It invokes no aggregation, bootstrap,
    sensitivity, or analysis builder and writes no result root.
-7. `verify-analysis` performs the same offline structural checks over `RESULT`, including both
+7. `verify` performs the same offline structural checks over `RESULT`, including both
    `audit/` and `analysis/`, all four ordered 36-parent layer vectors, and the judge-attempt
    root/vector. It is read-only and emits only the offline stdout envelope.
 
@@ -5528,8 +6077,8 @@ characters before serialization. Every command uses count one and exactly one cl
 `offline-hard-score-validation`, `offline-prepare-judge-validation`,
 `offline-seal-judge-validation`, `offline-sample-audit-validation`,
 `offline-seal-audit-validation`, `offline-analyze-validation`, or
-`offline-verify-analysis-validation`. The CLI has no evidentiary artifact kind. For commands 1–6,
-`artifact_sha256` is the freshly reloaded offline report digest; for `verify-analysis` it is the
+`offline-verify-validation`. The CLI has no evidentiary artifact kind. For commands 1–6,
+`artifact_sha256` is the freshly reloaded offline report digest; for `verify` it is the
 digest of the canonical offline verification envelope. The envelope contains no path, campaign ID, model ID, scenario ID,
 prompt, candidate response, judge output, human label, rationale, token count, or exception text.
 
@@ -5563,12 +6112,14 @@ BootstrapVectorsV1, BootstrapIntervalV1, make_cluster_vectors,
 BootstrapArtifactV1, build_bootstrap_artifact,
 LayerKindV1, GenerationLayerRootMemberV1, AttachmentLayerRootMemberV1,
 LayerRootMemberV1, LayerRootIndexV1, write_layer_root_index, load_layer_root_index,
-CommitSigningVerificationModeV1, ProtocolReviewRoleV1,
-ReviewerAccountBindingV1, ProtocolReviewerBindingV1, ProtocolReviewerRegistryV1,
-ProtocolReviewAttestationBindingV1,
-canonical_reviewer_registry_bytes, compute_reviewer_registry_sha256,
+SignatureVerificationModeV1, SignatureEvidenceV1, ProtocolReviewRoleV1,
+ReviewerAccountBindingV1, AuditReviewerRegistryV1,
+ProtocolReviewerBindingV1, ProtocolReviewerRegistryV1,
+ProtocolSubjectV1, ProtocolAttestationV1,
+canonical_reviewer_registry_bytes, compute_audit_reviewer_registry_sha256,
 canonical_protocol_reviewer_registry_bytes, compute_protocol_reviewer_registry_sha256,
-compute_protocol_review_attestations_root_sha256,
+compute_protocol_attestations_root,
+BenchmarkProtocolBindingsV1, protocol_bindings_from_context,
 GenerationContextExpectationV1, VerifiedGenerationContextExpectationV1,
 GenerationContextIndexV1, VerifiedGenerationContextIndexV1,
 write_generation_context_index, load_verified_generation_context_index,
@@ -5595,7 +6146,7 @@ write_analysis_evidence_root
 Set `laconian_eval.benchmark.__all__` to exactly the ordered names above. This is the sole normative
 export tuple copied literally into `EXPECTED_BENCHMARK_SLICE2_EXPORTS`; the test must not calculate
 the expectation from `dir()`, annotations, source parsing, or the current `__all__`.
-`ServiceTierAccountingStatus` remains owned and exported by `laconian_eval.providers`; benchmark
+`ServiceTierStatus` remains owned and exported by `laconian_eval.providers`; benchmark
 models import that exact type but neither re-export it here nor introduce a benchmark alias.
 
 The cumulative public-contract test also pins module ownership. Concrete layer-root,
@@ -5612,9 +6163,11 @@ re-export is allowed only from those owners, and neither module may define a sha
 `laconian_eval.benchmark.reporting`. The cumulative public-contract test pins those modules and
 rejects shadow definitions.
 
-`main` remains importable only as `laconian_eval.benchmark.cli.main`, preventing CLI initialization
-from changing library import behavior. There is no live CLI hook, and the cumulative test asserts
-that no wrapper-taking callable exists in `benchmark.cli` or the package export tuple.
+The console target remains `laconian_eval.cli:main`; `laconian_eval.replay.benchmark` owns only the
+offline parser/handlers. The existing `laconian` command continues to route through its legacy
+parser/`entrypoint`, while the `laconian-benchmark` program selector routes to the seven replay
+handlers. There is no live hook, and the cumulative test asserts no capability-bearing callable is
+exported by replay modules or the benchmark package.
 
 - [ ] **Step 7: Run GREEN, console gates, and commit**
 
@@ -5624,15 +6177,15 @@ Run:
 uv run pytest -q tests/benchmark/test_cli.py tests/test_public_contract.py::test_public_benchmark_slice2_exports_and_exact_seven_commands_are_owned
 uv run pytest -p no:cacheprovider tests/test_public_contract.py tests/test_package.py -q
 uv run laconian-benchmark --help
-uv run ruff check src/laconian_eval/benchmark/cli.py tests/benchmark/test_cli.py tests/test_public_contract.py
-uv run mypy src/laconian_eval/benchmark/cli.py
+uv run ruff check src/laconian_eval/cli.py src/laconian_eval/replay tests/benchmark/test_cli.py tests/test_public_contract.py
+uv run mypy src/laconian_eval/cli.py src/laconian_eval/replay
 ~~~
 
 Expected: tests and static checks pass; help exits zero and lists exactly the seven commands in the
 order above.
 
 ~~~bash
-git add pyproject.toml src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/cli.py tests/benchmark/test_cli.py tests/test_public_contract.py
+git add pyproject.toml src/laconian_eval/cli.py src/laconian_eval/replay/__init__.py src/laconian_eval/replay/benchmark.py tests/benchmark/test_cli.py tests/test_public_contract.py
 git commit -m "feat: expose benchmark evaluation commands"
 ~~~
 
@@ -5669,7 +6222,7 @@ Expected: all six commands pass in order.
 
 - [ ] Run Task 15's Slice 2-local literal adapter fixture contracts. Prove they pin the public
       generation/provider/attempt-root types, the external expectation parameter, all four exact
-      campaign-side live boundary names, and the no-`benchmark.cli` dependency without importing
+      campaign-side live boundary names, and the no-`replay.benchmark` dependency without importing
       not-yet-implemented Runtime or Publication modules.
 
 The real Runtime Task 7 and Publication Task 7 adapter/workflow tests are explicitly deferred

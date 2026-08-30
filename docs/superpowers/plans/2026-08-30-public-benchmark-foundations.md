@@ -12,14 +12,10 @@
 
 ## Execution contract
 
-- Protocol-amendment prerequisite: before Task 1, merge and reapprove roadmap Milestone 0 so the
-  approved design explicitly binds literal default-tier requests, no-write cache policy, returned-tier
-  evidence, cache-write accounting/rates, conservative exposure, and fail-closed delivery handling.
-  Until then this document is a proposed implementation contract, not evidence that those additions
-  were approved by the earlier design-signoff commit.
-- Approved design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md), especially Sections 6.1–6.4, 7.1–7.3, 14.1, and 16.
+- Normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `46147ef62b5bb009421d58928e879d92247d84b5`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16.
+- Approval metadata: full SHA `0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, recording the maintainer's explicit approval on 2026-08-30. Milestone 0 is complete; implementation is pending and unblocked. A later normative amendment re-blocks every affected task until separately approved.
 - Seal grammar: [Laconian v0.1 Generation Capsule Design](../specs/2026-08-24-v0.1-generation-capsule-design.md), especially Sections 14–17.
-- Provider cache/usage contract: [OpenAI Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) and [GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model), frozen into the reviewed manifest rather than fetched during execution.
+- Provider cache/usage contract: [OpenAI Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create), [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching), and [GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model), frozen into the reviewed manifest rather than fetched during execution.
 - Worktree: `/Users/if/PycharmProjects/agent-axiom/laconian/.worktrees/public-benchmark-design`.
 - Starting point: the committed plan bundle named in the roadmap handoff. Record its exact SHA before Task 1 and keep implementation on an isolated `codex/` branch or worktree.
 - This slice ends when exact capsule bytes can be prepared as a scenario projection, executed with the approved wire fields, finalized, verified without a lock on transport storage, packed as uncompressed USTAR, restored into a new directory, and fully reverified.
@@ -35,15 +31,15 @@
 evals/cases/response-smoke.yaml                 remove 14 ungrounded sentence caps; freeze warning severities
 evals/README.md                                 document neutrality and severity contract
 src/laconian_eval/models.py                     strict semantic-warning severity schema
-src/laconian_eval/capsule/schema.py             reasoning/verbosity/service-tier and planning-input scalar types
-src/laconian_eval/capsule/manifest_models.py    authored/resolved native-v2 generation and price-tier settings
+src/laconian_eval/capsule/schema.py             reasoning/verbosity/cache-TTL/service-tier and planning-input scalar types
+src/laconian_eval/capsule/manifest_models.py    authored/resolved native-v2 generation and five-dimension price settings
 src/laconian_eval/capsule/capture.py            v1-compatible resolution of the new settings
-src/laconian_eval/providers/base.py             exact request/cache/tier fields, input bounds, usage, and returned-tier evidence
-src/laconian_eval/providers/openai.py           exact Responses kwargs and cache/reasoning/service-tier parsing
-src/laconian_eval/providers/replay.py           offline cache-write/reasoning-token/service-tier fixture support
-src/laconian_eval/providers/__init__.py         public service-tier evidence exports
-src/laconian_eval/capsule/attempts.py            canonical cache/reasoning/tier accounting and visible-token derivation
-src/laconian_eval/capsule/execution.py           reconstructed default-tier requests and canonical attempt evidence
+src/laconian_eval/providers/base.py             legacy request plus versioned benchmark request/policy, bounds, and exact evidence
+src/laconian_eval/providers/openai.py           SDK-3.3.1 exact Responses wire and canonical response-path parsing
+src/laconian_eval/providers/replay.py           offline applied/read/write/reasoning/tier/model fixture support
+src/laconian_eval/providers/__init__.py         public benchmark evidence/status exports
+src/laconian_eval/capsule/attempts.py            canonical applied/read/write/reasoning/tier/model evidence and visible tokens
+src/laconian_eval/capsule/execution.py           reconstructed benchmark requests and canonical attempt evidence
 src/laconian_eval/capsule/planning.py            stable parent plan identities and validation
 src/laconian_eval/capsule/sharding.py            ShardPlanV1 construction, hashing, projection, and coverage
 src/laconian_eval/capsule/record_models.py       captured parent/shard planning-input records
@@ -84,9 +80,11 @@ tests/capsule/test_scorable.py                     exact terminal scoring and ro
 tests/capsule/test_sidecars.py                     sealed sidecar binding and verified loading
 tests/capsule/test_limits.py                       bounded archive/member/restore limit tests
 tests/capsule/test_checkpoint.py                   USTAR round-trip and hostile restore tests
+pyproject.toml                                    pin OpenAI SDK exactly 3.3.1
+uv.lock                                           lock SDK 3.3.1; preflight later binds the C0 member hash
 ```
 
-`runner.py`, legacy `RawAttempt`, legacy `TokenUsageModel`, and legacy reports continue to expose their current non-capsule contract. The new cache-write, reasoning, and requested/returned service-tier evidence is preserved by capsule `RawAttemptV2`; the legacy adapter may continue projecting only its four historical usage counts until the reporting slice replaces that path. It must not be used by the public campaign spend ledger because it cannot represent cache-write charges or prove the billed service tier.
+`runner.py`, legacy `GenerationRequest`, legacy `RawAttempt`, legacy `TokenUsageModel`, and legacy reports continue to expose their current byte-compatible non-capsule contract. Public benchmark fields live only in `PublicBenchmarkRequestV1` and `PublicBenchmarkRequestPolicyV1`; no new default is added to the shared legacy request. The exact applied-cache/read/write/reasoning/tier/model evidence is preserved by capsule `RawAttemptV2`; no legacy projection may enter the public campaign ledger.
 
 ## Stable interfaces and canonical preimages
 
@@ -117,8 +115,9 @@ ReasoningEffort = Literal["low", "medium", "high"]
 TextVerbosity = Literal["low", "medium", "high"]
 ReasoningMode = Literal["omitted"]
 PromptCacheMode = Literal["explicit"]
+PromptCacheTTL = Literal["30m"]
 ServiceTier = Literal["default"]
-LongContextPricingPolicy = Literal["forbidden"]
+PublicBenchmarkModelId = Literal["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
 
 # src/laconian_eval/capsule/manifest_models.py
@@ -129,8 +128,8 @@ class SourceGenerationSettingsV2(CapsuleModel):
     text_verbosity: TextVerbosity | None = None
     reasoning_mode: ReasoningMode = "omitted"
     prompt_cache_mode: PromptCacheMode = "explicit"
+    prompt_cache_ttl: PromptCacheTTL = "30m"
     service_tier: ServiceTier = "default"
-    long_context_pricing: LongContextPricingPolicy = "forbidden"
 
 
 class ResolvedGenerationSettingsV2(CapsuleModel):
@@ -140,8 +139,25 @@ class ResolvedGenerationSettingsV2(CapsuleModel):
     text_verbosity: TextVerbosity | None
     reasoning_mode: ReasoningMode
     prompt_cache_mode: PromptCacheMode
+    prompt_cache_ttl: PromptCacheTTL
     service_tier: ServiceTier
-    long_context_pricing: LongContextPricingPolicy
+
+
+PriceDimensionV1 = Literal[
+    "ordinary_uncached_input_per_million",
+    "cache_read_input_per_million",
+    "cache_write_input_per_million",
+    "visible_output_per_million",
+    "reasoning_output_per_million",
+]
+
+
+class PriceSourceEvidenceV1(CapsuleModel):
+    dimension: PriceDimensionV1
+    source_url: ExactAsciiHttpUrl
+    effective_date: ExactDate
+    usd_per_million: NonNegativeFiniteFloat
+    source_sha256: Sha256
 
 
 class SourcePriceSnapshotV1(CapsuleModel):
@@ -149,10 +165,12 @@ class SourcePriceSnapshotV1(CapsuleModel):
     effective_date: ExactDate
     source_url: ExactAsciiHttpUrl
     service_tier: ServiceTier = "default"
-    input_per_million: NonNegativeFiniteFloat
-    cached_input_per_million: NonNegativeFiniteFloat | None = None
-    cache_write_per_million: NonNegativeFiniteFloat | None = None
-    output_per_million: NonNegativeFiniteFloat
+    ordinary_uncached_input_per_million: NonNegativeFiniteFloat
+    cache_read_input_per_million: NonNegativeFiniteFloat
+    cache_write_input_per_million: NonNegativeFiniteFloat
+    visible_output_per_million: NonNegativeFiniteFloat
+    reasoning_output_per_million: NonNegativeFiniteFloat
+    source_evidence: tuple[PriceSourceEvidenceV1, ...]
 
 
 class ResolvedPriceSnapshotV1(CapsuleModel):
@@ -160,38 +178,52 @@ class ResolvedPriceSnapshotV1(CapsuleModel):
     effective_date: ExactDate
     source_url: ExactAsciiHttpUrl
     service_tier: ServiceTier
-    input_per_million: NonNegativeFiniteFloat
-    cached_input_per_million: NonNegativeFiniteFloat | None
-    cache_write_per_million: NonNegativeFiniteFloat | None
-    output_per_million: NonNegativeFiniteFloat
+    ordinary_uncached_input_per_million: NonNegativeFiniteFloat
+    cache_read_input_per_million: NonNegativeFiniteFloat
+    cache_write_input_per_million: NonNegativeFiniteFloat
+    visible_output_per_million: NonNegativeFiniteFloat
+    reasoning_output_per_million: NonNegativeFiniteFloat
+    source_evidence: tuple[PriceSourceEvidenceV1, ...]
 
 
-# src/laconian_eval/providers/base.py
+# src/laconian_eval/providers/base.py — leave legacy GenerationRequest unchanged.
+class PublicBenchmarkRequestPolicyV1(CapsuleModel):
+    schema_version: Literal["PublicBenchmarkRequestPolicyV1"]
+    service_tier: ServiceTier
+    prompt_cache_mode: PromptCacheMode
+    prompt_cache_ttl: PromptCacheTTL
+    reasoning_mode: ReasoningMode
+    input_token_bound_version: Literal["openai-utf8-envelope-v1"]
+    max_input_tokens: Literal[272000]
+
+
 @dataclass(frozen=True, slots=True)
-class GenerationRequest:
+class PublicBenchmarkRequestV1:
     case_id: str
     arm: str
     repetition: int
-    model: str
+    requested_model_id: PublicBenchmarkModelId
     instructions: str | None
     prompt: str
     max_output_tokens: int
     temperature: float | None
     timeout_seconds: float
+    policy: PublicBenchmarkRequestPolicyV1
     reasoning_effort: ReasoningEffort | None = None
     text_verbosity: TextVerbosity | None = None
-    reasoning_mode: ReasoningMode = "omitted"
-    prompt_cache_mode: PromptCacheMode = "explicit"
-    service_tier: ServiceTier = "default"
-    long_context_pricing: LongContextPricingPolicy = "forbidden"
 ```
 
-The price snapshot's four rates apply only to literal `service_tier="default"`; its canonical digest
-includes that field. A source snapshot may omit the new field only for backward-compatible resolution
-to literal `default`; an explicit source value other than `default`, or a resolved snapshot carrying
-`auto`, `flex`, `priority`, `ultrafast`, or a missing tier is invalid. A tier-free rate attestation is
-also invalid. The downstream price attestation must bind the byte-identical snapshot digest and the
-same literal tier; “ordinary” or a project default is not an alias for evidence purposes.
+All five public price dimensions are required, non-null, and independently sourced; numeric zero is
+allowed only when the source explicitly attests it. Compatibility resolution for historical
+snapshots stays outside the public validator. The canonical digest binds literal
+`service_tier="default"`; `auto`, `flex`, `priority`, `ultrafast`, omission, an unsourced rate, or a
+long-context price class is invalid. Runtime reuses these exact field names and does not redefine
+the schema.
+
+Both snapshot validators require `source_evidence` in the literal `PriceDimensionV1` order with no
+missing, extra, duplicate, or reordered member. Each `usd_per_million` must exactly equal the
+corresponding snapshot field, and `source_sha256` is recomputed from the preceding evidence fields;
+a zero rate without its own exact source record is invalid.
 
 The standard-tier scheduling bound is a frozen, provider-specific conservative upper bound. One
 token is reserved per UTF-8 request byte, plus a deliberately large fixed allowance for provider
@@ -222,8 +254,9 @@ def conservative_input_token_bound(
     )
 ```
 
-Every public-campaign request must have
-`conservative_input_token_bound(...) <= OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS`; equality is allowed.
+Every public-campaign request must have the value returned by
+`conservative_input_token_bound(instruction_utf8_bytes=instruction_utf8_bytes,
+prompt_utf8_bytes=prompt_utf8_bytes) <= OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS`; equality is allowed.
 The adapter recomputes this from the exact strings before any provider call, while planning stores
 the same value in the row used by later spend reservation. A request above the limit is a
 `definitely_not_sent` configuration failure. The campaign never relies on automatic truncation or a
@@ -234,14 +267,14 @@ For the confirmatory request, the adapter sends these exact additional kwargs:
 ```python
 kwargs["reasoning"] = {"effort": "medium"}
 kwargs["text"] = {"verbosity": "medium"}
-kwargs["prompt_cache_options"] = {"mode": "explicit"}
+kwargs["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
 kwargs["service_tier"] = "default"
 ```
 
-Explicit mode disables the provider's implicit breakpoint; the plain-string instruction/input wire
-shape contains no `prompt_cache_breakpoint`. The adapter never sends `prompt_cache_key`, deprecated
-`prompt_cache_retention`, `reasoning_mode`, or `long_context_pricing`; it never omits or sends
-`service_tier="auto"`, and it never sends `temperature`
+Before serialization, recursively walk canonical `instructions` and every object in canonical
+`input` and reject a `prompt_cache_breakpoint` key at any depth. The adapter never sends
+`prompt_cache_key`, deprecated `prompt_cache_retention`, any other cache-control member,
+`reasoning_mode`, or a pricing policy; it never omits or sends `service_tier="auto"`, and it never sends `temperature`
 when null and continues sending `store=False`. The request-config preimage is:
 
 ```python
@@ -255,16 +288,18 @@ when null and continues sending `store=False`. The request-config preimage is:
         "text_verbosity": manifest.generation.text_verbosity,
         "reasoning_mode": manifest.generation.reasoning_mode,
         "prompt_cache_mode": manifest.generation.prompt_cache_mode,
+        "prompt_cache_ttl": manifest.generation.prompt_cache_ttl,
         "service_tier": manifest.generation.service_tier,
-        "long_context_pricing": manifest.generation.long_context_pricing,
     },
     "retry": {
         "max_transient_retries": manifest.retry.max_transient_retries,
         "timeout_seconds": manifest.retry.timeout_seconds,
     },
     "instruction_placement": manifest.instruction_placement,
-    "prompt_cache_options": {"mode": manifest.generation.prompt_cache_mode},
-    "prompt_cache_breakpoints": [],
+    "prompt_cache_options": {
+        "mode": manifest.generation.prompt_cache_mode,
+        "ttl": manifest.generation.prompt_cache_ttl,
+    },
     "service_tier": manifest.generation.service_tier,
     "input_token_bound": {
         "version": INPUT_TOKEN_BOUND_VERSION,
@@ -276,17 +311,46 @@ when null and continues sending `store=False`. The request-config preimage is:
 }
 ```
 
-### Cache-write, reasoning, service-tier, and visible-token evidence
+Task 2 pins `openai==3.3.1` in `pyproject.toml`/`uv.lock`. Task 3 asserts the installed distribution
+is exactly `3.3.1`, the C0 `uv.lock` member hash equals the tagged hash, and the SDK typed request and
+response models expose every frozen field/path before any credential can be read. Request bytes,
+provider kwargs, and captured projection must be byte-equivalent for all frozen members.
+
+### Applied-cache, cache-read/write, reasoning, tier, and model evidence
 
 ```python
 # src/laconian_eval/providers/base.py
 ReasoningTokenAccounting = Literal["reported", "not_reported", "invalid"]
-ServiceTierAccountingStatus = Literal[
+ServiceTierStatus = Literal[
     "reported_default",
     "not_applicable_definitely_not_sent",
     "not_applicable_definitely_rejected",
     "missing",
     "mismatch",
+]
+AppliedCacheControlStatus = Literal[
+    "reported_exact",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "mismatch",
+    "invalid",
+]
+CacheReadStatus = Literal[
+    "reported_zero",
+    "reported_nonzero",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "invalid",
+]
+CacheWriteStatus = Literal[
+    "reported_zero",
+    "reported_nonzero",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "invalid",
 ]
 
 
@@ -295,50 +359,126 @@ class TokenUsage:
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    cached_input_tokens: int | None = None
+    cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None
     reasoning_tokens: int | None = None
     reasoning_token_accounting: ReasoningTokenAccounting = "not_reported"
 
 
-# Appended to GenerationResult after response_model; existing fields stay unchanged.
-response_service_tier: str | None = None
-service_tier_accounting_status: ServiceTierAccountingStatus = "missing"
-
-# ProviderError accepts, stores, and exposes the same two keyword-only fields/properties.
-# Its existing constructor defaults preserve legacy callers.
-response_service_tier: str | None = None
-service_tier_accounting_status: ServiceTierAccountingStatus = "missing"
+# Legacy GenerationResult/ProviderError bytes remain unchanged. The public benchmark adapter
+# constructs PublicBenchmarkResponseEvidenceV1 directly from canonical raw Responses bytes.
 
 
 # src/laconian_eval/capsule/attempts.py
-CacheAccounting = Literal["reported", "not_reported", "not_applicable"]
-
-
 class AttemptUsageV2(CapsuleModel):
     input_tokens: StrictNonNegativeInt | None
     output_tokens: StrictNonNegativeInt | None
     total_tokens: StrictNonNegativeInt | None
-    cached_input_tokens: StrictNonNegativeInt | None
+    cache_read_tokens: StrictNonNegativeInt | None
     cache_write_tokens: StrictNonNegativeInt | None
+    ordinary_uncached_input_tokens: StrictNonNegativeInt | None
     reasoning_tokens: StrictNonNegativeInt | None
     availability: UsageAvailability
     source: UsageSource
-    cache_accounting: CacheAccounting
-    cache_write_accounting: CacheAccounting
+    cache_read_status: CacheReadStatus
+    cache_write_status: CacheWriteStatus
     reasoning_token_accounting: ReasoningTokenAccounting
 
 
+class PublicBenchmarkResponseEvidenceV1(CapsuleModel):
+    schema_version: Literal["public-benchmark-response-evidence-v1"]
+    response_id: ProviderMetadataString
+    raw_response_sha256: Sha256
+    usage: AttemptUsageV2
+    requested_model_id: PublicBenchmarkModelId
+    returned_model_id: ProviderMetadataString | None
+    returned_model_source_sha256: Sha256
+    requested_service_tier: ServiceTier
+    returned_service_tier: ProviderMetadataString | None
+    service_tier_status: ServiceTierStatus
+    service_tier_source_sha256: Sha256
+    applied_prompt_cache_mode: ProviderMetadataString | None
+    applied_prompt_cache_ttl: ProviderMetadataString | None
+    applied_cache_control_status: AppliedCacheControlStatus
+    applied_cache_control_source_sha256: Sha256
+    cache_read_source_sha256: Sha256
+    cache_write_source_sha256: Sha256
+    usage_source_sha256: Sha256
+    reasoning_tokens_source_sha256: Sha256
+
+
+class PublicBenchmarkProviderErrorEvidenceV1(CapsuleModel):
+    schema_version: Literal["public-benchmark-provider-error-evidence-v1"]
+    delivery_certainty: DeliveryCertainty
+    provider_request_id: ProviderMetadataString | None
+    response_id: ProviderMetadataString | None
+    raw_response_sha256: Sha256 | None
+    usage: AttemptUsageV2
+    requested_model_id: PublicBenchmarkModelId
+    returned_model_id: ProviderMetadataString | None
+    returned_model_source_sha256: Sha256
+    requested_service_tier: ServiceTier
+    returned_service_tier: ProviderMetadataString | None
+    service_tier_status: ServiceTierStatus
+    service_tier_source_sha256: Sha256
+    applied_prompt_cache_mode: ProviderMetadataString | None
+    applied_prompt_cache_ttl: ProviderMetadataString | None
+    applied_cache_control_status: AppliedCacheControlStatus
+    applied_cache_control_source_sha256: Sha256
+    cache_read_source_sha256: Sha256
+    cache_write_source_sha256: Sha256
+    usage_source_sha256: Sha256
+    reasoning_tokens_source_sha256: Sha256
+    structured_status: int | None
+    error_source_sha256: Sha256
+
+
+PublicBenchmarkProviderOutcomeV1 = (
+    PublicBenchmarkResponseEvidenceV1 | PublicBenchmarkProviderErrorEvidenceV1
+)
+
+
+class PublicBenchmarkProvider(Protocol):
+    def generate_benchmark(
+        self, request: PublicBenchmarkRequestV1
+    ) -> PublicBenchmarkProviderOutcomeV1:
+        raise NotImplementedError
+
+
 # Added to NormalizedProviderEvidenceV2 before response_model.
+requested_model_id: PublicBenchmarkModelId
+returned_model_id: ProviderMetadataString | None
+returned_model_source_sha256: Sha256
 requested_service_tier: ServiceTier
 returned_service_tier: ProviderMetadataString | None
-service_tier_accounting_status: ServiceTierAccountingStatus
+service_tier_status: ServiceTierStatus
+service_tier_source_sha256: Sha256
+applied_prompt_cache_mode: ProviderMetadataString | None
+applied_prompt_cache_ttl: ProviderMetadataString | None
+applied_cache_control_status: AppliedCacheControlStatus
+applied_cache_control_source_sha256: Sha256
+cache_read_source_sha256: Sha256
+cache_write_source_sha256: Sha256
+usage_source_sha256: Sha256
+reasoning_tokens_source_sha256: Sha256
 
 
-# Appended to RawAttemptV2 immediately after response_model.
+# Appended to RawAttemptV2 immediately after response_model, in the same order.
+requested_model_id: PublicBenchmarkModelId
+returned_model_id: ProviderMetadataString | None
+returned_model_source_sha256: Sha256
 requested_service_tier: ServiceTier
 returned_service_tier: ProviderMetadataString | None
-service_tier_accounting_status: ServiceTierAccountingStatus
+service_tier_status: ServiceTierStatus
+service_tier_source_sha256: Sha256
+applied_prompt_cache_mode: ProviderMetadataString | None
+applied_prompt_cache_ttl: ProviderMetadataString | None
+applied_cache_control_status: AppliedCacheControlStatus
+applied_cache_control_source_sha256: Sha256
+cache_read_source_sha256: Sha256
+cache_write_source_sha256: Sha256
+usage_source_sha256: Sha256
+reasoning_tokens_source_sha256: Sha256
 
 
 def visible_output_tokens(usage: AttemptUsageV2) -> int | None:
@@ -349,17 +489,27 @@ def visible_output_tokens(usage: AttemptUsageV2) -> int | None:
     return usage.output_tokens - usage.reasoning_tokens
 ```
 
-`AttemptUsageV2` adds `cache_write_tokens`, an independent `cache_write_accounting`,
-`reasoning_tokens`, and `reasoning_token_accounting`. Reported cache read/write accounting requires
-its respective nonnull count; `not_reported` and `not_applicable` require null. When both cache
-counts are reported, `cached_input_tokens + cache_write_tokens <= input_tokens`; each individual
-count must also not exceed input tokens. A valid nonzero cache-write count remains immutable usage
-evidence even though it violates the frozen no-write policy, so later spend reconciliation can charge
-it and campaign authority can stop. Missing cache-write detail becomes `not_reported` and retains
-worst-case exposure downstream; it is never silently projected to zero.
+The canonical raw-response paths are exactly `response.service_tier`,
+`response.prompt_cache_options.mode`, `response.prompt_cache_options.ttl`,
+`response.usage.input_tokens`, `response.usage.input_tokens_details.cached_tokens`,
+`response.usage.input_tokens_details.cache_write_tokens`, `response.usage.output_tokens`,
+`response.usage.output_tokens_details.reasoning_tokens`, `response.usage.total_tokens`, and
+`response.model`. Alternate, flattened, inferred, billing, or convenience paths are rejected. Each
+field retains an independent raw-response source digest even when sanitization yields null.
+
+For a Responses result, exact zero/positive read and write counts independently map to
+`reported_zero`/`reported_nonzero`; absence maps to `missing`; wrong type, negative/bound/total
+failure, or source-digest failure maps to `invalid`. Proven no-dispatch and definite rejection with
+no result or usage map to their exact `not_applicable_*` status. Applied mode/TTL maps to
+`reported_exact` only for literal `explicit`/`30m`; otherwise it maps to `missing`, `mismatch`, or
+`invalid`. A conforming no-cache response is exactly
+`reported_exact/reported_zero/reported_zero`. Valid counts require each and their sum to be at most
+`input_tokens`, and set `ordinary_uncached_input_tokens = input_tokens - cache_read_tokens -
+cache_write_tokens`. Nonzero read/write or any missing/mismatch/invalid evidence retains the
+affected conservative exposure and causes Runtime to STOP after durable accounting.
 
 Every attempt also carries literal `requested_service_tier="default"`, sanitized
-`returned_service_tier` copied from `response.service_tier`, and a derived closed accounting status.
+`returned_service_tier` copied from `response.service_tier`, and a derived `ServiceTierStatus`.
 `reported_default` requires returned literal `default`; `mismatch` requires a nonnull bounded provider
 string other than `default` and preserves that string exactly; `missing` requires a null returned value
 and covers both absence and an unsafe/unrepresentable provider value without serializing that value.
@@ -369,7 +519,8 @@ provider usage. These last states keep a structured, definitely rejected 429 eli
 separately frozen retry policy; absence of a response object cannot be misreported as a tier mismatch.
 A class-bound validator enforces this exact matrix in both normalized evidence construction and
 `RawAttemptV2`; provider-supplied status text is never trusted without rederivation against the
-literal requested tier. `ProviderError` retains the same fields whenever a response was received, so
+literal requested tier. `PublicBenchmarkProviderErrorEvidenceV1` retains the same fields whenever a
+response was received, so
 later response/content/usage validation cannot discard tier evidence.
 A mismatch, omission, or unsafe returned tier on `response_received` or `unknown` delivery never
 erases response usage, cache-write evidence, or the fact/exposure that delivery may have occurred. It
@@ -379,6 +530,10 @@ later calls. Only `reported_default` may authorize trusted-usage reconciliation 
 attestation that binds the same snapshot and tier. The two `not_applicable_*` statuses authorize no
 billed-usage reconciliation; the runtime may release only the unused reservation already proven by
 its exact definitely-not-sent/rejected delivery and retry rules.
+
+`requested_model_id` is one of the three exact literals. `returned_model_id` comes only from
+`response.model`; it need not equal the requested identifier, but successful responses for one
+requested-model campaign must later prove a single consistent returned identifier.
 
 For reasoning, `reported` requires nonnull `output_tokens` and
 `reasoning_tokens <= output_tokens`; `not_reported` and `invalid` require null
@@ -427,6 +582,7 @@ The planning interface becomes:
 
 ```python
 def materialize_parent_plan(
+    *,
     parent_manifest_sha256: str,
     resolved_manifest: ResolvedManifestV2,
     case_index: Sequence[CaseIndexRowV1],
@@ -437,6 +593,7 @@ def materialize_parent_plan(
 
 def validate_parent_plan(
     rows: Sequence[PlanRowV1],
+    *,
     parent_manifest_sha256: str,
     resolved_manifest: ResolvedManifestV2,
     case_index: Sequence[CaseIndexRowV1],
@@ -450,7 +607,8 @@ def validate_parent_plan(
 the exact captured arm-instruction bytes, rejects a value above the standard-tier maximum before
 materializing any row, and includes the bound in the plan-item preimage shown above. Execution
 recomputes the bound from the verified captured strings and requires equality with the row before
-constructing `GenerationRequest`.
+constructing the benchmark-only `PublicBenchmarkRequestV1`; legacy `GenerationRequest` bytes remain
+unchanged.
 
 `attempt_id` and `response_id` retain their existing `run_id` fields; only pre-call plan, block, and pairing identities become stable.
 
@@ -459,7 +617,7 @@ constructing `GenerationRequest`.
 class ShardPlanV1(CapsuleModel):
     shard_schema_version: Literal["1"]
     campaign_id: RunName
-    model_id: BoundedNonBlankString
+    model_id: PublicBenchmarkModelId
     scenario_uid: Sha256
     parent_manifest_sha256: Sha256
     parent_plan_sha256: Sha256
@@ -641,7 +799,7 @@ def load_verified_scored_capsule(
 # src/laconian_eval/capsule/checkpoint.py
 class CheckpointProvenanceV1(CapsuleModel):
     campaign_id: RunName
-    model_id: BoundedNonBlankString
+    model_id: PublicBenchmarkModelId
     scenario_uid: Sha256
     batch_attempt_id: UUID4
     run_attempt: StrictPositiveInt
@@ -658,7 +816,7 @@ class CheckpointExpectedBindingsV1:
     plan_sha256: str
     parent_plan_sha256: str | None
     shard_plan_sha256: str | None
-    requested_model: str
+    requested_model: PublicBenchmarkModelId
     scenario_uid: str | None
     protocol_bindings: tuple[CheckpointProtocolBindingV1, ...]
     provenance: CheckpointProvenanceV1
@@ -843,7 +1001,7 @@ git add src/laconian_eval/models.py evals/cases/response-smoke.yaml evals/README
 git commit -m "feat: freeze neutral response corpus"
 ```
 
-### Task 2: Carry reasoning, cache, literal default service tier, and pricing policy through native-v2 manifests and request hashes
+### Task 2: Carry the exact benchmark policy, five prices, SDK pin, and request hash through native-v2
 
 **Files:**
 - Modify: `src/laconian_eval/capsule/schema.py`
@@ -851,6 +1009,8 @@ git commit -m "feat: freeze neutral response corpus"
 - Modify: `src/laconian_eval/capsule/capture.py`
 - Modify: `src/laconian_eval/capsule/planning.py`
 - Modify: `src/laconian_eval/providers/base.py`
+- Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Modify: `tests/capsule_helpers.py`
 - Modify: `tests/capsule/test_manifest_models.py`
 - Modify: `tests/capsule/test_capture.py`
@@ -868,16 +1028,17 @@ Change `source_manifest_v2_payload()` and `resolved_manifest_v2_payload()` to co
     "text_verbosity": "medium",
     "reasoning_mode": "omitted",
     "prompt_cache_mode": "explicit",
+    "prompt_cache_ttl": "30m",
     "service_tier": "default",
-    "long_context_pricing": "forbidden",
 },
 ```
 
 Add `"service_tier": "default"` immediately after `source_url` and
-`"cache_write_per_million": 1.5625` between cached-input and output rates in both source and resolved
-price-snapshot helpers. The cache-write rate is a distinct fixture value rather than a derived
-multiplier; the reviewed snapshot, including its literal tier, is the authority for the later
-integer-micro-USD conversion and attestation.
+the exact five non-null rate fields
+`ordinary_uncached_input_per_million`, `cache_read_input_per_million`,
+`cache_write_input_per_million`, `visible_output_per_million`, and
+`reasoning_output_per_million`, plus their `source_evidence`, in both source and resolved helpers.
+Use distinct fixture values; no rate is derived or nullable in the public validator.
 
 Add these tests to `tests/capsule/test_manifest_models.py`:
 
@@ -893,6 +1054,8 @@ Add these tests to `tests/capsule/test_manifest_models.py`:
         ("reasoning_mode", "auto"),
         ("prompt_cache_mode", None),
         ("prompt_cache_mode", "implicit"),
+        ("prompt_cache_ttl", None),
+        ("prompt_cache_ttl", "1h"),
         ("service_tier", None),
         ("service_tier", True),
         ("service_tier", 1),
@@ -900,8 +1063,6 @@ Add these tests to `tests/capsule/test_manifest_models.py`:
         ("service_tier", "flex"),
         ("service_tier", "priority"),
         ("service_tier", "ultrafast"),
-        ("long_context_pricing", None),
-        ("long_context_pricing", "allowed"),
     ],
 )
 def test_generation_request_policy_fields_are_strict(field: str, value: object) -> None:
@@ -920,20 +1081,24 @@ def test_native_v2_round_trips_generation_request_policy() -> None:
         "text_verbosity": "medium",
         "reasoning_mode": "omitted",
         "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
         "service_tier": "default",
-        "long_context_pricing": "forbidden",
     }
 
 
-def test_price_snapshot_distinguishes_cache_read_and_cache_write_rates() -> None:
+def test_price_snapshot_requires_five_sourced_dimensions() -> None:
     manifest = SourceManifestV2.model_validate(source_manifest_v2_payload())
     assert manifest.price_snapshot is not None
     assert manifest.price_snapshot.service_tier == "default"
-    assert manifest.price_snapshot.cached_input_per_million == 0.125
-    assert manifest.price_snapshot.cache_write_per_million == 1.5625
+    assert manifest.price_snapshot.cache_read_input_per_million == 0.125
+    assert manifest.price_snapshot.cache_write_input_per_million == 1.5625
+    assert manifest.price_snapshot.ordinary_uncached_input_per_million > 0
+    assert manifest.price_snapshot.visible_output_per_million > 0
+    assert manifest.price_snapshot.reasoning_output_per_million >= 0
+    assert len(manifest.price_snapshot.source_evidence) == 5
 ```
 
-Extend the invalid-price parameterization with `cache_write_per_million`; reject bool, negative,
+Extend the invalid-price parameterization across all five rate fields; reject bool, null, negative,
 infinite, NaN, and nonnumeric values exactly like the other rate fields. Independently replace only
 `price_snapshot.service_tier` with null, bool, integer, `auto`, `flex`, `priority`, or `ultrafast` and
 require strict validation failure. Add `test_price_snapshot_digest_binds_literal_default_service_tier`: independently
@@ -941,7 +1106,7 @@ canonicalize the complete resolved snapshot, assert its bytes contain the exact 
 the manifest digest changes if those fixture bytes are forged to omit or alter that pair, and prove
 neither forged payload revalidates as `ResolvedPriceSnapshotV1`.
 
-Clone one resolved manifest and change only `cache_write_per_million`. Assert its canonical manifest
+Clone one resolved manifest and change only `cache_write_input_per_million`. Assert its canonical manifest
 bytes and manifest SHA-256 change, while `request_config_sha256` remains equal because provider price
 is parent/campaign evidence rather than a wire argument. Task 4 proves that the changed parent
 manifest digest changes every plan-item identity.
@@ -958,16 +1123,16 @@ assert captured.resolved_manifest.generation.model_dump(mode="json") == {
     "text_verbosity": None,
     "reasoning_mode": "omitted",
     "prompt_cache_mode": "explicit",
+    "prompt_cache_ttl": "30m",
     "service_tier": "default",
-    "long_context_pricing": "forbidden",
 }
 ```
 
 Delete each new generation key, `price_snapshot.service_tier`, and
-`price_snapshot.cache_write_per_million` independently from a resolved-v2 payload and assert
+each of the five rate/source-evidence fields independently from a resolved-v2 payload and assert
 `ResolvedManifestV2.model_validate` fails with `Field required`. Source-v2 omission supplies literal
-`explicit`, literal `default`, literal `forbidden`, and null cache-write rate for backward
-compatibility; resolved-v2 always serializes all fields explicitly. An authored source value other
+`explicit`, `30m`, and `default`; resolved-v2 always serializes all fields explicitly. Compatibility
+for historical nullable/four-rate records stays outside the public validator. An authored source value other
 than literal `default` is invalid rather than an override.
 
 - [ ] **Step 3: Run the manifest RED gate**
@@ -975,24 +1140,25 @@ than literal `default` is invalid rather than an override.
 Run:
 
 ```bash
-uv run pytest tests/capsule/test_manifest_models.py::test_native_v2_round_trips_generation_request_policy tests/capsule/test_manifest_models.py::test_generation_request_policy_fields_are_strict tests/capsule/test_manifest_models.py::test_price_snapshot_distinguishes_cache_read_and_cache_write_rates tests/capsule/test_manifest_models.py::test_price_snapshot_digest_binds_literal_default_service_tier tests/capsule/test_capture.py -q
+uv run pytest tests/capsule/test_manifest_models.py::test_native_v2_round_trips_generation_request_policy tests/capsule/test_manifest_models.py::test_generation_request_policy_fields_are_strict tests/capsule/test_manifest_models.py::test_price_snapshot_requires_five_sourced_dimensions tests/capsule/test_manifest_models.py::test_price_snapshot_digest_binds_literal_default_service_tier tests/capsule/test_capture.py -q
 ```
 
-Expected: FAIL. Native-v2 validation reports the six new generation keys plus cache-write rate and
-price-snapshot tier as forbidden, and resolved-v2 projections do not expose them.
+Expected: FAIL. Native-v2 validation reports the benchmark-only TTL/request policy, five-price
+schema, source evidence, and SDK pin as absent, and resolved-v2 projections do not expose them.
 
 - [ ] **Step 4: Implement the source/resolved schema without widening v1 input**
 
-Add the six request-policy aliases, both generation model shapes, and both price-snapshot shapes shown in the
-stable interface. Keep `_V1ProjectionInput` behind the existing
+Add the exact request-policy aliases, both generation model shapes, `PublicBenchmarkRequestV1`,
+`PublicBenchmarkRequestPolicyV1`, and both price-snapshot shapes shown in the stable interface. Keep `_V1ProjectionInput` behind the existing
 `RunManifest.model_validate(payload)` boundary so authored v1 remains strict; its use of
-`SourceGenerationSettingsV2` supplies the six resolved defaults only after v1 validation succeeds.
+`SourceGenerationSettingsV2` supplies resolved defaults only after v1 validation succeeds. Do not
+add benchmark fields or defaults to legacy `GenerationRequest`.
 
 Add the three input-bound constants and strict pure `conservative_input_token_bound` helper from the
 stable interface to `providers/base.py`. `planning.py` imports those exact values; it does not copy
 numeric literals or define a second bound version.
 
-Update `_resolve_v2_manifest` and `upgrade_v1_manifest` in `capture.py` to serialize all eight generation fields in this order:
+Update `_resolve_v2_manifest` and `upgrade_v1_manifest` in `capture.py` to serialize generation fields in this order:
 
 ```text
 max_output_tokens
@@ -1001,13 +1167,17 @@ reasoning_effort
 text_verbosity
 reasoning_mode
 prompt_cache_mode
+prompt_cache_ttl
 service_tier
-long_context_pricing
 ```
 
 Serialize price fields in the exact order `currency`, `effective_date`, `source_url`,
-`service_tier`, `input_per_million`, `cached_input_per_million`, `cache_write_per_million`,
-`output_per_million`.
+`service_tier`, the five rate fields in stable-interface order, and `source_evidence`.
+
+Pin `openai==3.3.1` in `pyproject.toml`, regenerate `uv.lock`, and add a RED test that asserts
+`importlib.metadata.version("openai") == "3.3.1"`. The test also hashes the exact `uv.lock` member
+bytes used by preflight and rejects a different installed version, lock hash, typed request field,
+or canonical response path before any credential lookup.
 
 - [ ] **Step 5: RED-test request-config identity coverage**
 
@@ -1033,9 +1203,8 @@ assert request_config_sha256(manifest) == stable_digest(
 )
 ```
 
-The independently constructed preimage must contain literal explicit cache mode, no breakpoints,
-literal `service_tier: default` in both generation policy and exact wire-policy positions, literal
-forbidden long-context pricing, the bound version, the 65,536-token envelope allowance, and the
+The independently constructed preimage must contain literal explicit cache mode and `30m` TTL,
+recursive proof of no breakpoint key, literal `service_tier: default` in both generation policy and exact wire-policy positions, the bound version, the 65,536-token envelope allowance, and the
 272,000-token standard-tier maximum. Assert omission, `auto`, project-default inference, and every
 non-default service tier are unrepresentable by validated inputs. Assert none of `prompt_cache_key`,
 `prompt_cache_retention`, or a cache breakpoint occurs in its canonical bytes.
@@ -1069,7 +1238,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit manifest and request identity support**
 
 ```bash
-git add src/laconian_eval/capsule/schema.py src/laconian_eval/capsule/manifest_models.py src/laconian_eval/capsule/capture.py src/laconian_eval/capsule/planning.py src/laconian_eval/providers/base.py tests/capsule_helpers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py
+git add src/laconian_eval/capsule/schema.py src/laconian_eval/capsule/manifest_models.py src/laconian_eval/capsule/capture.py src/laconian_eval/capsule/planning.py src/laconian_eval/providers/base.py pyproject.toml uv.lock tests/capsule_helpers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py
 git commit -m "feat: bind generation cache and default-tier pricing policy"
 ```
 
@@ -1096,11 +1265,11 @@ Add `test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service
 `tests/test_openai_provider.py`. Use the injected fake Responses client and this request:
 
 ```python
-request = GenerationRequest(
+request = PublicBenchmarkRequestV1(
     case_id="case-en",
     arm="if",
     repetition=0,
-    model="gpt-5.6-sol",
+    requested_model_id="gpt-5.6-sol",
     instructions="instruction",
     prompt="prompt",
     max_output_tokens=1024,
@@ -1108,10 +1277,15 @@ request = GenerationRequest(
     timeout_seconds=120.0,
     reasoning_effort="medium",
     text_verbosity="medium",
-    reasoning_mode="omitted",
-    prompt_cache_mode="explicit",
-    service_tier="default",
-    long_context_pricing="forbidden",
+    policy=PublicBenchmarkRequestPolicyV1(
+        schema_version="PublicBenchmarkRequestPolicyV1",
+        reasoning_mode="omitted",
+        prompt_cache_mode="explicit",
+        prompt_cache_ttl="30m",
+        service_tier="default",
+        input_token_bound_version="openai-utf8-envelope-v1",
+        max_input_tokens=272000,
+    ),
 )
 ```
 
@@ -1126,18 +1300,27 @@ Assert the captured kwargs equal exactly:
     "store": False,
     "reasoning": {"effort": "medium"},
     "text": {"verbosity": "medium"},
-    "prompt_cache_options": {"mode": "explicit"},
+    "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
     "service_tier": "default",
 }
 ```
 
 Also assert null effort/verbosity omit both nested kwargs. No accepted request contains
-`reasoning_mode`, `long_context_pricing`, `prompt_cache_key`, `prompt_cache_retention`,
+`reasoning_mode`, `prompt_cache_key`, `prompt_cache_retention`, any other cache-control member,
 `prompt_cache_breakpoint`, `tools`, `previous_response_id`, or `temperature` when temperature is
 null, but every accepted request contains exactly `service_tier="default"`. Parameterize
 `service_tier` as null, bool, integer, object, `auto`, `flex`, `priority`, and `ultrafast`; each must
 fail strict request validation before the fake client records a call. An ambient project configured
 for a different tier must not affect captured kwargs.
+
+Also add
+`test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical` and
+`test_recursive_breakpoint_key_is_rejected_under_every_instructions_or_input_object`. The first
+independently CanonicalJSONV1-encodes the frozen request members, returned kwargs, and captured
+projection and requires byte equality. The second parameterizes `prompt_cache_breakpoint` at the
+root and at two nested dict/list depths under both canonical `instructions` and `input`; every case
+must fail before the fake client records a call. Repeat for `prompt_cache_key`,
+`prompt_cache_retention`, and an unknown cache-control key.
 
 Add `test_standard_tier_bound_rejects_before_client_call`. Assert the pure bound counts UTF-8 bytes
 rather than characters, accepts exact equality at 272,000, rejects one byte above it in
@@ -1149,7 +1332,7 @@ the fake client's call list empty. Parameterize bool and negative byte counts ag
 Run:
 
 ```bash
-uv run pytest tests/test_openai_provider.py::test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service_tier tests/test_openai_provider.py::test_standard_tier_bound_rejects_before_client_call -q
+uv run pytest tests/test_openai_provider.py::test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service_tier tests/test_openai_provider.py::test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical tests/test_openai_provider.py::test_recursive_breakpoint_key_is_rejected_under_every_instructions_or_input_object tests/test_openai_provider.py::test_standard_tier_bound_rejects_before_client_call -q
 ```
 
 Expected: FAIL because the request/cache/tier policy fields, exact cache and literal default-tier wire
@@ -1157,28 +1340,47 @@ mapping, and provider-side standard-tier rejection are absent.
 
 - [ ] **Step 3: Implement strict request fields and adapter validation**
 
-Add the request fields shown in the stable interface after `timeout_seconds` so existing positional
-construction remains valid, and use the input-bound constants/helper established in Task 2. In
-`OpenAIProvider._validate_request`, accept only exact strings from the aliases, require
-`reasoning_mode == "omitted"`, `prompt_cache_mode == "explicit"`, and
-`service_tier == "default"`, and `long_context_pricing == "forbidden"`, then compute strict UTF-8
+Construct only `PublicBenchmarkRequestV1` from the captured policy; do not widen or default the
+legacy request. In `OpenAIProvider._validate_benchmark_request`, accept only exact strings from the
+aliases, require policy `reasoning_mode == "omitted"`, `prompt_cache_mode == "explicit"`,
+`prompt_cache_ttl == "30m"`, and `service_tier == "default"`, then compute strict UTF-8
 instruction/prompt byte lengths and reject a conservative bound above 272,000 before calling the
 client.
 
-In `OpenAIProvider.generate`, add only nonnull effort/verbosity:
+Implement `OpenAIProvider.generate_benchmark(request: PublicBenchmarkRequestV1) ->
+PublicBenchmarkProviderOutcomeV1` without changing legacy `generate`. In that benchmark-only method,
+first implement and call these exact helpers:
+
+```python
+def _assert_no_public_benchmark_cache_control(value: object) -> None:
+    """Recursively reject breakpoint/key/retention and every unapproved cache-control key."""
+
+
+def _public_benchmark_responses_kwargs(
+    request: PublicBenchmarkRequestV1,
+) -> dict[str, object]:
+    """Return the sole mapping used for canonical bytes, capture, and the provider call."""
+```
+
+Run the recursive validator on the exact canonical `instructions` and `input` trees before
+building the mapping. Encode canonical request bytes and the capture projection from that same
+mapping; no independently maintained second cache/tier projection is permitted. Add only nonnull
+effort/verbosity:
 
 ```python
 if request.reasoning_effort is not None:
     kwargs["reasoning"] = {"effort": request.reasoning_effort}
 if request.text_verbosity is not None:
     kwargs["text"] = {"verbosity": request.text_verbosity}
-kwargs["prompt_cache_options"] = {"mode": request.prompt_cache_mode}
-kwargs["service_tier"] = request.service_tier
+kwargs["prompt_cache_options"] = {
+    "mode": request.policy.prompt_cache_mode,
+    "ttl": request.policy.prompt_cache_ttl,
+}
+kwargs["service_tier"] = request.policy.service_tier
 ```
 
-Update capsule request reconstruction in `execution.py` to pass all six captured resolved policy
-fields. Do not change the legacy runner request builder; dataclass defaults give that path the same
-no-write/literal-default-tier safety policy.
+Update capsule request reconstruction in `execution.py` to construct the versioned benchmark policy
+from all captured resolved fields. Do not change the legacy runner request builder or bytes.
 
 - [ ] **Step 4: RED-test cache-write, reasoning, and returned-tier evidence**
 
@@ -1186,9 +1388,9 @@ Add OpenAI response fixtures whose `usage.input_tokens_details.cache_write_token
 `0`, `3`, absent, `-1`, `True`, and large enough that cached plus cache-write exceeds input. Assert:
 
 ```text
-0       -> cache_write_tokens=0, cache_write_accounting=reported
-3       -> cache_write_tokens=3, cache_write_accounting=reported; preserve the usable response
-absent  -> cache_write_tokens=null, cache_write_accounting=not_reported
+0       -> cache_write_tokens=0, cache_write_status=reported_zero
+3       -> cache_write_tokens=3, cache_write_status=reported_nonzero; preserve the usable response
+absent  -> cache_write_tokens=null, cache_write_status=missing
 -1      -> malformed provider usage; preserve no trusted zero
 True    -> malformed provider usage; preserve no trusted zero
 sum-big -> malformed provider usage; preserve no trusted zero
@@ -1206,7 +1408,8 @@ True    -> reasoning_tokens=null, reasoning_token_accounting=invalid
 too-big -> reasoning_tokens=null, reasoning_token_accounting=invalid
 ```
 
-Every response remains a `GenerationResult` when its other public fields are valid.
+Every valid response becomes `PublicBenchmarkResponseEvidenceV1`; legacy `GenerationResult` bytes
+and constructors remain unchanged.
 
 In `tests/capsule/test_attempts_v2.py`, add:
 
@@ -1229,20 +1432,21 @@ def test_visible_output_tokens_require_valid_reasoning_breakdown(
         input_tokens=5,
         output_tokens=20,
         total_tokens=25,
-        cached_input_tokens=None,
+        cache_read_tokens=0,
         cache_write_tokens=0,
+        ordinary_uncached_input_tokens=5,
         reasoning_tokens=reasoning_tokens,
         availability="complete",
         source="provider",
-        cache_accounting="not_reported",
-        cache_write_accounting="reported",
+        cache_read_status="reported_zero",
+        cache_write_status="reported_zero",
         reasoning_token_accounting=accounting,
     )
     assert visible_output_tokens(usage) == expected
 ```
 
-Add `test_attempt_usage_tracks_cache_reads_and_writes_independently`. Accept reported `(cached,
-write)` pairs `(0, 0)`, `(2, 0)`, and `(0, 2)` plus a not-reported null write count. Reject a reported
+Add `test_attempt_usage_tracks_cache_reads_and_writes_independently`. Accept reported `(read,
+write)` pairs `(0, 0)`, `(2, 0)`, and `(0, 2)` plus a `missing` null write count. Reject a reported
 null count, an unreported nonnull count, either count above input, and a combined read/write count
 above input. Canonical round trips must retain a nonzero write count exactly.
 
@@ -1250,25 +1454,34 @@ Add `test_openai_returned_service_tier_is_preserved_and_classified` with otherwi
 fixtures. Assert this exact matrix without altering output, delivery, or valid usage evidence:
 
 ```text
-"default"  -> response_service_tier="default",  service_tier_accounting_status=reported_default
-"priority" -> response_service_tier="priority", service_tier_accounting_status=mismatch
-absent      -> response_service_tier=null,       service_tier_accounting_status=missing
-blank       -> response_service_tier=null,       service_tier_accounting_status=missing
-True        -> response_service_tier=null,       service_tier_accounting_status=missing
-object      -> response_service_tier=null,       service_tier_accounting_status=missing
-over-limit  -> response_service_tier=null,       service_tier_accounting_status=missing
+"default"  -> returned_service_tier="default",  service_tier_status=reported_default
+"priority" -> returned_service_tier="priority", service_tier_status=mismatch
+absent      -> returned_service_tier=null,       service_tier_status=missing
+blank       -> returned_service_tier=null,       service_tier_status=missing
+True        -> returned_service_tier=null,       service_tier_status=missing
+object      -> returned_service_tier=null,       service_tier_status=missing
+over-limit  -> returned_service_tier=null,       service_tier_status=missing
 ```
 
+Add independent applied/read/write RED matrices. Applied values are exact `explicit`/`30m`, missing,
+mismatched, or malformed and must map to `reported_exact`, `missing`, `mismatch`, or `invalid`.
+Read and write values cover zero, positive, absent, bool, negative, over-input, inconsistent sum,
+and bad source digest. Assert the exact canonical response paths and reject every alternate path.
+Also assert `requested_model_id` and `returned_model_id` plus source digest round-trip; returned IDs
+may differ from requested IDs, while later consistency is deliberately outside this task.
+
 Use the existing bounded/control-safe provider-metadata policy for returned strings. Add a response
-that has a safe tier but later fails output or usage validation; the resulting `ProviderError` must
-still expose the sanitized returned tier and derived status. Missing or mismatched tier is permanent
+that has a safe tier but later fails output or usage validation; the resulting
+`PublicBenchmarkProviderErrorEvidenceV1` must still expose the sanitized returned tier and derived
+status. Missing or mismatched tier is permanent
 policy evidence, never a transient provider error and never an automatic retry reason.
 
 In `tests/capsule/test_attempts_v2.py`, add
 `test_raw_attempt_service_tier_matrix_is_strict_and_preserves_billable_evidence`. Assert every valid
 row has `requested_service_tier="default"`; the three received-response status/value combinations above round-trip
-canonically; every inconsistent combination is rejected. Normalize adversarial `GenerationResult`
-and `ProviderError` instances with `requested_service_tier="default"` and prove normalization derives
+canonically; every inconsistent combination is rejected. Normalize adversarial
+`PublicBenchmarkResponseEvidenceV1` and `PublicBenchmarkProviderErrorEvidenceV1` instances with
+`requested_service_tier="default"` and prove normalization derives
 the status rather than trusting an injected status. Add both no-response cases: a definitely-not-sent
 configuration failure becomes `not_applicable_definitely_not_sent`, and a structured
 `definitely_rejected` 429 becomes `not_applicable_definitely_rejected`; both have null
@@ -1289,40 +1502,42 @@ Run:
 uv run pytest tests/test_openai_provider.py -k 'cache_write_tokens or reasoning_tokens or cache_policy or service_tier' tests/capsule/test_attempts_v2.py::test_visible_output_tokens_require_valid_reasoning_breakdown tests/capsule/test_attempts_v2.py::test_attempt_usage_tracks_cache_reads_and_writes_independently tests/capsule/test_attempts_v2.py::test_raw_attempt_service_tier_matrix_is_strict_and_preserves_billable_evidence -q
 ```
 
-Expected: FAIL because `TokenUsage`, `GenerationResult`, `ProviderError`, normalized evidence, and
+Expected: FAIL because the benchmark outcome records, normalized evidence, and
 `RawAttemptV2` do not expose the required cache-write/reasoning/tier evidence and the visible-token
 helper is absent.
 
-- [ ] **Step 6: Implement cache-write, reasoning, and returned-tier accounting without hiding usable evidence**
+- [ ] **Step 6: Implement exact applied/read/write/reasoning/tier/model evidence without hiding usable evidence**
 
-Extend `TokenUsage` with `cache_write_tokens`. In `openai.py`, parse `cached_tokens` and
-`cache_write_tokens` independently from `input_tokens_details`; absence of the detail or field maps
-to null, while bool, negative, noninteger, either value above input, or their sum above input makes
-usage malformed. Do not infer cache writes from cached reads and never convert a missing write count
-to zero.
+Parse only the canonical response paths listed in the stable interface. Derive
+`AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and `ServiceTierStatus` from raw
+values and delivery evidence; never accept status text from fixtures or provider objects. Preserve
+one raw-response source digest per applied/read/write/tier/usage/reasoning/model field even when the
+sanitized value is null. Do not infer one cache dimension from another and never convert missing to
+zero.
 
 Add `ReasoningTokenAccounting` and `_optional_reasoning_count(raw_usage, output_tokens)` in
 `openai.py`. The helper returns `(count, "reported")`, `(None, "not_reported")`, or
-`(None, "invalid")`; it does not raise `ProviderError` for breakdown-only defects.
+`(None, "invalid")`; it records the defect without raising a legacy `ProviderError`.
 
-Add `ServiceTierAccountingStatus` and the returned-tier fields/properties shown in the stable interface
-to `GenerationResult` and `ProviderError`. In `openai.py`, read `response.service_tier` independently
+Add the benchmark outcome records and fields shown in the stable interface; do not alter legacy
+`GenerationResult` or `ProviderError` bytes. In `openai.py`, read `response.service_tier` independently
 before later response/content/usage checks. Exact bounded `default` becomes `reported_default`;
 another safe bounded string becomes `mismatch` and is preserved; absence or an unsafe/unrepresentable
-value becomes `missing` with no unsafe value serialized. Copy the derived fields into every success and
-every response-received `ProviderError`. Never infer the requested tier from a missing response field,
+value becomes `missing` with no unsafe value serialized. Copy the derived fields into every
+`PublicBenchmarkResponseEvidenceV1` and `PublicBenchmarkProviderErrorEvidenceV1`. Never infer the requested tier from a missing response field,
 never coerce a value, and never discard usage/delivery evidence because the status is not
 `reported_default`.
-For a `ProviderError` raised before any Responses object exists, derive
+For a benchmark provider-error evidence record created before any Responses object exists, derive
 `not_applicable_definitely_not_sent` or `not_applicable_definitely_rejected` only when delivery exactly
 matches that suffix and provider usage is wholly unavailable. An `unknown` delivery with no returned
 tier remains `missing` and therefore retains worst-case exposure; do not use either not-applicable
 status as a generic missing-value default.
 
 Extend `AttemptUsageV2`, `_unavailable_provider_usage`, `_normalize_provider_usage`, raw payload
-helpers, and the class-bound normalization checks with `cache_write_tokens` and
-`cache_write_accounting`. Extend `NormalizedProviderEvidenceV2`, `_constant_normalized_error`,
-`_normalize_result`, `_normalize_error`, `normalize_provider_outcome`, all raw-attempt constructors,
+helpers, and class-bound checks with `cache_read_tokens`, `cache_write_tokens`,
+`ordinary_uncached_input_tokens`, and the two independent statuses. Extend `NormalizedProviderEvidenceV2`, `_constant_normalized_error`,
+`_normalize_benchmark_result`, `_normalize_benchmark_error`,
+`normalize_public_benchmark_outcome`, all raw-attempt constructors,
 and `RawAttemptV2` with requested/returned service tier and status. The normalization entry point
 requires `requested_service_tier: ServiceTier`, class-bound revalidates literal `default`, and
 independently enforces the delivery-aware status/value matrix; it does not trust a dataclass annotation
@@ -1330,21 +1545,21 @@ or supplied status. Enforce the cache matrix described in the stable interface p
 validation before the reasoning matrix:
 
 ```python
-for accounting, count, label in (
-    (self.cache_accounting, self.cached_input_tokens, "cache read"),
-    (self.cache_write_accounting, self.cache_write_tokens, "cache write"),
+reported = {"reported_zero", "reported_nonzero"}
+for status, count in (
+    (self.cache_read_status, self.cache_read_tokens),
+    (self.cache_write_status, self.cache_write_tokens),
 ):
-    if accounting == "reported":
-        if count is None:
-            raise ValueError(f"reported {label} accounting requires a count")
-    elif count is not None:
-        raise ValueError(f"unreported {label} accounting forbids a count")
-
-cache_counts = (self.cached_input_tokens, self.cache_write_tokens)
-if any(count is not None for count in cache_counts) and self.input_tokens is None:
-    raise ValueError("cache accounting requires input tokens")
-if self.input_tokens is not None and sum(count or 0 for count in cache_counts) > self.input_tokens:
-    raise ValueError("cache read plus write tokens exceed input tokens")
+    if (status in reported) != (count is not None):
+        raise ValueError("cache status/value mismatch")
+    if status == "reported_zero" and count != 0:
+        raise ValueError("reported_zero requires exact zero")
+    if status == "reported_nonzero" and (count is None or count <= 0):
+        raise ValueError("reported_nonzero requires a positive count")
+if self.input_tokens is not None:
+    expected = self.input_tokens - (self.cache_read_tokens or 0) - (self.cache_write_tokens or 0)
+    if expected < 0 or self.ordinary_uncached_input_tokens != expected:
+        raise ValueError("ordinary uncached input is inconsistent")
 ```
 
 Then enforce this exact reasoning matrix:
@@ -1361,14 +1576,13 @@ elif self.reasoning_tokens is not None:
     raise ValueError("unreported or invalid reasoning accounting forbids a count")
 ```
 
-Add `cache_write_tokens`, `reasoning_tokens`, and `response_service_tier` to replay's optional evidence
-fields. Present valid token values are independently `reported`; absence is `not_reported`; malformed
-fixture values and a cached-plus-write sum above input remain fixture-validation failures. Replay
-derives tier status by the same exact matrix and may not accept a fixture-supplied status override.
-Update every confirmatory replay fixture to state `cache_write_tokens: 0` and
-`response_service_tier: default` explicitly.
+Add exact applied mode/TTL, read/write/reasoning/tier, requested/returned model, and independent
+source digests to replay fixtures. Update every confirmatory fixture to echo explicit/30m, read zero,
+write zero, literal returned default tier, an exact requested model ID, and a separately consistent
+returned model ID. Replay derives every status and may not accept a fixture-supplied override.
 
-Export `ServiceTier` and `ServiceTierAccountingStatus` from `laconian_eval.providers`, list each exactly
+Export `ServiceTier`, `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and
+`ServiceTierStatus` from `laconian_eval.providers`, list each exactly
 once in `__all__`, and pin those public objects and the appended result/error fields in
 `tests/test_public_contract.py`. This is the sole public export surface; do not create a second tier
 alias in another provider module.
@@ -1380,15 +1594,15 @@ In `tests/capsule/test_execution.py`, extend the existing reconstructed-request 
 ```python
 assert request.reasoning_effort == "medium"
 assert request.text_verbosity == "medium"
-assert request.reasoning_mode == "omitted"
-assert request.prompt_cache_mode == "explicit"
-assert request.service_tier == "default"
-assert request.long_context_pricing == "forbidden"
+assert request.policy.reasoning_mode == "omitted"
+assert request.policy.prompt_cache_mode == "explicit"
+assert request.policy.prompt_cache_ttl == "30m"
+assert request.policy.service_tier == "default"
 ```
 
 For a default-tier response, also assert the committed `RawAttemptV2` has
 `requested_service_tier == returned_service_tier == "default"` and
-`service_tier_accounting_status == "reported_default"`. Repeat with a safe non-default returned tier and prove the
+`service_tier_status == "reported_default"`. Repeat with a safe non-default returned tier and prove the
 canonical attempt retains it with `mismatch`, makes no retry of that plan item, and exposes the
 non-`reported_default` status to the runtime policy boundary without releasing or rewriting any usage
 evidence.
@@ -1431,8 +1645,18 @@ git commit -m "feat: bind cache policy and token-tier evidence"
 Replace the run-bound golden in `tests/capsule/test_planning.py` with `test_parent_plan_ids_are_stable_across_capsule_runs`. Materialize the same resolved manifest/case index/arms after generating two distinct UUID4 values for unrelated capsule runs, and assert the same `PlanRowV1` tuple and byte-identical `plan_jsonl` result. The test must call the new interface only with `parent_manifest_sha256`:
 
 ```python
-first = materialize_parent_plan(SHA_A, manifest, case_index, arms)
-second = materialize_parent_plan(SHA_A, manifest, case_index, arms)
+first = materialize_parent_plan(
+    parent_manifest_sha256=SHA_A,
+    resolved_manifest=manifest,
+    case_index=case_index,
+    captured_arms=arms,
+)
+second = materialize_parent_plan(
+    parent_manifest_sha256=SHA_A,
+    resolved_manifest=manifest,
+    case_index=case_index,
+    captured_arms=arms,
+)
 assert first == second
 assert plan_jsonl(first) == plan_jsonl(second)
 ```
@@ -1461,7 +1685,7 @@ assert parent_plan[0].input_token_bound == expected_bound
 
 Create a one-row baseline fixture whose bound equals exactly 272,000 and assert it materializes.
 Increase only the prompt by one ASCII byte and assert the `PlanningError.code` is exactly
-`long_context_pricing_forbidden`. Forge only `prompt_utf8_bytes` or `input_token_bound` in otherwise
+`public_benchmark_input_bound_exceeded`. Forge only `prompt_utf8_bytes` or `input_token_bound` in otherwise
 valid canonical rows and require case-index/plan validation to reject them.
 
 Run:
@@ -1475,7 +1699,7 @@ are absent and current IDs require `run_id`.
 
 - [ ] **Step 3: Implement the stable parent plan API**
 
-Replace the three `run_id` preimages with the exact domain-separated mappings above. Rename `materialize_plan` to `materialize_parent_plan` and `validate_plan` to `validate_parent_plan`; both accept `parent_manifest_sha256` as their first argument and class-bound validate it as lowercase SHA-256.
+Replace the three `run_id` preimages with the exact domain-separated mappings above. Rename `materialize_plan` to `materialize_parent_plan` and `validate_plan` to `validate_parent_plan`; both use the stable keyword-only signatures and class-bound validate `parent_manifest_sha256` as lowercase SHA-256.
 
 Add `prompt_utf8_bytes` and `input_token_bound` to the strict record models shown in the stable
 interface. `materialize_case_index` computes the former while hashing the exact prompt. For every
@@ -1549,6 +1773,8 @@ Create `tests/capsule/test_sharding.py` with `test_shard_plan_round_trips_exact_
 unknown field
 uppercase or short digest
 blank model_id
+missing one of the exact three public model IDs
+extra or substitute model ID
 duplicate ordered_plan_item_ids
 row_count unequal to tuple length
 unknown derivation_version
@@ -1575,7 +1801,7 @@ Create `sharding.py` with `ShardPlanError`, `ShardPlanV1`, `project_shard_plans`
 `project_shard_plans` must:
 
 1. class-bound revalidate the resolved manifest, case index, captured arms, and every parent row;
-2. verify the parent plan using `validate_parent_plan(parent_plan, parent_manifest_sha256, resolved_manifest, case_index, captured_arms)` before grouping;
+2. verify the parent plan using `validate_parent_plan(parent_plan, parent_manifest_sha256=parent_manifest_sha256, resolved_manifest=resolved_manifest, case_index=case_index, captured_arms=captured_arms)` before grouping;
 3. compute `parent_plan_sha256 = sha256_bytes(plan_jsonl(parent_plan))`;
 4. order scenario groups by the first parent ordinal at which each scenario appears;
 5. retain within-group parent order exactly;
@@ -1591,7 +1817,7 @@ Create `sharding.py` with `ShardPlanError`, `ShardPlanV1`, `project_shard_plans`
 Build three resolved manifests from `resolved_manifest_v2_payload()` with models `gpt-5.6-sol`,
 `gpt-5.6-terra`, and `gpt-5.6-luna`, all four arms, five repetitions, 24 case-index rows,
 `reasoning_effort="medium"`, `text_verbosity="medium"`, `reasoning_mode="omitted"`,
-`prompt_cache_mode="explicit"`, `service_tier="default"`, `long_context_pricing="forbidden"`,
+`prompt_cache_mode="explicit"`, `prompt_cache_ttl="30m"`, `service_tier="default"`,
 `max_output_tokens=1024`, and null temperature. Materialize 480 parent rows per model, assert every
 row's request-config identity binds the literal default tier, assert every row's input-token bound is
 at most 272,000, and project all shards.
@@ -1603,7 +1829,13 @@ assert [len(parent) for parent in parents] == [480, 480, 480]
 assert len(shards) == 36
 assert {shard.row_count for shard in shards} == {40}
 assert sum(shard.row_count for shard in shards) == 1440
+assert {shard.model_id for shard in shards} == {
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+}
 ```
+
+Delete each requested model, add a fourth, and substitute any nonliteral model independently;
+`validate_public_generation_partition` must reject every case before hashing or projection.
 
 For every shard projection assert exactly two locales, four arms, five repetitions, one scenario UID, and no duplicate `(case_uid, repetition, arm)` key. Then call `validate_public_generation_partition`.
 
@@ -2687,12 +2919,12 @@ git commit -m "feat: restore capsule checkpoints safely"
 Add `test_public_foundation_round_trip_from_parent_plan_to_restored_seal` to `tests/capsule/test_checkpoint.py`. The test must perform this exact offline sequence:
 
 ```text
-construct three native-v2 model manifests with medium reasoning/verbosity and literal default service tier
+construct the three exact native-v2 model manifests with medium reasoning/verbosity, literal default service tier, explicit/30m cache control, five sourced rates, and SDK/lock identity
 materialize three stable 480-row parents
 derive and validate all 36 40-row shard plans
 prepare one captured shard capsule from one parent/shard pair
-execute all 40 requests with an injected fake provider returning reported reasoning tokens and literal default service tier
-assert every committed attempt requested and returned default with reported-default tier status
+execute all 40 requests with an injected fake provider echoing applied explicit/30m, read zero, write zero, reported reasoning tokens, literal default tier, and separately recorded returned model ID
+assert every committed attempt has applied/read/write statuses reported_exact/reported_zero/reported_zero, requested and returned default tier with reported_default, exact source digests, and one consistent returned model ID
 assert every visible-token value equals output_tokens minus reasoning_tokens
 finalize the capsule
 verify SEALED_COMPLETE and capsule_sha256
@@ -2704,7 +2936,8 @@ load the same scored sidecar against the restored capsule and require equal veri
 ```
 
 Assert the fake provider received exactly 40 calls, every request carried `reasoning={effort:
-medium}`, `text={verbosity: medium}`, and the exact wire pair `service_tier=default` through the
+medium}`, `text={verbosity: medium}`, exact `prompt_cache_options={mode: explicit, ttl: 30m}`, and
+`service_tier=default` through the
 injected client boundary, every resulting attempt classified the returned tier as `reported_default`, and no
 request from another scenario appears.
 
@@ -2775,9 +3008,10 @@ Before handing off this slice, record the fresh command outputs and final commit
 
 - the only sentence-count gates are the two prompt-grounded `user-decline` localized cases;
 - every material warning has exactly one frozen `material` or `critical` severity;
-- native-v2 request identity and injected Responses kwargs contain medium reasoning, medium verbosity, literal reasoning-mode omission, explicit prompt-cache mode with no breakpoints, literal `service_tier=default`, and forbidden long-context pricing;
-- every plan row binds that exact default-tier request identity plus a conservative standard-tier input-token bound at or below 272,000, and the price snapshot binds literal default tier while distinguishing uncached input, cached input, cache-write input, and output rates;
-- every attempt preserves cache-write evidence independently of cached-input evidence and preserves requested/returned service tier plus its delivery-aware derived status; only `reported_default` may reconcile trusted usage, while `missing` or `mismatch` on delivered/unknown work retains worst-case exposure and requires the runtime policy STOP without retry; the two exact not-applicable statuses are restricted to usage-free definitely-not-sent/rejected work so exact 429 retry semantics remain possible;
+- benchmark-only native-v2 request identity and injected Responses kwargs contain medium reasoning, medium verbosity, literal reasoning-mode omission, exact explicit/30m cache control with recursive no-breakpoint proof, and literal `service_tier=default`, while legacy `GenerationRequest` bytes remain unchanged;
+- OpenAI SDK 3.3.1, the tagged C0 `uv.lock` hash, typed request/response fields, and canonical response paths verify before credentials;
+- every plan row binds that exact default-tier request identity plus a conservative input-token bound at or below 272,000, and the price snapshot binds literal default tier plus five non-null sourced dimensions: ordinary uncached input, cache-read input, cache-write input, visible output, and reasoning output;
+- every attempt independently preserves applied mode/TTL, read, write, tier, usage, reasoning, requested model, returned model, and raw source digests with the exact closed status vocabularies; only `reported_exact/reported_zero/reported_zero/reported_default` may reconcile trusted no-cache usage, while missing/mismatch/invalid or nonzero evidence retains exposure and requires Runtime STOP; the exact not-applicable values are restricted to independently proven no-result/no-usage delivery states;
 - reported reasoning tokens yield visible tokens by exact subtraction, while missing or invalid reasoning breakdowns yield an unavailable metric;
 - three stable 480-row parent plans produce 36 disjoint 40-row scenario projections totaling 1,440 request identities;
 - a shard capsule captures its exact complete parent and shard plan and cannot execute outside its projection;
