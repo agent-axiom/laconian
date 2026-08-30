@@ -1,5 +1,7 @@
+import hashlib
 import re
 import struct
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -45,6 +47,10 @@ STANDALONE_URL = (
 )
 STANDALONE_REMOVE = 'rm "$HOME/.agents/skills/if/SKILL.md"'
 STANDALONE_RMDIR = 'rmdir "$HOME/.agents/skills/if"'
+SOCIAL_CARD_RENDER = (
+    "magick -background none assets/social/laconian-alpha.svg -strip "
+    "assets/social/laconian-alpha.png"
+)
 APPROVED_NEGATED_SOCIAL_CLAIMS = (
     "not proven",
     "no numeric token savings",
@@ -470,8 +476,22 @@ def test_social_launch_copy_is_explicitly_experimental() -> None:
 
 def test_social_card_has_exact_copy_and_dimensions() -> None:
     svg = _read("assets/social/laconian-alpha.svg")
-    for text in ("if", "The shortest complete answer.", "Experimental alpha"):
-        assert text in svg
+    root = ET.fromstring(svg)
+    visible_text = [
+        "".join(node.itertext())
+        for node in root.findall("{http://www.w3.org/2000/svg}text")
+    ]
+    assert visible_text == [
+        "if",
+        "The shortest",
+        "complete answer.",
+        "Experimental alpha",
+    ]
+    assert " ".join(visible_text[1:3]) == "The shortest complete answer."
+    assert f"Canonical PNG render: {SOCIAL_CARD_RENDER}" in svg
     png = (ROOT / "assets/social/laconian-alpha.png").read_bytes()
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert struct.unpack(">II", png[16:24]) == (1200, 630)
+    assert hashlib.sha256(png).hexdigest() == (
+        "53edc82ed51ce4dfd16280de39b0c6285dbbd0b7e1c7dfa94de817a0918b47f9"
+    )
