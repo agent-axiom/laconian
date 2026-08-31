@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-30
 
-**Status:** Constructive-liveness, credential-finality, and exact-wire amendment approved;
-implementation may proceed only after the implementation plans are synchronized to this approved
-normative commit
+**Status:** Legacy-v1 price-migration and Foundations preflight-closure amendment approved;
+amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a handoff that
+records this governance-only successor as `PLAN_BASE_SHA`
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -14,15 +14,22 @@ the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with t
 design; it did not approve the later attestation-transport amendment whose separate approval is
 recorded below.
 
-**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+**Prior approved normative baseline:** On 2026-08-31, the maintainer/user in this Codex task explicitly
 approved the normative design at commit `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` with the exact
-message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. This governance-only
-successor records that approval without changing normative behavior. Approval of
+message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Governance-only successor
+`d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` records that approval. Approval of
 `55b90582ae461cf7a3dc072d53d8b03e79fb3614` remains historical evidence for the prior approved
-design. Implementation may proceed only after the implementation plans are synchronized to the
-newly approved normative commit.
+design. That approval remains historical authority for the `05e3d7ba` baseline only.
 
-**Approved amendment scope:** This revision closes constructive-liveness, credential-finality, and
+**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+approved the normative design at commit `e67ad191623316f69523b051fba48ec2e7492493` with the exact
+message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. This governance-only
+successor records that approval without changing normative behavior and synchronizes the
+Foundations plan. Amendment-dependent implementation may proceed only from a handoff that records
+this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment re-blocks every affected
+task until separately approved and governance-recorded.
+
+**Prior approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
 exact-wire gaps without changing the benchmark estimand, workload, model set, statistical gates,
 public replay surface, workflow inventory, or three-App inventory. It (1) gives every in-flight
 publication PR one phase-aware terminal disposition, including every merge-before-close race, (2)
@@ -33,6 +40,15 @@ executable intent, effect delivery, and final reconciliation, and (5) admits the
 publication and four initial-release receipt appends through two closed, state-byte-identical
 authority mutation families rather than undefined generic write channels. Fixed jobs acquire more
 precise caller/endpoint policies, but no workflow file or App role is added.
+
+**Approved amendment scope:** This revision closes one legacy-v1 price-migration gap and the
+corresponding Foundations Tasks 3–5 preflight ambiguities. It preserves raw legacy-v1 manifest
+acceptance but refuses to upgrade a legacy three-rate price snapshot into native-v2 campaign
+authority; freezes the sole request projection, evidence ownership/digest semantics, malformed
+usage-detail preservation, and separate strict benchmark replay fixture; and fixes the parent-plan
+identity signatures plus complete prehash input-bound preflight. It does not change the estimand,
+workload, model set, wire keys, five-rate native-v2 price contract, replay command inventory,
+workflow inventory, or App inventory.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -176,7 +192,9 @@ All three models use the Responses API with explicit, captured settings:
 - `store: false`;
 - literal `prompt_cache_options: {"mode": "explicit", "ttl": "30m"}` and no cache
   breakpoint;
-- no temperature value sent; and
+- the public request fields remain exactly `instructions: str | None` and `prompt: str`; a non-null
+  temperature is rejected before any Responses API/client call, and no temperature value is sent;
+  and
 - the existing `system_suffix` instruction placement.
 
 Explicit reasoning and verbosity prevent provider-default drift from silently changing the
@@ -218,20 +236,32 @@ wire contract has exactly this cache-control member:
 "prompt_cache_options": {"mode": "explicit", "ttl": "30m"}
 ```
 
-`prompt_cache_key` and deprecated `prompt_cache_retention` are absent. The canonical `instructions`
-and recursively every object inside canonical `input` contain no `prompt_cache_breakpoint` key;
-the verifier rejects that key at any depth before serialization. No other cache-control member is
-allowed. The [Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+`prompt_cache_key` and deprecated `prompt_cache_retention` are absent. The public request's canonical
+`instructions` and `input` values remain string leaves; they are never widened to arbitrary object
+trees. One generic recursive cache-control validator rejects `prompt_cache_breakpoint`,
+`prompt_cache_key`, `prompt_cache_retention`, `prompt_cache_options`, and every other exact built-in
+string key that starts with `prompt_cache_` at any depth in synthetic object-tree tests; the
+literal unknown vector is `prompt_cache_unknown`. The live adapter invokes that same validator on
+the real string leaves before serialization. Only the top-level `prompt_cache_options` mapping
+created by the sole builder is allowed. The [Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 defines these GPT-5.6+ fields, and the dated
 [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) states that
 explicit mode with no explicit breakpoint neither uses prompt caching nor creates cache writes.
-The request bytes, provider kwargs, and captured projection must be byte-equivalent on these
-members; SDK defaults or omission cannot satisfy the contract.
+The Task 2-owned `_public_benchmark_responses_kwargs` result object is the sole live request and
+capture projection. Canonical request bytes and their digest are computed from that mapping, and
+the provider call consumes that same mapping; Task 3 may not copy it into a durable request schema,
+reconstruct it through a second mapper, or maintain a parallel projection. The exact confirmatory
+output remains the frozen nine-key projection `model`, `instructions`, `input`,
+`max_output_tokens`, `store`, `reasoning`, `text`, `prompt_cache_options`, `service_tier`. SDK
+defaults or omission cannot satisfy the contract.
 
 The tagged live protocol also binds OpenAI Python SDK version `3.3.1` and the exact C0-derived
 `uv.lock` member hash. Preflight imports that pinned distribution, verifies that its typed request
-and response models expose every frozen field/path, and rejects a different installed version,
-lock member, serializer projection, or response model before credentials.
+and response models expose every frozen wire/content-root/accounting/returned-model field/path, and rejects a
+different installed version, lock member, serializer projection, or response model before
+credentials. The SDK gate verifies the exact content roots `response.id`, `response.status`,
+`response.error`, and `response.output`; the unmodeled `response.output_text` convenience property
+is forbidden as evidence.
 
 The canonical raw-response paths are exactly:
 
@@ -246,6 +276,74 @@ response.usage.output_tokens
 response.usage.output_tokens_details.reasoning_tokens
 response.usage.total_tokens
 ```
+
+That nine-member list is accounting-only. `response.model` remains the separately frozen
+returned-model path. Committed `output_text` is derived only from `response.output`: iterate items
+in order, inspect only exact `type="message"` items, iterate their content in order, append `.text`
+only for exact `type="output_text"` members, and concatenate with no separator. Every appended value
+and the final result is an exact built-in string; the result is nonblank and within the existing
+output byte bound. The SDK convenience property `response.output_text` is never read and is not
+evidence. The derived string is carried as `PublicBenchmarkResponseEvidenceV1.output_text`
+immediately after `raw_response_sha256`, has no separate source-digest field, and is source-bound by
+the full `response.output` tree in the envelope digest. The attempts-owned `OutputString` remains
+exactly `Annotated[str, BeforeValidator(_output_string)]`: its before-validator requires
+`type(value) is str`, strict UTF-8 encodability, a nonblank result by `value.strip()`, and encoded
+length at most `RESOURCE_LIMITS_V1.output_utf8_bytes`. It returns the original value without
+stripping, normalizing, or rejecting controls. A bounded nonblank control-bearing or non-NFC string
+therefore remains valid only in ephemeral response evidence; string subclasses, lone surrogates,
+blank values, and values one encoded byte over the bound are rejected. The outcome is ephemeral
+until the attempts-owned normalizer applies the existing sanitizer and constructs durable attempt
+evidence; unsanitized output is never persisted. Provider-error evidence has no output field.
+
+`PublicBenchmarkRawResponseSourceV1` is the exact ordered 14-entry typed SDK projection:
+
+```text
+response.id
+response.status
+response.error
+response.output
+response.model
+response.service_tier
+response.prompt_cache_options.mode
+response.prompt_cache_options.ttl
+response.usage.input_tokens
+response.usage.input_tokens_details.cached_tokens
+response.usage.input_tokens_details.cache_write_tokens
+response.usage.output_tokens
+response.usage.output_tokens_details.reasoning_tokens
+response.usage.total_tokens
+```
+
+Each entry has exactly `{path, present, value}`. Missing is `present=false, value=null`; explicit
+null is `present=true, value=null`. Present SDK `BaseModel` values use `model_dump(mode="json")`, so
+a nonnull `response.error` binds its dumped code/message tree. Every value must be representable as
+a capsule-canonical JSON tree, and the canonical bytes of the complete 14-entry record must be at
+most `RESOURCE_LIMITS_V1.raw_jsonl_row_bytes`; coercion, fallback rendering, unsupported types,
+nonfinite numbers, unbounded trees, and projection failures are forbidden. The source digest is
+exactly:
+
+```python
+stable_digest(
+    "laconian-public-benchmark-raw-response-source-v1",
+    source.model_dump(mode="json"),
+)
+```
+
+Despite the stable field name `raw_response_sha256`, it commits this typed SDK projection, not
+unavailable raw HTTP response-body bytes. The exact class-bound projection is carried in ephemeral
+evidence as `raw_response_source`. Response evidence requires both `raw_response_source` and
+`raw_response_sha256` to be nonnull; provider-error evidence requires that pair to be both nonnull
+or both null. With a nonnull pair, its class-bound validator recomputes the digest from
+`raw_response_source.model_dump(mode="json")` before checking every per-field source digest. The
+attempts-owned normalizer validates the outcome and then drops `raw_response_source`, including its
+unsanitized `response.output` tree. It transfers the verified digest value only into the frozen
+per-field source-digest fields; neither the source record nor a standalone `raw_response_sha256`
+can enter normalized evidence, `RawAttemptV2`, attachments, or another durable artifact. The
+provider-error source digest is exactly
+`stable_digest("laconian-public-benchmark-provider-error-source-v1", error_evidence.model_dump(mode="json"))`
+after excluding `error_source_sha256` and every per-field `*_source_sha256`. Class-bound validators
+recompute these acyclic preimages. The error preimage includes `raw_response_source` and
+`raw_response_sha256` when present; only the named digest fields are excluded.
 
 No alternate, flattened, inferred, billing-dashboard, or SDK convenience path is response
 evidence. A Responses result must echo applied options exactly as
@@ -264,7 +362,15 @@ attempt maps to its corresponding `not_applicable_*`; absent/null evidence maps 
 different well-formed value maps to `mismatch`; and wrong types or source-digest failure map to
 `invalid`. Unknown delivery maps to `missing`. Every attempt stores `cache_read_tokens` only from
 `response.usage.input_tokens_details.cached_tokens` and `cache_write_tokens` only from
-`response.usage.input_tokens_details.cache_write_tokens`, each with its raw-response source digest.
+`response.usage.input_tokens_details.cache_write_tokens`. When a canonical 14-entry raw-response
+projection exists, every per-field model/tier/applied-cache/read/write/usage/reasoning source-digest
+field equals its one `raw_response_sha256`; no path-specific digest is invented. Otherwise every
+such field equals `error_source_sha256` and `raw_response_sha256` is null. Raw-null is allowed only
+when no Responses object exists or when a received object cannot be represented as the bounded
+canonical projection. In the latter case the adapter returns output-free
+`PublicBenchmarkProviderErrorEvidenceV1` with `delivery_certainty=response_received`, wholly
+unavailable usage, null response-derived values, safely derived missing/invalid statuses, and full
+worst-case exposure. Model validators enforce these closed cases.
 For a complete response, both must be nonnegative integers, each must not exceed `input_tokens`,
 their sum must not exceed `input_tokens`, and
 `ordinary_uncached_input_tokens = input_tokens - cache_read_tokens - cache_write_tokens`.
@@ -287,6 +393,19 @@ failure maps to `invalid`. Unknown delivery without a trustworthy result maps to
 both. No other transition is valid, and the status of one dimension cannot supply or change the
 other.
 
+A malformed cache-read or cache-write detail does not turn a received Responses object into a
+provider error. The adapter emits `PublicBenchmarkResponseEvidenceV1`, sets only the affected count
+to null with status `invalid`, and preserves response identity, output, returned model/tier,
+applied-cache evidence, and every other usable usage dimension. If both details are malformed, both
+are independently null/`invalid`. A jointly inconsistent read-plus-write sum also makes both counts
+null and both statuses `invalid`, even when each raw value is independently a nonnegative integer.
+The response and all other usable evidence remain present.
+
+More generally, a completed response with valid `output_text` stays response evidence when cache,
+reasoning, tier, or accounting detail is malformed; only the affected typed fields/statuses degrade
+while output and other usable evidence remain. Invalid or missing completed output, or another
+structural failure that cannot form response evidence, uses the output-free provider-error record.
+
 Only `reported_exact/reported_zero/reported_zero` across applied-control/read/write, or the matching
 triple of independently proven `not_applicable_*` statuses, satisfies the no-read/no-write contract.
 Any nonzero cache read retains the read charge, appends STOP, and permits zero later calls. Any
@@ -305,11 +424,58 @@ forbidden.
 ordinary-uncached-input, cache-read-input, cache-write-input, visible-output, and reasoning-output
 prices and their source evidence.
 
+Raw schema-v1 manifests keep their existing compatibility boundary: `RunManifest` and
+`project_v1_manifest` accept a legacy three-rate `price_snapshot`. The private legacy projection
+preserves `source_url` as exact authored text while currency, date, and numeric fields retain the
+legacy-normalized semantics established by validation; the normalized `RunManifest` URL is not
+projection authority. That projection is not native-v2 price authority. Capsule
+preparation and direct v1 upgrade fail closed with stable code
+`v1_price_snapshot_requires_native_v2` whenever the legacy snapshot is non-null, before case, arm,
+replay, or protocol input capture and before provider construction, credential access, or provider
+access. The constant public error instructs an explicit migration to a native-v2 five-rate,
+five-source-evidence snapshot. No rate or evidence is synthesized, dropped, renamed, or mapped.
+Unpriced v1 manifests retain their existing upgrade behavior.
+
 The versioned conservative input-exposure rule is frozen and proves an upper bound of at most
 `272_000` input tokens for each request attempt. The price snapshot, batch plan, and ledger reserve
 only under the ordinary `default`-tier price schedule at that bound. Long-context pricing is not an
 authorized price class and must not be used to authorize, reserve, or reconcile campaign spend;
 an attempt that cannot be proven within the bound stops before dispatch.
+
+Parent-plan identity helpers have only these keyword-only APIs:
+
+```python
+block_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int)
+pairing_unit_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int)
+plan_item_id(
+    *,
+    parent_manifest_sha256: str,
+    case_uid: str,
+    repetition: int,
+    arm: ArmName,
+    instruction_sha256: str,
+    request_config_sha256: str,
+    input_token_bound: int,
+)
+```
+
+Planning derives instruction bytes only as
+`b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")`; no
+`Arm.instruction_bytes` field participates. `materialize_parent_plan` completes the conservative
+bound derivation for the entire prospective Cartesian plan before computing any block, pairing,
+request-config, or plan-item identity or constructing any `PlanRowV1`. A real oversized row fails
+with `PlanningError.code == "public_benchmark_input_bound_exceeded"`. `validate_parent_plan`
+independently reconstructs the same bounds and uses that same code for an actually oversized input;
+a forged bound or identity on a nonoversized reconstruction uses the existing `plan_mismatch` code.
+The former `materialize_plan`/`validate_plan` names and run-bound identity signatures are removed
+without compatibility aliases.
+
+Immediately before request construction, execution recomputes the conservative bound from verified
+captured strings, requires equality with the verified row, and recomputes `plan_item_id` from
+`context.capsule.manifest_sha256`, the verified row fields, and that recomputed bound. It rejects any
+mismatch before a provider call. Parent planning has no run-UUID parameter; two preparations of the
+same captured inputs still receive different capsule run IDs while producing byte-identical parent
+plans.
 
 Provider evidence must capture `output_tokens_details.reasoning_tokens` in addition to total
 provider `output_tokens`. The visible-response token count is defined as provider output tokens
@@ -319,6 +485,19 @@ token-based result unavailable rather than silently treating hidden reasoning as
 The requested model IDs and the public model identifiers returned by the API are both retained.
 Successful responses for one model campaign must resolve consistently. A mixed returned-model
 identifier invalidates that model campaign rather than being silently pooled.
+
+`OutputString`, the benchmark outcome/evidence models, and `PublicBenchmarkProvider` protocol have
+one owner, `laconian_eval.capsule.attempts`. `laconian_eval.providers.base` owns the request types and
+bounds, `ReasoningTokenAccounting`, exactly four evidence-status aliases (`ServiceTierStatus`,
+`AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`), and legacy-compatible
+`TokenUsage`; it owns no benchmark outcome/evidence/protocol or output type. `ServiceTier` remains
+owned by `laconian_eval.capsule.schema`. The providers package adds only the five approved alias
+re-exports `ServiceTier`, `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and
+`ServiceTierStatus`; it does not re-export the benchmark outcome/evidence/protocol,
+`ReasoningTokenAccounting`, or `OutputString`. Offline
+benchmark replay uses a distinct strict `replay-public-benchmark-responses.yaml` fixture and a
+benchmark-only parser/method; the legacy replay fixture, schema, parser, and `generate` method remain
+byte- and behavior-unchanged.
 
 ### 6.3 Randomization
 
@@ -1006,6 +1185,28 @@ derivation-version, ordered request identities, row count, and its own hash. A c
 from this captured projection; selective execution from an unmodified full manifest is forbidden.
 Aggregation binds the ordered set of all 36 generation-capsule hashes, and no pair crosses capsule
 or run identity.
+
+The campaign partition validator accepts only the exact aligned inputs `campaign_id`, three
+resolved manifests, three unique parent-manifest hashes, three case indexes, three captured-arm
+sequences, three parent plans, and the shard tuple. All five parent-aligned sequences have length
+exactly three, and each aligned tuple is passed through `validate_parent_plan` with its manifest,
+hash, case index, captured arms, and parent plan.
+Manifest/model/parent order is exactly `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; every
+manifest is an OpenAI manifest for its aligned literal model, every parent plan revalidates against
+its aligned manifest/hash, and every shard repeats the exact caller campaign ID. The global shard
+sequence is caller parent order followed by each parent's 12 scenario groups in first-appearance
+order. Set-equivalent reordering is invalid.
+
+Shard projection class-bound revalidates the shard and parent rows, verifies the exact parent-plan
+hash, unique exact ID membership, and a single matching scenario, then changes only local ordinal.
+The shard-plan file is exactly existing capsule canonical JSON plus one LF; its reader removes
+exactly one LF, strictly parses/revalidates, and requires byte-identical re-encoding. Planning paths
+are absolute or relative only to the invocation working directory, may be outside the authored
+manifest/input root, and are bounded no-follow regular-file reads. Parent and shard over-limit
+failures use `parent_plan_limit` and `shard_plan_limit`; unsafe/open/read failures use
+`planning_input_read_failed`. Any canonical/content/hash/self-hash/projection mismatch uses
+`plan_mismatch`, while exactly one absent planning input remains `missing_path`. Task 5 extends the
+current verifier path grammar; later policy extraction preserves that grammar without changing it.
 
 GitHub applies environment protection to each job, not once to an entire campaign. The workflow
 therefore uses a resumable bounded batch controller rather than 36 generation plus 36 judge
@@ -9893,16 +10094,19 @@ rather than weakening the protocol.
 
 ### 14.3 Confirmatory sequence
 
-The constructive-liveness, credential-finality, and exact-wire gate was satisfied by the 2026-08-31
+The legacy-v1 price-migration and Foundations preflight-closure gate was satisfied by the 2026-08-31
 exact maintainer/user approval of normative commit
-`05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, recorded by this governance-only successor with the
-exact message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Approvals of
-`55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
+`e67ad191623316f69523b051fba48ec2e7492493`, recorded by this governance-only successor with the
+exact message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Approvals of
+`05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
+`55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
 `46147ef62b5bb009421d58928e879d92247d84b5` remain historical evidence for their earlier normative
-designs. Implementation may proceed only after plan synchronization; any later normative amendment
-repeats the same approval process.
+designs. Amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a
+handoff that records this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment
+repeats the same exact-commit approval and governance-recording process.
 
-After that exact approval, plan synchronization, and the still-required implementation, the release sequence is:
+After that exact approval, governance recording, `PLAN_BASE_SHA` handoff, and the still-required
+implementation, the release sequence is:
 
 1. the full provider-offline synthetic campaign, including complete serial tag-pair construction
    and offline object-closure replay, is green;
@@ -10052,12 +10256,13 @@ The system is ready for the full campaign only when:
 
 - the governance prerequisite is satisfied by this governance-only successor recording the
   2026-08-31 exact approval of normative commit
-  `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` with message
-  `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`; approvals
-  `55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
-  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical, the implementation plans must be
-  synchronized before implementation proceeds, and any later normative amendment requires another
-  exact approval;
+  `e67ad191623316f69523b051fba48ec2e7492493` with message
+  `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`; approvals
+  `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
+  `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
+  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; the synchronized Foundations plan
+  in this successor must be recorded at handoff as `PLAN_BASE_SHA` before amendment-dependent Tasks
+  2–5 implementation proceeds, and any later normative amendment requires another exact approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
@@ -10067,11 +10272,15 @@ The system is ready for the full campaign only when:
 - manifest/request evidence captures literal wire `service_tier: "default"`, returned-tier evidence
   and the exact closed accounting vocabulary; literal `prompt_cache_options` explicit/`30m` with
   forbidden cache keys and no breakpoint; exact returned applied-control/read/write paths and
-  separate exhaustive status enums; pinned SDK/lock identity; medium reasoning; medium verbosity;
-  and the reasoning-token breakdown required for visible-token scoring;
+  separate exhaustive status enums; one common raw-response or error-envelope source digest for all
+  per-field sources; malformed cache details that preserve the received response and all other
+  usable evidence; pinned SDK/lock identity; medium reasoning; medium verbosity; and the
+  reasoning-token breakdown required for visible-token scoring;
 - every requested model ID has a reviewed non-null cache-write rate, both tier fields equal
   `"default"`, the versioned conservative input bound is at most `272_000`, and neither
-  authorization nor reservation can select long-context pricing;
+  authorization nor reservation can select long-context pricing; a priced legacy-v1 manifest can
+  neither enter capsule input capture nor be upgraded without explicit native-v2 five-rate/source-
+  evidence migration, and every parent-plan bound is preflighted before identity construction;
 - the corpus-neutrality edit and warning-severity schema are frozen and validated;
 - the workflow can reconstruct, verify, and resume an exact tarred checkpoint including
   `.laconian.lock`;
