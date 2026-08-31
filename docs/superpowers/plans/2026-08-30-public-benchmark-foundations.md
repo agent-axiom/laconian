@@ -4,7 +4,7 @@
 
 **Goal:** Build the immutable generation foundations required by the approved three-model benchmark: a neutral severity-annotated corpus, exact native-v2 reasoning, verbosity, no-write prompt-cache, and literal default-service-tier requests, complete token-usage and returned-tier evidence, conservative standard-tier input bounds, stable parent request identities, 36 scenario shards, public sealing, sealed verification, a verified deterministic scored sidecar, and safely restorable uncompressed checkpoints.
 
-**Architecture:** Keep authored experiment data, deterministic parent planning, mutable capsule execution, immutable sealing, and checkpoint transport as separate trust boundaries. Parent request identities derive from immutable manifest, cache/tier policy, and request input bounds rather than a random run UUID; each shard captures the complete parent plan plus one hash-bound 40-row projection, while per-attempt and response identities remain bound to the capsule run. Sealing and checkpoint restore reuse one exact capsule-tree policy, descriptor-relative no-follow I/O, canonical JSON, bounded streaming, fsync, and atomic no-replace publication.
+**Architecture:** Keep authored experiment data, deterministic parent planning, mutable capsule execution, immutable sealing, and checkpoint transport as separate trust boundaries. The parent-planning API contains no run UUID; parent request identities derive from immutable manifest, cache/tier policy, and request input bounds. Each shard captures the complete parent plan plus one hash-bound 40-row projection, while per-attempt and response identities remain bound to the capsule run. Sealing and checkpoint restore reuse one exact capsule-tree policy, descriptor-relative no-follow I/O, canonical JSON, bounded streaming, fsync, and atomic no-replace publication.
 
 **Tech Stack:** Python 3.11+, Pydantic 2 strict/frozen models, OpenAI Responses API adapter, canonical JSON/JSONL and SHA-256, POSIX descriptor APIs, deterministic USTAR encoding, pytest, Ruff, and mypy.
 
@@ -12,8 +12,8 @@
 
 ## Execution contract
 
-- Normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16.
-- Approval metadata: governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad`, recording the maintainer/user's exact 2026-08-31 approval message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Milestone 0 is complete, but implementation starts only after the synchronized five-plan commit is recorded at handoff as `PLAN_BASE_SHA`. A later normative amendment re-blocks every affected task until separately approved.
+- Latest approved normative baseline: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16. This plan also synchronizes the proposed legacy-v1-price and Foundations Tasks 3–5 preflight-closure amendment carried in the same branch. Unaffected baseline-authorized work may proceed, but amendment-dependent implementation in Tasks 2–5 may not be committed or merged as complete until the exact normative amendment commit is separately approved and that approval is governance-recorded.
+- Approval metadata: governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad`, recording the maintainer/user's exact 2026-08-31 approval message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. That approval remains historical authority for the `05e3d7ba` baseline only and does not approve the pending bytes. Amendment-dependent code may be developed and tested, and unaffected baseline-authorized work may proceed, but amended behavior may be committed or merged as complete only after the exact normative amendment commit receives its own exact approval, a governance-only successor records it, and a synchronized plan commit is recorded at handoff as `PLAN_BASE_SHA`.
 - Seal grammar: [Laconian v0.1 Generation Capsule Design](../specs/2026-08-24-v0.1-generation-capsule-design.md), especially Sections 14–17.
 - Provider cache/usage contract: [OpenAI Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create), [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching), and [GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model), frozen into the reviewed manifest rather than fetched during execution.
 - Worktree: `/Users/if/PycharmProjects/agent-axiom/laconian/.worktrees/public-benchmark-design`.
@@ -32,13 +32,13 @@ evals/cases/response-smoke.yaml                 remove 14 ungrounded sentence ca
 evals/README.md                                 document neutrality and severity contract
 src/laconian_eval/models.py                     strict semantic-warning severity schema
 src/laconian_eval/capsule/schema.py             reasoning/verbosity/cache-TTL/service-tier and planning-input scalar types
-src/laconian_eval/capsule/manifest_models.py    authored/resolved native-v2 generation and five-dimension price settings
-src/laconian_eval/capsule/capture.py            v1-compatible resolution of the new settings
-src/laconian_eval/providers/base.py             legacy request plus versioned benchmark request/policy, bounds, and exact evidence
+src/laconian_eval/capsule/manifest_models.py    authored/resolved native-v2 settings plus private legacy-v1 price projection
+src/laconian_eval/capsule/capture.py            v1-compatible resolution and priced-v1 pre-capture refusal
+src/laconian_eval/providers/base.py             request/policy, bounds, reasoning/four status aliases, and TokenUsage
 src/laconian_eval/providers/openai.py           SDK-3.3.1 exact Responses wire and canonical response-path parsing
-src/laconian_eval/providers/replay.py           offline applied/read/write/reasoning/tier/model fixture support
-src/laconian_eval/providers/__init__.py         public benchmark evidence/status exports
-src/laconian_eval/capsule/attempts.py            canonical applied/read/write/reasoning/tier/model evidence and visible tokens
+src/laconian_eval/providers/replay.py           separate strict benchmark replay while preserving legacy replay
+src/laconian_eval/providers/__init__.py         SDK exports plus ServiceTier/four statuses; no outcome/evidence/protocol
+src/laconian_eval/capsule/attempts.py            sole OutputString/outcome/evidence/protocol owner and attempt evidence
 src/laconian_eval/capsule/execution.py           reconstructed benchmark requests and canonical attempt evidence
 src/laconian_eval/capsule/planning.py            stable parent plan identities and validation
 src/laconian_eval/capsule/sharding.py            ShardPlanV1 construction, hashing, projection, and coverage
@@ -64,7 +64,8 @@ tests/capsule/test_capture.py                     v1/v2 resolution compatibility
 tests/capsule/test_planning.py                    request hash and stable parent identity tests
 tests/test_openai_provider.py                     exact wire, returned tier, bound, and usage-detail parsing
 tests/test_providers.py                           replay cache-write/reasoning-token/tier compatibility
-tests/fixtures/replay-responses.yaml              explicit replay cache-write and returned-tier evidence
+tests/fixtures/replay-responses.yaml              unchanged legacy replay fixture
+tests/fixtures/replay-public-benchmark-responses.yaml strict benchmark-only replay evidence
 tests/capsule/test_attempts_v2.py                 canonical cache-write, tier, and visible-token evidence
 tests/capsule/test_execution.py                   manifest-to-request/attempt tier reconstruction
 tests/capsule/test_sharding.py                     36-by-40 partition and hostile-plan tests
@@ -186,6 +187,16 @@ class ResolvedPriceSnapshotV1(CapsuleModel):
     source_evidence: tuple[PriceSourceEvidenceV1, ...]
 
 
+# src/laconian_eval/capsule/manifest_models.py — private compatibility projection only.
+class _V1LegacyPriceSnapshotProjection(CapsuleModel):
+    currency: Literal["USD"] = "USD"
+    effective_date: ExactDate
+    source_url: ExactAsciiHttpUrl
+    input_per_million: NonNegativeFiniteFloat
+    cached_input_per_million: NonNegativeFiniteFloat | None = None
+    output_per_million: NonNegativeFiniteFloat
+
+
 # src/laconian_eval/providers/base.py — leave legacy GenerationRequest unchanged.
 class PublicBenchmarkRequestPolicyV1(CapsuleModel):
     schema_version: Literal["PublicBenchmarkRequestPolicyV1"]
@@ -219,6 +230,25 @@ snapshots stays outside the public validator. The canonical digest binds literal
 `service_tier="default"`; `auto`, `flex`, `priority`, `ultrafast`, omission, an unsourced rate, or a
 long-context price class is invalid. Runtime reuses these exact field names and does not redefine
 the schema.
+
+`RunManifest` remains the sole public schema-v1 validation boundary. `project_v1_manifest` accepts
+a legacy three-rate `price_snapshot` only as
+`_V1LegacyPriceSnapshotProjection`; both `V1UpgradeProjection.price_snapshot` and
+`_V1ProjectionInput.price_snapshot` use that private type. It is never coerced into either native-v2
+snapshot shape. The projection retains `source_url` as exact authored text; currency, date, and
+numeric members retain legacy-normalized semantics, and `RunManifest`'s normalized URL is
+validation-only rather than projection authority. A non-null private legacy snapshot makes
+`capture_authored_inputs` and direct
+`upgrade_v1_manifest` raise `CaptureError(code="v1_price_snapshot_requires_native_v2")`. Its constant
+message is exactly:
+
+```text
+v1 price snapshots require explicit migration to a native-v2 five-rate source-evidence manifest
+```
+
+This guard runs before case/arm/replay/protocol capture and before any provider, credential, or
+client access. No legacy rate/evidence is synthesized, dropped, renamed, or mapped; unpriced v1
+upgrades are unchanged.
 
 Both snapshot validators require `source_evidence` in the literal `PriceDimensionV1` order with no
 missing, extra, duplicate, or reordered member. Each `usd_per_million` must exactly equal the
@@ -265,11 +295,17 @@ kwargs["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
 kwargs["service_tier"] = "default"
 ```
 
-Before serialization, recursively walk canonical `instructions` and every object in canonical
-`input` and reject a `prompt_cache_breakpoint` key at any depth. The adapter never sends
+`PublicBenchmarkRequestV1.instructions` remains exactly `str | None` and `.prompt` remains exactly
+`str`; neither request field is widened to an object union. Before serialization, call the generic
+recursive cache-control helper on those real string leaves. Test the helper directly with synthetic
+dict/list/tuple trees carrying forbidden keys at multiple depths and with real string leaves. It
+rejects every exact built-in string key that starts with `prompt_cache_`; the unknown test vector is
+literal `prompt_cache_unknown`. Do not feed those synthetic trees through the public request type.
+The adapter never sends
 `prompt_cache_key`, deprecated `prompt_cache_retention`, any other cache-control member,
 `reasoning_mode`, or a pricing policy; it never omits or sends `service_tier="auto"`, and it never sends `temperature`
-when null and continues sending `store=False`. The request-config preimage is:
+when null, rejects any non-null temperature before any Responses API/client call, and continues
+sending `store=False`. The request-config preimage is:
 
 ```python
 {
@@ -309,7 +345,8 @@ Task 2 pins `openai==3.3.1` in `pyproject.toml`/`uv.lock` and solely owns the pu
 and its public exports. Runtime invokes that gate with the independently verified C0 `uv.lock` bytes
 and tagged member hash before any credential lookup, client construction, or provider access. The
 gate proves the installed distribution is exactly `3.3.1`, the complete frozen `openai` lock member
-is exact, and the SDK typed request and response models expose every frozen field/path. Task 3 owns
+is exact, and the SDK typed request and response models expose every frozen request field, four
+content roots, nine accounting paths, and returned-model path. Task 3 owns
 the benchmark-only request/response adapter used only after that precredential gate. Request bytes,
 provider kwargs, and captured projection must be byte-equivalent for all frozen request members.
 
@@ -362,11 +399,29 @@ class TokenUsage:
     reasoning_token_accounting: ReasoningTokenAccounting = "not_reported"
 
 
-# Legacy GenerationResult/ProviderError bytes remain unchanged. The public benchmark adapter
-# constructs PublicBenchmarkResponseEvidenceV1 directly from canonical raw Responses bytes.
+# Legacy GenerationResult/ProviderError bytes remain unchanged. Within the benchmark evidence
+# surface, this module owns ReasoningTokenAccounting, the four status aliases above, and TokenUsage;
+# it also owns the request types/bounds, but no outcome, evidence, protocol, OutputString, or
+# ServiceTier definition. ServiceTier remains owned by capsule.schema.
 
 
 # src/laconian_eval/capsule/attempts.py
+def _output_string(value: object) -> str:
+    if type(value) is not str:
+        raise ValueError("output must be a string")
+    bounded_utf8_length(
+        value,
+        limit=RESOURCE_LIMITS_V1.output_utf8_bytes,
+        code="output_utf8_limit",
+    )
+    if not value.strip():
+        raise ValueError("output must not be blank")
+    return value
+
+
+OutputString: TypeAlias = Annotated[str, BeforeValidator(_output_string)]
+
+
 class AttemptUsageV2(CapsuleModel):
     input_tokens: StrictNonNegativeInt | None
     output_tokens: StrictNonNegativeInt | None
@@ -382,10 +437,41 @@ class AttemptUsageV2(CapsuleModel):
     reasoning_token_accounting: ReasoningTokenAccounting
 
 
+PublicBenchmarkRawResponsePathV1 = Literal[
+    "response.id",
+    "response.status",
+    "response.error",
+    "response.output",
+    "response.model",
+    "response.service_tier",
+    "response.prompt_cache_options.mode",
+    "response.prompt_cache_options.ttl",
+    "response.usage.input_tokens",
+    "response.usage.input_tokens_details.cached_tokens",
+    "response.usage.input_tokens_details.cache_write_tokens",
+    "response.usage.output_tokens",
+    "response.usage.output_tokens_details.reasoning_tokens",
+    "response.usage.total_tokens",
+]
+
+
+class PublicBenchmarkRawResponseSourceEntryV1(CapsuleModel):
+    path: PublicBenchmarkRawResponsePathV1
+    present: StrictBool
+    value: object  # class-bound to the exact capsule-canonical JSON tree contract below
+
+
+class PublicBenchmarkRawResponseSourceV1(CapsuleModel):
+    schema_version: Literal["PublicBenchmarkRawResponseSourceV1"]
+    entries: tuple[PublicBenchmarkRawResponseSourceEntryV1, ...]
+
+
 class PublicBenchmarkResponseEvidenceV1(CapsuleModel):
     schema_version: Literal["public-benchmark-response-evidence-v1"]
     response_id: ProviderMetadataString
     raw_response_sha256: Sha256
+    output_text: OutputString
+    raw_response_source: PublicBenchmarkRawResponseSourceV1
     usage: AttemptUsageV2
     requested_model_id: PublicBenchmarkModelId
     returned_model_id: ProviderMetadataString | None
@@ -410,6 +496,7 @@ class PublicBenchmarkProviderErrorEvidenceV1(CapsuleModel):
     provider_request_id: ProviderMetadataString | None
     response_id: ProviderMetadataString | None
     raw_response_sha256: Sha256 | None
+    raw_response_source: PublicBenchmarkRawResponseSourceV1 | None
     usage: AttemptUsageV2
     requested_model_id: PublicBenchmarkModelId
     returned_model_id: ProviderMetadataString | None
@@ -486,6 +573,65 @@ def visible_output_tokens(usage: AttemptUsageV2) -> int | None:
     return usage.output_tokens - usage.reasoning_tokens
 ```
 
+`PublicBenchmarkRawResponseSourceV1.entries` has exactly 14 members in the literal alias order
+shown above. Every entry serializes exactly `path`, `present`, `value`. Attribute absence is
+`present=false, value=null`; an explicitly present null is `present=true, value=null`. A present
+value is recursively projected into an existing capsule-canonical JSON tree with exact supported
+scalar/container types; an SDK `BaseModel` encountered at any depth first uses
+`model_dump(mode="json")`. Coercion, `repr`, `str`, fallback attributes, non-string mapping keys,
+unsupported objects, nonfinite numbers, out-of-bound trees, or a model-dump failure cannot enter the
+projection. Thus a present `response.error` SDK model binds its dumped code/message tree, while an
+explicit null error remains `present=true, value=null`. The 14-entry record is class-bound
+revalidated and encoded through the existing capsule canonical owner. Its complete encoded byte
+length must be at most `RESOURCE_LIMITS_V1.raw_jsonl_row_bytes`; the limit applies to the whole
+record, not each entry. It is then digested exactly as:
+
+```python
+raw_response_sha256 = stable_digest(
+    "laconian-public-benchmark-raw-response-source-v1",
+    source.model_dump(mode="json"),
+)
+```
+
+Despite its stable field name, this is the digest of a typed SDK projection; unavailable raw HTTP
+response-body bytes are neither claimed nor synthesized. The exact class-bound source record is
+carried inside the ephemeral outcome so its evidence validator can recompute the digest from
+`source.model_dump(mode="json")`. `PublicBenchmarkResponseEvidenceV1` requires both
+`raw_response_source` and `raw_response_sha256` to be nonnull;
+`PublicBenchmarkProviderErrorEvidenceV1` requires the pair to be either both nonnull or both null.
+When they are nonnull, its validator recomputes and checks the same digest before any per-field
+equality check. The attempts-owned normalizer validates first, then deliberately drops
+`raw_response_source` (and the unsanitized output tree it contains). It transfers the verified
+digest value only into the already listed per-field source-digest fields; neither
+`raw_response_source` nor a standalone `raw_response_sha256` nor any unsanitized output is added to
+`NormalizedProviderEvidenceV2`, `RawAttemptV2`, an attachment, or another durable artifact.
+
+`PublicBenchmarkProviderErrorEvidenceV1.error_source_sha256` is recomputed exactly as:
+
+```python
+error_source_sha256 = stable_digest(
+    "laconian-public-benchmark-provider-error-source-v1",
+    error_evidence.model_dump(
+        mode="json",
+        exclude={
+            "error_source_sha256",
+            "returned_model_source_sha256",
+            "service_tier_source_sha256",
+            "applied_cache_control_source_sha256",
+            "cache_read_source_sha256",
+            "cache_write_source_sha256",
+            "usage_source_sha256",
+            "reasoning_tokens_source_sha256",
+        },
+    ),
+)
+```
+
+The class-bound validator recomputes this preimage before checking source-digest equality, so no
+digest depends on itself or another per-field digest. This preimage includes
+`raw_response_source` and `raw_response_sha256` when that pair exists; only the listed digest fields
+are excluded.
+
 The canonical cache/tier/usage raw-response paths are exactly `response.service_tier`,
 `response.prompt_cache_options.mode`, `response.prompt_cache_options.ttl`,
 `response.usage.input_tokens`, `response.usage.input_tokens_details.cached_tokens`,
@@ -493,8 +639,40 @@ The canonical cache/tier/usage raw-response paths are exactly `response.service_
 `response.usage.output_tokens_details.reasoning_tokens`, and `response.usage.total_tokens`. That
 nine-member list is exact. Returned-model evidence is a separate field read only from the exact
 `response.model` path; it does not extend or alias the canonical nine-member accounting list.
-Alternate, flattened, inferred, billing, or convenience paths are rejected. Each field retains an
-independent raw-response source digest even when sanitization yields null.
+`OutputString` remains the exact existing attempts-owned
+`Annotated[str, BeforeValidator(_output_string)]` shown above. It accepts only `type(value) is str`,
+requires strict UTF-8 encoding, requires the encoded byte length to be at most
+`RESOURCE_LIMITS_V1.output_utf8_bytes`, and rejects a blank value according to `value.strip()`.
+The validator returns the original value byte-for-byte: it performs no strip, normalization, or
+control rejection. Thus a bounded nonblank control-bearing or non-NFC string remains valid only in
+ephemeral response evidence and reaches the existing sanitizer as the sole durable transformation;
+a string subclass, lone surrogate, blank value, or value one encoded byte over the bound is
+rejected. Committed output is derived only from `response.output`, never the SDK's unmodeled
+`response.output_text` convenience property: iterate output items in order, inspect only items whose
+exact discriminator is `type="message"`, iterate their content in order, append `.text` only from
+content whose exact discriminator is `type="output_text"`, and concatenate with no separator. Every
+appended value and the final result must be exact built-in strings, and the final result must be
+nonblank and within `OutputString`'s byte bound. The complete `response.output` tree is already entry
+four in the raw source projection, so `output_text` has no separate source-digest field. The outcome
+is ephemeral until the attempts-owned normalizer applies the existing output sanitizer and
+constructs `RawAttemptV2`; unsanitized output is never durably persisted. Alternate,
+flattened, inferred, billing, or convenience accounting/model paths are rejected. `OutputString`,
+the outcome/evidence models, and `PublicBenchmarkProvider` protocol above are solely owned by
+`capsule.attempts`; provider modules import them from that owner and `providers.__init__` does not
+re-export them. When the canonical 14-entry source projection exists, every per-field source
+digest—returned model, service tier, applied cache control, cache read, cache write, usage, and
+reasoning—must equal its one `raw_response_sha256`, even when sanitization yields null. Otherwise
+`raw_response_sha256` is null and every one of those source digests must equal
+`error_source_sha256`. Raw-null is valid only with no Responses object or with the explicit bounded
+projection-failure record below. Class-bound validators enforce these cases; a path-specific digest
+is always invalid.
+
+If a Responses object exists but any of the 14 values cannot be represented as the bounded
+capsule-canonical source tree, return `PublicBenchmarkProviderErrorEvidenceV1` with
+`delivery_certainty="response_received"`, null `raw_response_sha256`, no output, wholly unavailable
+usage, null response-derived values, safely derived `missing`/`invalid` statuses, all per-field
+digests equal to recomputed `error_source_sha256`, and full worst-case exposure. Do not partially
+hash, truncate, stringify, or salvage values from the unrepresentable projection.
 
 For a Responses result, exact zero/positive read and write counts independently map to
 `reported_zero`/`reported_nonzero`; absence maps to `missing`; wrong type, negative/bound/total
@@ -506,6 +684,19 @@ no result or usage map to their exact `not_applicable_*` status. Applied mode/TT
 `input_tokens`, and set `ordinary_uncached_input_tokens = input_tokens - cache_read_tokens -
 cache_write_tokens`. Nonzero read/write or any missing/mismatch/invalid evidence retains the
 affected conservative exposure and causes Runtime to STOP after durable accounting.
+
+Malformed read/write details on an otherwise received Responses object never create
+`PublicBenchmarkProviderErrorEvidenceV1`. They produce `PublicBenchmarkResponseEvidenceV1`, set the
+affected count to null with its status `invalid`, and preserve response ID, output, returned
+model/tier, applied-cache fields, and every other usable usage field. The read and write dimensions
+fail independently; if both are malformed, both are null/`invalid` while the rest of the response
+remains available; a jointly inconsistent read/write sum makes both null/`invalid`. More generally,
+a completed response with valid `output_text` remains `PublicBenchmarkResponseEvidenceV1` when its
+cache, reasoning, tier, or accounting evidence is malformed: the affected fields/statuses become
+their exact null/invalid/missing/partial representation while output and every other usable field
+survive. Only a response without valid completed output or another structural condition that cannot
+form response evidence uses `PublicBenchmarkProviderErrorEvidenceV1`; that error type has no output
+field.
 
 Every attempt also carries literal `requested_service_tier="default"`, sanitized
 `returned_service_tier` copied from `response.service_tier`, and a derived `ServiceTierStatus`.
@@ -545,36 +736,50 @@ case invalidates an otherwise valid response, but both make `visible_output_toke
 The parent identities exclude `run_id` and bind the resolved parent manifest digest:
 
 ```python
-stable_digest(
-    "laconian-parent-block-v1",
-    {
-        "parent_manifest_sha256": parent_manifest_sha256,
-        "case_uid": case_uid,
-        "repetition": repetition,
-    },
-)
+def block_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int) -> str:
+    return stable_digest(
+        "laconian-parent-block-v1",
+        {
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
+            "repetition": repetition,
+        },
+    )
 
-stable_digest(
-    "laconian-parent-pairing-unit-v1",
-    {
-        "parent_manifest_sha256": parent_manifest_sha256,
-        "case_uid": case_uid,
-        "repetition": repetition,
-    },
-)
 
-stable_digest(
-    "laconian-parent-plan-item-v1",
-    {
-        "parent_manifest_sha256": parent_manifest_sha256,
-        "case_uid": case_uid,
-        "repetition": repetition,
-        "arm": arm,
-        "instruction_sha256": instruction_sha256,
-        "request_config_sha256": request_config_sha256,
-        "input_token_bound": input_token_bound,
-    },
-)
+def pairing_unit_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int) -> str:
+    return stable_digest(
+        "laconian-parent-pairing-unit-v1",
+        {
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
+            "repetition": repetition,
+        },
+    )
+
+
+def plan_item_id(
+    *,
+    parent_manifest_sha256: str,
+    case_uid: str,
+    repetition: int,
+    arm: ArmName,
+    instruction_sha256: str,
+    request_config_sha256: str,
+    input_token_bound: int,
+) -> str:
+    return stable_digest(
+        "laconian-parent-plan-item-v1",
+        {
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
+            "repetition": repetition,
+            "arm": arm,
+            "instruction_sha256": instruction_sha256,
+            "request_config_sha256": request_config_sha256,
+            "input_token_bound": input_token_bound,
+        },
+    )
 ```
 
 The planning interface becomes:
@@ -602,12 +807,23 @@ def validate_parent_plan(
 ```
 
 `CaseIndexRowV1` adds `prompt_utf8_bytes: StrictPositiveInt`. `PlanRowV1` adds
-`input_token_bound: StrictPositiveInt`. Planning derives the latter from the indexed prompt bytes and
-the exact captured arm-instruction bytes, rejects a value above the standard-tier maximum before
-materializing any row, and includes the bound in the plan-item preimage shown above. Execution
-recomputes the bound from the verified captured strings and requires equality with the row before
-constructing the benchmark-only `PublicBenchmarkRequestV1`; legacy `GenerationRequest` bytes remain
-unchanged.
+`input_token_bound: StrictPositiveInt`. Planning derives instruction bytes exactly as
+`b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")`; it neither
+adds nor reads an `Arm.instruction_bytes` field. It derives every prospective row bound from the
+indexed prompt bytes and those exact captured instruction bytes, and completes this whole Cartesian
+bound preflight before computing any request-config/block/pairing/plan-item identity or constructing
+any `PlanRowV1`. A real oversize raises
+`PlanningError(code="public_benchmark_input_bound_exceeded")`. Only after the full preflight passes
+does planning include each bound in the plan-item preimage shown above.
+
+`validate_parent_plan` independently reconstructs the full bounds before identity comparison. An
+actually oversized reconstruction raises the same `public_benchmark_input_bound_exceeded`; a
+nonoversized row with a forged bound or identity raises the existing `plan_mismatch`. Execution
+recomputes the bound from verified captured strings, requires equality with the verified row, and
+recomputes `plan_item_id` with `context.capsule.manifest_sha256`, verified row fields, and the
+recomputed bound before constructing `PublicBenchmarkRequestV1`. Legacy `GenerationRequest` bytes
+remain unchanged. The old `materialize_plan`/`validate_plan` names and old positional/run-bound
+identity signatures do not remain as aliases or wrappers.
 
 `attempt_id` and `response_id` retain their existing `run_id` fields; only pre-call plan, block, and pairing identities become stable.
 
@@ -647,10 +863,15 @@ def materialize_shard_projection(
 
 def validate_public_generation_partition(
     *,
+    campaign_id: str,
+    resolved_manifests: Sequence[ResolvedManifestV2],
+    parent_manifest_sha256s: Sequence[str],
+    case_indexes: Sequence[Sequence[CaseIndexRowV1]],
+    captured_arms_by_parent: Sequence[Sequence[Arm]],
     parent_plans: Sequence[Sequence[PlanRowV1]],
     shard_plans: Sequence[ShardPlanV1],
 ) -> None:
-    """Require three 480-row parents and their exact disjoint ordered 36-by-40 union."""
+    """Require the aligned Sol/Terra/Luna parents and exact ordered 36-by-40 union."""
 ```
 
 `shard_plan_sha256` is the following canonical digest with that field excluded:
@@ -673,6 +894,35 @@ stable_digest(
 ```
 
 A shard capsule captures `inputs/planning/parent-plan.jsonl` and `inputs/planning/shard-plan.json`. Its `plan.jsonl` contains only the locally re-ordinalized projection while preserving every parent `plan_item_id`, block ID, pairing ID, and request hash.
+
+`validate_public_generation_partition` class-bound revalidates the exact aligned tuples. Their model
+order is exactly `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; each manifest's provider/model and
+revalidated parent plan must agree with its aligned unique parent-manifest hash, case index, and
+captured arms. All five aligned parent sequences have length exactly three. The validator calls
+`validate_parent_plan` for each aligned manifest/hash/index/arms/plan tuple. Every shard carries
+the one exact caller `campaign_id`. The global shard order is the caller's parent order, then each
+parent's 12 scenario groups in first-appearance order. A reordered parent, model, hash, or shard is
+invalid even if set coverage is unchanged.
+
+`materialize_shard_projection` class-bound revalidates the shard and every parent row, requires the
+exact canonical `parent_plan_sha256`, unique requested IDs with exact parent membership, and one
+scenario UID equal to `shard.scenario_uid`. Its output changes only `ordinal` to local
+`0..row_count-1`; every other field remains byte-semantically equal.
+
+The shard-plan file bytes are exactly the existing capsule encoder
+`canonical_json(shard.model_dump(mode="json")) + b"\n"`. Reading strips exactly one terminal LF,
+strictly parses and class-bound revalidates the object, then requires re-encoding to reproduce every
+original byte. A missing/extra LF, alternate JSON spelling, content/hash/self-hash change, or
+projection mutation is `plan_mismatch`.
+
+Planning source paths are absolute or resolve relative to `PrepareRequest.invocation_cwd`; they are
+not relative to the authored manifest/input root and may intentionally live outside it. Capture
+opens them as no-follow regular files. Parent-plan reads use
+`RESOURCE_LIMITS_V1.captured_input_total_bytes` with limit code `parent_plan_limit`; shard-plan reads
+use `RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes` with `shard_plan_limit`. Unsafe type/path/open/read
+failure is `planning_input_read_failed`. Exactly one absent planning input remains `missing_path` at
+verification. Task 5 extends the verifier's current tree grammar for both planning members; Task 6
+later extracts that already-extended policy unchanged into `tree_policy.py`.
 
 ```python
 # src/laconian_eval/capsule/prepare.py
@@ -1133,37 +1383,82 @@ assert captured.resolved_manifest.generation.model_dump(mode="json") == {
 }
 ```
 
+Add `test_project_v1_manifest_preserves_legacy_three_rate_price_privately`. Start with the existing
+valid schema-v1 payload and its exact legacy `price_snapshot`, require both
+`RunManifest.model_validate(payload)` and `project_v1_manifest(payload)` to accept it, and assert the
+private projected snapshot serializes exactly these six legacy members in order:
+
+```text
+currency
+effective_date
+source_url
+input_per_million
+cached_input_per_million
+output_per_million
+```
+
+Require the private projection's `source_url` to equal the exact authored URL bytes/text, including
+any spelling that Pydantic's legacy `HttpUrl` normalizes during `RunManifest` validation, and require
+currency, date, and the three numeric members to retain the same legacy-normalized semantics.
+`RunManifest` URL normalization is a validation boundary, not projection authority. The projection
+must not introduce `service_tier`,
+any native-v2 five-rate field, or `source_evidence`; assert the private class owner and type identity
+directly so replacing it with `SourcePriceSnapshotV1` cannot pass.
+
+Add `test_priced_v1_upgrade_requires_explicit_native_v2_before_capture`. Exercise both direct
+`upgrade_v1_manifest` and `capture_authored_inputs` with that preserved projection and require exact
+code `v1_price_snapshot_requires_native_v2`, exact constant message `v1 price snapshots require
+explicit migration to a native-v2 five-rate source-evidence manifest`, null cause/context, and zero
+case, arm, replay, protocol, provider, credential, and client accesses. Assert the capture-path guard
+runs before opening or resolving the input root. Keep the existing unpriced-v1 upgrade test and add
+an explicit `price_snapshot is None` assertion to prove its output is unchanged.
+
 Delete each new generation key, `price_snapshot.service_tier`, and
 each of the five rate/source-evidence fields independently from a resolved-v2 payload and assert
 `ResolvedManifestV2.model_validate` fails with `Field required`. Source-v2 omission supplies literal
 `explicit`, `30m`, and `default`; resolved-v2 always serializes all fields explicitly. Compatibility
-for historical nullable/four-rate records stays outside the public validator. An authored source value other
-than literal `default` is invalid rather than an override.
+for historical schema-v1 three-rate records is exactly the private projection and fail-closed
+migration rule above; no other historical price shape enters the public validator. An authored
+source value other than literal `default` is invalid rather than an override.
 
 - [ ] **Step 3: Run the manifest RED gate**
 
 Run:
 
 ```bash
-uv run pytest tests/capsule/test_manifest_models.py::test_native_v2_round_trips_generation_request_policy tests/capsule/test_manifest_models.py::test_generation_request_policy_fields_are_strict tests/capsule/test_manifest_models.py::test_price_snapshot_requires_five_sourced_dimensions tests/capsule/test_manifest_models.py::test_price_snapshot_digest_binds_literal_default_service_tier tests/capsule/test_capture.py -q
+uv run pytest tests/capsule/test_manifest_models.py::test_native_v2_round_trips_generation_request_policy tests/capsule/test_manifest_models.py::test_generation_request_policy_fields_are_strict tests/capsule/test_manifest_models.py::test_price_snapshot_requires_five_sourced_dimensions tests/capsule/test_manifest_models.py::test_price_snapshot_digest_binds_literal_default_service_tier tests/capsule/test_capture.py::test_project_v1_manifest_preserves_legacy_three_rate_price_privately tests/capsule/test_capture.py::test_priced_v1_upgrade_requires_explicit_native_v2_before_capture tests/capsule/test_capture.py -q
 ```
 
 Expected: FAIL. Native-v2 validation reports the benchmark-only TTL/request policy, five-price
-schema, source evidence, and SDK pin as absent, and resolved-v2 projections do not expose them.
+schema, source evidence, and SDK pin as absent; the legacy three-rate snapshot cannot retain a
+distinct private projection while the native shape changes, and priced-v1 upgrade does not yet fail
+before capture.
 
 - [ ] **Step 4: Implement the source/resolved schema without widening v1 input**
 
 Add the exact request-policy aliases, both generation model shapes, `PublicBenchmarkRequestV1`,
-`PublicBenchmarkRequestPolicyV1`, and both price-snapshot shapes shown in the stable interface. Keep `_V1ProjectionInput` behind the existing
-`RunManifest.model_validate(payload)` boundary so authored v1 remains strict; its use of
-`SourceGenerationSettingsV2` supplies resolved defaults only after v1 validation succeeds. Do not
-add benchmark fields or defaults to legacy `GenerationRequest`.
+`PublicBenchmarkRequestPolicyV1`, and both native price-snapshot shapes shown in the stable
+interface. Keep `_V1ProjectionInput` behind the existing `RunManifest.model_validate(payload)`
+boundary so authored v1 remains strict; its use of `SourceGenerationSettingsV2` supplies resolved
+defaults only after v1 validation succeeds. Add the private
+`_V1LegacyPriceSnapshotProjection` exactly as shown and use it for
+`V1UpgradeProjection.price_snapshot` and `_V1ProjectionInput.price_snapshot`; do not reuse a native
+price type, change `RunManifest`/legacy `PriceSnapshot`, or add benchmark fields/defaults to legacy
+`GenerationRequest`.
+
+Make the first operation of direct `upgrade_v1_manifest` reject a non-null private legacy snapshot
+with `CaptureError("v1_price_snapshot_requires_native_v2", "v1 price snapshots require explicit
+migration to a native-v2 five-rate source-evidence manifest")`. Make the same guard the first
+operation of `capture_authored_inputs`, before input-root open/resolution or any
+`_capture_cases`/`_capture_arms`/`_capture_replay`/`_capture_protocols` call. Never serialize the
+legacy price into `ResolvedManifestV2`; unpriced v1 continues through the existing upgrade path.
 
 Add the three input-bound constants and strict pure `conservative_input_token_bound` helper from the
 stable interface to `providers/base.py`. `planning.py` imports those exact values; it does not copy
 numeric literals or define a second bound version.
 
-Update `_resolve_v2_manifest` and `upgrade_v1_manifest` in `capture.py` to serialize generation fields in this order:
+Update `_resolve_v2_manifest` and the unpriced branch of `upgrade_v1_manifest` in `capture.py` to
+serialize generation fields in this order:
 
 ```text
 max_output_tokens
@@ -1176,8 +1471,9 @@ prompt_cache_ttl
 service_tier
 ```
 
-Serialize price fields in the exact order `currency`, `effective_date`, `source_url`,
-`service_tier`, the five rate fields in stable-interface order, and `source_evidence`.
+Serialize native-v2 price fields in the exact order `currency`, `effective_date`, `source_url`,
+`service_tier`, the five rate fields in stable-interface order, and `source_evidence`. This rule does
+not authorize a legacy-price conversion.
 
 Pin `openai==3.3.1` in `pyproject.toml` and regenerate `uv.lock`. The separate precredential RED/GREEN
 steps below prove the installed version, lock member, and typed SDK contract before provider access.
@@ -1194,8 +1490,11 @@ installed-version seam to return `3.3.0`, a non-string, and to raise
 `importlib.metadata.PackageNotFoundError`; each maps to `installed-version`. Independently supply a
 wrong C0 `uv.lock` digest, delete one
 required typed request field from each exact request-union member, replace either exact request-union
-member, and remove or replace each canonical response path and the separate returned-model path in
-the exact SDK model graph. Import/forward-reference/type-hint resolution failures map only to the
+member, and remove or replace each of the four response-content roots, each canonical accounting
+path, and the separate returned-model path in the exact SDK model graph. Assert the output graph
+check stops at the `response.output` root and never requires every output-union branch to expose
+`.text`; `Response.output_text` is an unmodeled property and cannot satisfy the check.
+Import/forward-reference/type-hint resolution failures map only to the
 matching `request-model` or `response-model` code. Independently monkeypatch the sole pure
 Responses-kwargs builder to omit,
 rename, add, reorder, or change each frozen projection member and require `serializer-projection`.
@@ -1247,6 +1546,7 @@ In `tests/test_public_contract.py`, add
 
 ```text
 BENCHMARK_OPENAI_REQUEST_FIELDS_V1
+BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1
 BENCHMARK_OPENAI_RESPONSE_PATHS_V1
 BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1
 BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1
@@ -1336,6 +1636,12 @@ BENCHMARK_OPENAI_REQUEST_FIELDS_V1 = (
     "text",
     "prompt_cache_options",
     "service_tier",
+)
+BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1 = (
+    "response.id",
+    "response.status",
+    "response.error",
+    "response.output",
 )
 BENCHMARK_OPENAI_RESPONSE_PATHS_V1 = (
     "response.service_tier",
@@ -1459,6 +1765,12 @@ class VerifiedBenchmarkSDKContractV1(CapsuleModel):
         Literal["response.usage.total_tokens"],
     ]
     returned_model_path: Literal["response.model"]
+    response_content_paths: tuple[
+        Literal["response.id"],
+        Literal["response.status"],
+        Literal["response.error"],
+        Literal["response.output"],
+    ]
     serializer_projection_sha256: Literal[
         "c7f3d0d8d7b056226b10195e76e9974c213881e3678d09aee071ad3cbedb0211"
     ]
@@ -1478,7 +1790,10 @@ Task 2 also implements the sole pure serializer builder with exact signature
 `prompt_cache_options`, `service_tier`. It never emits `temperature` when null and never emits
 `tools`, `reasoning_mode`, `prompt_cache_key`, `prompt_cache_retention`,
 `prompt_cache_breakpoint`, or another key. Task 3 must call this same object for canonical request
-bytes, capture projection, and the provider call; no second serializer builder or projection exists.
+bytes, their plain SHA-256, the capture projection, and the provider call. The returned mapping
+object itself is the capture projection: Task 3 defines no durable request-projection schema, copy,
+second serializer builder, or second mapping. The confirmatory medium/medium case remains the exact
+nine-key projection.
 
 The exact public function signature is
 `require_benchmark_sdk_contract(*, c0_uv_lock_bytes: bytes,
@@ -1501,10 +1816,17 @@ It imports only the two literal SDK qualified types above. For `ResponseCreatePa
 `typing.get_args` and requires the ordered union to be exactly
 `ResponseCreateParamsNonStreaming | ResponseCreateParamsStreaming`; it resolves each member with
 `typing.get_type_hints` and requires every request field in the literal tuple in both members. It
-walks each of the nine response paths and the separate `response.model` path through only the
+walks each of the four response-content roots, the nine accounting paths, and the separate
+`response.model` path through only the
 `Response.model_fields`/resolved annotation graph, unwrapping typed nullable/union members and
-requiring every branch to expose the next component. Runtime values, examples, serialization output,
-`getattr` fallbacks, `Any`, and SDK convenience aliases cannot satisfy a typed-model check.
+requiring every branch to expose the next component. The content check stops at the exact
+`response.error` and `response.output` roots; it does not require every member of the output union to
+expose `.text`. Runtime values, examples, serialization output, `getattr` fallbacks, `Any`, and SDK
+convenience aliases—including unmodeled `Response.output_text`—cannot satisfy a typed-model check.
+The verified record stores `response_content_paths` in the constant's exact order immediately after
+`returned_model_path` and before `serializer_projection_sha256`; it participates in the record's
+self-digest. Tests delete, replace, and reorder every content root and mutate that record field
+independently.
 
 Finally, the gate constructs one internal `PublicBenchmarkRequestV1` with
 `case_id="sdk-contract-probe-v1"`, `arm="if"`, `repetition=0`, requested model `gpt-5.6-sol`, the two
@@ -1530,7 +1852,8 @@ exports or Runtime code may import it.
 It accepts no installed-version/model/path override, filesystem path, credential, client, callback,
 or provider object. Tests patch only the private installed-version, SDK-type import, and serializer-
 projection seams and assert the exact signature,
-field order, nine response paths, separate returned-model path, frozen lock constants, module
+field order, nine response paths, separate returned-model path, four ordered response-content roots
+immediately after it, frozen lock constants, module
 ownership, package object identity, internal self digest, and literal `None` return.
 `BenchmarkSDKContractError` is the sole exported error for this function and has only the closed
 codes `installed-version`, `lock-digest`, `lock-entry`, `request-model`, `response-model`, and
@@ -1633,7 +1956,8 @@ git commit -m "feat: bind generation cache and default-tier pricing policy"
 - Modify: `tests/test_public_contract.py`
 - Modify: `tests/test_openai_provider.py`
 - Modify: `tests/test_providers.py`
-- Modify: `tests/fixtures/replay-responses.yaml`
+- Unchanged legacy compatibility boundary (do not modify): `tests/fixtures/replay-responses.yaml`
+- Create: `tests/fixtures/replay-public-benchmark-responses.yaml`
 - Modify: `tests/capsule/test_attempts_v2.py`
 - Modify: `tests/capsule/test_execution.py`
 - Modify: `tests/capsule_helpers.py`
@@ -1690,19 +2014,33 @@ Also assert null effort/verbosity omit both nested kwargs. No accepted request c
 null, but every accepted request contains exactly `service_tier="default"`. Parameterize
 `service_tier` as null, bool, integer, object, `auto`, `flex`, `priority`, and `ultrafast`; each must
 fail strict request validation before the fake client records a call. An ambient project configured
-for a different tier must not affect captured kwargs.
+for a different tier must not affect captured kwargs. Add
+`test_nonnull_benchmark_temperature_rejects_before_responses_call`; parameterize finite zero,
+positive, and negative floats and assert the injected fake Responses client's call list and network
+spy remain zero. Execution may additionally reject before provider construction, but the provider
+method is tested on an already constructed provider and promises only zero client/API calls.
 
 Also add
 `test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical` and
-`test_recursive_breakpoint_key_is_rejected_under_every_instructions_or_input_object`. The first
+`test_recursive_cache_control_helper_rejects_synthetic_trees_without_widening_request_types`. The first
 constructs the one exact expected canonical byte literal without calling the production mapper, then
-uses the identical package-exported `canonical_json_v1` owner on the frozen request-member projection,
-returned kwargs, and captured projection and requires all four byte strings to be equal. It imports
+uses the identical package-exported `canonical_json_v1` owner on the frozen request-member projection
+and the one object returned by `_public_benchmark_responses_kwargs`, requires the adapter's captured
+projection to be that same object by identity, and requires the canonical request bytes and plain
+SHA-256 to derive from it before that same mapping is expanded into the fake provider call. It imports
 that object and its error/parser companions through `laconian_eval.benchmark`, proves identity to
-`benchmark.attachments`, and defines no local encoder. The second parameterizes `prompt_cache_breakpoint` at the
-root and at two nested dict/list depths under both canonical `instructions` and `input`; every case
-must fail before the fake client records a call. Repeat for `prompt_cache_key`,
-`prompt_cache_retention`, and an unknown cache-control key.
+`benchmark.attachments`, and defines no local encoder, durable request schema, mapping copy, or
+second mapper. Assert its confirmatory result has the exact frozen nine-key order and values.
+
+The second test calls `_assert_no_public_benchmark_cache_control` directly on synthetic dict/list/
+tuple trees with `prompt_cache_breakpoint` at the root and two nested depths, then repeats for
+`prompt_cache_key`, `prompt_cache_retention`, builder-owned `prompt_cache_options`, and literal
+`prompt_cache_unknown`. Every exact built-in string key beginning `prompt_cache_` is rejected below
+instructions/input; non-string mapping keys and string subclasses fail closed rather than bypassing
+the rule. It also passes the real `instructions` and `prompt` string leaves and requires success.
+Separately assert the public
+request annotations and runtime values remain exactly `str | None` and `str`; no synthetic object
+tree is accepted by `PublicBenchmarkRequestV1` or sent to the fake client.
 
 Add `test_standard_tier_bound_rejects_before_client_call`. Assert the pure bound counts UTF-8 bytes
 rather than characters, accepts exact equality at 272,000, rejects one byte above it in
@@ -1714,11 +2052,12 @@ the fake client's call list empty. Parameterize bool and negative byte counts ag
 Run:
 
 ```bash
-uv run pytest tests/test_openai_provider.py::test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service_tier tests/test_openai_provider.py::test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical tests/test_openai_provider.py::test_recursive_breakpoint_key_is_rejected_under_every_instructions_or_input_object tests/test_openai_provider.py::test_standard_tier_bound_rejects_before_client_call -q
+uv run pytest tests/test_openai_provider.py::test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service_tier tests/test_openai_provider.py::test_nonnull_benchmark_temperature_rejects_before_responses_call tests/test_openai_provider.py::test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical tests/test_openai_provider.py::test_recursive_cache_control_helper_rejects_synthetic_trees_without_widening_request_types tests/test_openai_provider.py::test_standard_tier_bound_rejects_before_client_call -q
 ```
 
 Expected: FAIL because the request/cache/tier policy fields, exact cache and literal default-tier wire
-mapping, and provider-side standard-tier rejection are absent.
+mapping, non-null-temperature preclient rejection, generic helper seam, identity-shared capture
+projection, and provider-side standard-tier rejection are absent.
 
 - [ ] **Step 3: Implement strict request fields and adapter validation**
 
@@ -1727,7 +2066,10 @@ legacy request. In `OpenAIProvider._validate_benchmark_request`, accept only exa
 aliases, require policy `reasoning_mode == "omitted"`, `prompt_cache_mode == "explicit"`,
 `prompt_cache_ttl == "30m"`, and `service_tier == "default"`, then compute strict UTF-8
 instruction/prompt byte lengths and reject a conservative bound above 272,000 before calling the
-client.
+client. Preserve `instructions: str | None` and `prompt: str` exactly. Reject every non-null
+`temperature` before any `client.responses.create`/Responses API call; the fake call list remains
+zero. Execution may independently reject before constructing the provider, but Task 3 does not rely
+on that stronger caller ordering.
 
 Implement `OpenAIProvider.generate_benchmark(request: PublicBenchmarkRequestV1) ->
 PublicBenchmarkProviderOutcomeV1` without changing legacy `generate`. In that benchmark-only method,
@@ -1735,13 +2077,18 @@ implement the recursive validator and call both it and the sole Task 2-owned ser
 
 ```python
 def _assert_no_public_benchmark_cache_control(value: object) -> None:
-    """Recursively reject breakpoint/key/retention and every unapproved cache-control key."""
+    """Recursively reject every exact string key beginning prompt_cache_."""
 ```
 
-Run the recursive validator on the exact canonical `instructions` and `input` trees before
-building the mapping. Encode canonical request bytes and the capture projection from that same
-mapping; no independently maintained second cache/tier projection is permitted. Add only nonnull
-effort/verbosity:
+Run the recursive validator on the exact real `instructions` and `prompt` string leaves before
+building the mapping; its recursive object-tree behavior is a direct-test hardening seam and never
+widens either request field. It rejects every exact built-in string key with prefix
+`prompt_cache_`; only the top-level `prompt_cache_options` mapping later created by the builder is
+allowed. Call `_public_benchmark_responses_kwargs` exactly once. Its returned
+mapping object is the sole capture projection: canonicalize and hash that object, retain that same
+object for capture, and call `client.responses.create(**mapping)` from it. Do not construct a copy,
+durable projection model, second serializer, or second cache/tier mapper. Add only nonnull
+effort/verbosity in the Task 2-owned builder:
 
 ```python
 if request.reasoning_effort is not None:
@@ -1772,6 +2119,14 @@ True    -> malformed provider usage; preserve no trusted zero
 sum-big -> malformed provider usage; preserve no trusted zero
 ```
 
+For `-1`/`True` in one read/write field, assert the adapter still returns
+`PublicBenchmarkResponseEvidenceV1`, sets only that count to null/status `invalid`, and preserves
+response ID, output, requested/returned model, tier, applied cache control, totals, reasoning, and
+the other usable cache count/status. For a jointly inconsistent read-plus-write sum, require both
+counts to be null and both statuses `invalid` even when each raw count is independently a
+nonnegative integer; preserve the same response/output/other usable usage. No malformed read/write
+detail may produce `PublicBenchmarkProviderErrorEvidenceV1`.
+
 The same `input_tokens_details` fixture always carries an independently asserted
 `cached_tokens`. Add fixtures whose `usage.output_tokens_details.reasoning_tokens` is respectively
 `7`, absent, `-1`, `True`, and greater than `output_tokens`. Assert the adapter produces:
@@ -1785,7 +2140,24 @@ too-big -> reasoning_tokens=null, reasoning_token_accounting=invalid
 ```
 
 Every valid response becomes `PublicBenchmarkResponseEvidenceV1`; legacy `GenerationResult` bytes
-and constructors remain unchanged.
+and constructors remain unchanged. Add an exact committed-output matrix over `response.output`:
+iterate items in order, use only exact `type="message"` items, iterate content in order, append
+`.text` only for exact `type="output_text"` members, and concatenate with no separator. Cover
+multiple message/content members, ignored nonmessage/non-output-text variants, reordered members,
+missing/malformed sequences/discriminators/text, a string subclass, blank result, over-limit result,
+bytes, bool, object, absent, and null. Accepted pieces and the concatenated result are exact built-in
+strings; the final value is nonblank and within `OutputString`'s bound. Never read or monkeypatch the
+SDK `response.output_text` convenience property. Control-bearing but otherwise bounded/nonblank
+output remains ephemeral response evidence and is handled only by the existing attempts-owned
+sanitizer before durable `RawAttemptV2` construction. Assert the derived value appears as
+`output_text` immediately after `raw_response_sha256` in the strict response-evidence shape, no
+output-source digest exists, `raw_response_source` immediately follows it, and entry four
+(`response.output`) of that source binds it. Directly test the exact `OutputString` before-validator:
+accept an exact built-in string at the `RESOURCE_LIMITS_V1.output_utf8_bytes` encoded boundary,
+reject a string subclass, bytes, bool, object, blank input, a lone surrogate, and one encoded byte
+over the bound; accept and preserve byte-for-byte bounded nonblank control-bearing and non-NFC
+strings. Prove normalization passes those accepted strings through the existing sanitizer and does
+not durably copy the unsanitized input.
 
 In `tests/capsule/test_attempts_v2.py`, add:
 
@@ -1842,14 +2214,32 @@ over-limit  -> returned_service_tier=null,       service_tier_status=missing
 Add independent applied/read/write RED matrices. Applied values are exact `explicit`/`30m`, missing,
 mismatched, or malformed and must map to `reported_exact`, `missing`, `mismatch`, or `invalid`.
 Read and write values cover zero, positive, absent, bool, negative, over-input, inconsistent sum,
-and bad source digest. Assert the exact canonical response paths and reject every alternate path.
+and a forged source digest. Assert the exact canonical response paths and reject every alternate
+path. Add `test_raw_response_source_projection_is_exact_and_bounded`: independently construct all
+14 ordered `{path, present, value}` entries; distinguish missing from explicit null; require a
+present SDK error model to bind its exact `model_dump(mode="json")` code/message tree and bind the
+complete `response.output` tree; independently recompute the stable digest; and reject every
+missing/extra/reordered/renamed entry, malformed presence relation, unsupported tree/type,
+nonfinite value, model-dump failure, and `RESOURCE_LIMITS_V1.raw_jsonl_row_bytes` overflow. Assert
+the digest is computed from the class-bound source's exact `model_dump(mode="json")`, is disclosed
+as a typed SDK projection, and is never alleged HTTP bytes. For response evidence, require the exact
+source object and digest together. For provider-error evidence, reject every one-null/one-nonnull
+source/digest pair, recompute the digest when the pair is present, and permit the both-null case only
+for no-response and the exact projection-failure record. Normalize valid response and error
+outcomes with a source and prove the normalizer transfers the verified digest only into the
+already-listed per-field source-digest fields: neither a standalone `raw_response_sha256` nor
+`raw_response_source`, a raw output tree, or unsanitized `output_text` reaches normalized evidence,
+`RawAttemptV2`, attachments, or serialized durable bytes.
 Also assert `requested_model_id` and `returned_model_id` plus source digest round-trip; returned IDs
 may differ from requested IDs, while later consistency is deliberately outside this task.
 
-Use the existing bounded/control-safe provider-metadata policy for returned strings. Add a response
-that has a safe tier but later fails output or usage validation; the resulting
+Use the existing bounded/control-safe provider-metadata policy for returned strings. Add one
+response that has a safe tier but invalid/missing output; its
 `PublicBenchmarkProviderErrorEvidenceV1` must still expose the sanitized returned tier and derived
-status. Missing or mismatched tier is permanent
+status and has no output field. Separately add completed responses with valid output but malformed
+cache, reasoning, tier, or accounting details; every one remains
+`PublicBenchmarkResponseEvidenceV1`, carries the valid `output_text`, and preserves all other usable
+evidence while only affected fields/statuses degrade. Missing or mismatched tier is permanent
 policy evidence, never a transient provider error and never an automatic retry reason.
 
 In `tests/capsule/test_attempts_v2.py`, add
@@ -1870,12 +2260,31 @@ release; it must keep both not-applicable statuses distinguishable so the runtim
 definite-rejection retry policy remains possible. The runtime slice owns both the durable STOP and
 retry transitions.
 
+Also add `test_benchmark_evidence_source_digests_are_one_envelope`. Construct valid response,
+received-response-error with a valid source projection, received-response projection failure,
+definitely-not-sent, and definitely-rejected evidence, then independently mutate each per-field
+digest. Class-bound validation must reject every mutation. The first two carry the exact class-bound
+`raw_response_source`, independently recompute `raw_response_sha256` from
+`raw_response_source.model_dump(mode="json")`, and require all per-field digests to equal it. The
+last three require both null `raw_response_source` and null `raw_response_sha256` and all per-field
+digests to equal `error_source_sha256`; either field alone and raw-null outside the two closed cases
+are rejected. For every error record independently recompute `error_source_sha256` from its model
+dump after excluding itself and every per-field source digest, then mutate every included field,
+including `raw_response_source` when present, and every excluded field to prove the preimage is exact
+and acyclic. No test or implementation computes a digest from one nested path.
+
+The projection-failure vector supplies a Responses object containing one unsupported or oversized
+source value and requires output-free `PublicBenchmarkProviderErrorEvidenceV1` with
+`delivery_certainty="response_received"`, wholly unavailable usage, null response-derived values,
+safe missing/invalid statuses, all per-field digests equal to `error_source_sha256`, and full
+worst-case exposure. Assert it never truncates, stringifies, partially hashes, or retains output.
+
 - [ ] **Step 5: Run the usage RED gate**
 
 Run:
 
 ```bash
-uv run pytest tests/test_openai_provider.py -k 'cache_write_tokens or reasoning_tokens or cache_policy or service_tier' tests/capsule/test_attempts_v2.py::test_visible_output_tokens_require_valid_reasoning_breakdown tests/capsule/test_attempts_v2.py::test_attempt_usage_tracks_cache_reads_and_writes_independently tests/capsule/test_attempts_v2.py::test_raw_attempt_service_tier_matrix_is_strict_and_preserves_billable_evidence -q
+uv run pytest tests/test_openai_provider.py -k 'cache_write_tokens or reasoning_tokens or cache_policy or service_tier or malformed or raw_response_source' tests/capsule/test_attempts_v2.py::test_visible_output_tokens_require_valid_reasoning_breakdown tests/capsule/test_attempts_v2.py::test_attempt_usage_tracks_cache_reads_and_writes_independently tests/capsule/test_attempts_v2.py::test_raw_attempt_service_tier_matrix_is_strict_and_preserves_billable_evidence tests/capsule/test_attempts_v2.py::test_benchmark_evidence_source_digests_are_one_envelope -q
 ```
 
 Expected: FAIL because the benchmark outcome records, normalized evidence, and
@@ -1885,18 +2294,44 @@ helper is absent.
 - [ ] **Step 6: Implement exact applied/read/write/reasoning/tier/model evidence without hiding usable evidence**
 
 Parse only the nine canonical cache/tier/usage response paths listed in the stable interface, plus
-the separately frozen `response.model` path solely for returned-model evidence. Derive
+the separately frozen `response.model` path solely for returned-model evidence. Derive committed
+`output_text` only by the ordered `response.output` message/content traversal in the stable
+interface; never read the SDK convenience property. The result requires an exact built-in,
+strictly UTF-8-encodable, nonblank string whose encoded length is at most
+`RESOURCE_LIMITS_V1.output_utf8_bytes`, and is source-bound because the full `response.output` tree
+is entry four of the common raw projection; it adds no source-digest field and is not an accounting
+or model path. The `OutputString` before-validator returns accepted text exactly, with no
+normalization, strip, or control rejection; durable normalization still routes it through the
+existing sanitizer. Derive
 `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and `ServiceTierStatus` from raw
-values and delivery evidence; never accept status text from fixtures or provider objects. Preserve
-one raw-response source digest per applied/read/write/tier/usage/reasoning/model field even when the
-sanitized value is null. Do not infer one cache dimension from another and never convert missing to
-zero.
+values and delivery evidence; never accept status text from fixtures or provider objects.
+
+Construct and class-bound revalidate `PublicBenchmarkRawResponseSourceV1` from the exact 14 ordered
+paths before interpreting response fields. Preserve the missing-versus-explicit-null bit, call
+`model_dump(mode="json")` for SDK BaseModel values, enforce exact capsule-canonical tree types and
+the `raw_jsonl_row_bytes` bound, and compute the exact stable digest from
+`source.model_dump(mode="json")`. When that projection exists, carry the exact source object and
+digest together in the ephemeral outcome, and assign its `raw_response_sha256` to every
+applied/read/write/tier/usage/reasoning/model source field, including fields whose sanitized value
+is null. If it cannot be constructed, emit only the projection-failure error record specified
+above. With no Responses object, keep both `raw_response_source` and `raw_response_sha256` null. For
+every error record compute `error_source_sha256` from the exact exclusion preimage, which includes
+the source/digest pair when present, then use it for every per-field source only when raw response
+digest is null. Evidence validators independently recompute both source digests and enforce the
+equality/allowed-raw-null matrix; do not hash individual paths. Do not infer one cache dimension
+from another and never convert missing to zero.
 
 Add `ReasoningTokenAccounting` and `_optional_reasoning_count(raw_usage, output_tokens)` in
 `openai.py`. The helper returns `(count, "reported")`, `(None, "not_reported")`, or
 `(None, "invalid")`; it records the defect without raising a legacy `ProviderError`.
 
-Add the benchmark outcome records and fields shown in the stable interface; do not alter legacy
+Add `OutputString`, the benchmark outcome records, `PublicBenchmarkProviderOutcomeV1`, and
+`PublicBenchmarkProvider` protocol solely in `capsule/attempts.py`; provider implementations and
+`execution.py` import them directly from that owner. `capsule.schema` remains the sole owner of
+`ServiceTier`. Within this evidence surface, `providers/base.py` owns
+`ReasoningTokenAccounting`, exactly four status aliases (`ServiceTierStatus`,
+`AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`), `TokenUsage`, and the request
+types/bounds; it owns no benchmark outcome/evidence/protocol or `OutputString`. Do not alter legacy
 `GenerationResult` or `ProviderError` bytes. In `openai.py`, read `response.service_tier` independently
 before later response/content/usage checks. Exact bounded `default` becomes `reported_default`;
 another safe bounded string becomes `mismatch` and is preserved; absence or an unsafe/unrepresentable
@@ -1909,6 +2344,23 @@ For a benchmark provider-error evidence record created before any Responses obje
 matches that suffix and provider usage is wholly unavailable. An `unknown` delivery with no returned
 tier remains `missing` and therefore retains worst-case exposure; do not use either not-applicable
 status as a generic missing-value default.
+
+Treat malformed cache-read and cache-write details as field-level evidence defects, not provider
+errors. After receiving a Responses object with valid completed output, malformed cache, reasoning,
+tier, or accounting detail must retain `PublicBenchmarkResponseEvidenceV1`; set an individually
+malformed cache dimension to null/`invalid` while preserving all other usable
+response/output/usage evidence. If the combined read/write sum is inconsistent, set both dimensions
+to null/`invalid`, even when each raw member alone is nonnegative, and preserve the other usable
+fields. Never route those field-level defects through
+`PublicBenchmarkProviderErrorEvidenceV1`.
+
+Keep every outcome ephemeral until `normalize_public_benchmark_outcome` in the attempts owner first
+class-bound revalidates the raw source/digest pair, applies the existing sanitizer, drops
+`raw_response_source` and the unsanitized `output_text`, and constructs `RawAttemptV2`; never durably
+persist either raw tree. A completed response with valid output remains response evidence for
+malformed cache, reasoning, tier, or accounting fields. Only invalid/missing completed output or
+another response structure that cannot form response evidence yields the output-free provider-error
+evidence.
 
 Extend `AttemptUsageV2`, `_unavailable_provider_usage`, `_normalize_provider_usage`, raw payload
 helpers, and class-bound checks with `cache_read_tokens`, `cache_write_tokens`,
@@ -1953,16 +2405,25 @@ elif self.reasoning_tokens is not None:
     raise ValueError("unreported or invalid reasoning accounting forbids a count")
 ```
 
-Add exact applied mode/TTL, read/write/reasoning/tier, requested/returned model, and independent
-source digests to replay fixtures. Update every confirmatory fixture to echo explicit/30m, read zero,
-write zero, literal returned default tier, an exact requested model ID, and a separately consistent
-returned model ID. Replay derives every status and may not accept a fixture-supplied override.
+Create `tests/fixtures/replay-public-benchmark-responses.yaml` with exact applied mode/TTL,
+read/write/reasoning/tier, requested/returned model, and the exact response/output values needed to
+construct the 14-entry source projection. Update
+every benchmark-only fixture row to echo explicit/30m, read zero, write zero, literal returned
+default tier, an exact requested model ID, and a separately consistent returned model ID. Implement
+a strict benchmark-only parser used only by `ReplayProvider.generate_benchmark`; it derives every
+status and constructs/recomputes the exact 14-entry source projection/digest rather than accepting a
+fixture-supplied status or digest override. Keep the existing
+`tests/fixtures/replay-responses.yaml`, legacy fixture schema/parser, and `ReplayProvider.generate`
+unchanged in bytes and behavior.
 
 Export `ServiceTier`, `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and
 `ServiceTierStatus` from `laconian_eval.providers`, list each exactly
 once in `__all__`, and pin those public objects and the appended result/error fields in
-`tests/test_public_contract.py`. This is the sole public export surface; do not create a second tier
-alias in another provider module.
+`tests/test_public_contract.py`. Those are the only five new benchmark aliases exported through
+`providers.__init__`; `ServiceTier` is the identical `capsule.schema` owner object and the four
+statuses are the identical `providers.base` owner objects. Legacy exports remain unchanged, and no
+benchmark outcome, evidence, protocol, `OutputString`, or reasoning-accounting alias is re-exported
+there. Do not create a second tier alias in another provider module.
 
 - [ ] **Step 7: Prove request reconstruction and legacy compatibility**
 
@@ -1984,6 +2445,12 @@ canonical attempt retains it with `mismatch`, makes no retry of that plan item, 
 non-`reported_default` status to the runtime policy boundary without releasing or rewriting any usage
 evidence.
 
+In `tests/test_providers.py`, load the new benchmark fixture through `generate_benchmark` and assert
+its exact strict response/error shapes, derived statuses, and common source-digest invariant.
+Independently mutate/miss/add/reorder each benchmark fixture member and require rejection. Snapshot
+the existing legacy fixture bytes before and after, run its existing `generate` tests, and prove the
+legacy parser/schema/method neither accepts benchmark fields nor changes behavior.
+
 Run:
 
 ```bash
@@ -1998,7 +2465,7 @@ not-applicable states carry no usage and preserve definite non-delivery/rejectio
 - [ ] **Step 8: Commit wire and token evidence**
 
 ```bash
-git add src/laconian_eval/providers/base.py src/laconian_eval/providers/__init__.py src/laconian_eval/providers/openai.py src/laconian_eval/providers/replay.py src/laconian_eval/capsule/attempts.py src/laconian_eval/capsule/execution.py tests/test_public_contract.py tests/test_openai_provider.py tests/test_providers.py tests/fixtures/replay-responses.yaml tests/capsule/test_attempts_v2.py tests/capsule/test_execution.py tests/capsule_helpers.py
+git add src/laconian_eval/providers/base.py src/laconian_eval/providers/__init__.py src/laconian_eval/providers/openai.py src/laconian_eval/providers/replay.py src/laconian_eval/capsule/attempts.py src/laconian_eval/capsule/execution.py tests/test_public_contract.py tests/test_openai_provider.py tests/test_providers.py tests/fixtures/replay-public-benchmark-responses.yaml tests/capsule/test_attempts_v2.py tests/capsule/test_execution.py tests/capsule_helpers.py
 git commit -m "feat: bind cache policy and token-tier evidence"
 ```
 
@@ -2017,9 +2484,13 @@ git commit -m "feat: bind cache policy and token-tier evidence"
 - Modify: `tests/capsule/test_execution.py`
 - Modify: `tests/capsule_helpers.py`
 
-- [ ] **Step 1: RED-test stable parent identities independently of run UUIDs**
+- [ ] **Step 1: RED-test stable parent identities with no run UUID in the API**
 
-Replace the run-bound golden in `tests/capsule/test_planning.py` with `test_parent_plan_ids_are_stable_across_capsule_runs`. Materialize the same resolved manifest/case index/arms after generating two distinct UUID4 values for unrelated capsule runs, and assert the same `PlanRowV1` tuple and byte-identical `plan_jsonl` result. The test must call the new interface only with `parent_manifest_sha256`:
+Replace the run-bound golden in `tests/capsule/test_planning.py` with
+`test_parent_plan_ids_are_stable_without_run_identity`. Materialize the same resolved
+manifest/case index/arms twice and assert the same `PlanRowV1` tuple and byte-identical `plan_jsonl`
+result. Inspect the signature and require that the new interface has no run/capsule UUID parameter;
+call it only with `parent_manifest_sha256`:
 
 ```python
 first = materialize_parent_plan(
@@ -2042,7 +2513,7 @@ Add a second test changing only `parent_manifest_sha256` from `SHA_A` to `SHA_B`
 
 - [ ] **Step 2: RED-test the exact independent digest preimages**
 
-For one fixed case/repetition/arm, construct the three mappings from the stable-interface section using a tiny independent `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)` encoder plus explicit domain prefix. Assert exact equality with production `block_id`, `pairing_unit_id`, and `plan_item_id`; the plan-item preimage includes the exact integer `input_token_bound`.
+For one fixed case/repetition/arm, construct the three mappings from the stable-interface section using a tiny independent `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)` encoder plus explicit domain prefix. Assert exact equality with production `block_id`, `pairing_unit_id`, and `plan_item_id`; the plan-item preimage includes the exact integer `input_token_bound`. Use `inspect.signature` to pin the exact keyword-only helper signatures and prove the old positional/run-bound signatures are rejected.
 
 Add `test_case_index_and_plan_bind_default_service_tier_and_input_bound`. Assert the independently
 constructed `request_config_sha256` preimage contains `service_tier: default` in both its generation
@@ -2052,19 +2523,29 @@ ASCII and Cyrillic prompts to prove `prompt_utf8_bytes` counts strict UTF-8 byte
 a baseline arm, independently calculate:
 
 ```python
-expected_bound = case_index[0].prompt_utf8_bytes + len(arm.instruction_bytes) + 65_536
+instruction_bytes = (
+    b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+)
+expected_bound = case_index[0].prompt_utf8_bytes + len(instruction_bytes) + 65_536
 assert parent_plan[0].input_token_bound == expected_bound
 ```
 
+Test baseline and nonbaseline arms and assert planning does not access or add an
+`Arm.instruction_bytes` field. Add a spy around each identity helper and `PlanRowV1` construction;
+with an oversized row late in the prospective Cartesian order, every spy must remain zero. This
+proves the complete bound preflight finishes before any identity hash or row construction.
+
 Create a one-row baseline fixture whose bound equals exactly 272,000 and assert it materializes.
 Increase only the prompt by one ASCII byte and assert the `PlanningError.code` is exactly
-`public_benchmark_input_bound_exceeded`. Forge only `prompt_utf8_bytes` or `input_token_bound` in otherwise
-valid canonical rows and require case-index/plan validation to reject them.
+`public_benchmark_input_bound_exceeded`. Require `validate_parent_plan` to return that same code for
+an actually oversized captured reconstruction. Forge only `prompt_utf8_bytes` or
+`input_token_bound` in an otherwise nonoversized canonical row and require the existing
+`plan_mismatch` code rather than the oversize code.
 
 Run:
 
 ```bash
-uv run pytest tests/capsule/test_planning.py::test_parent_plan_ids_are_stable_across_capsule_runs tests/capsule/test_planning.py::test_parent_identity_preimages_are_exact tests/capsule/test_planning.py::test_case_index_and_plan_bind_default_service_tier_and_input_bound tests/capsule/test_record_models.py -q
+uv run pytest tests/capsule/test_planning.py::test_parent_plan_ids_are_stable_without_run_identity tests/capsule/test_planning.py::test_parent_identity_preimages_are_exact tests/capsule/test_planning.py::test_case_index_and_plan_bind_default_service_tier_and_input_bound tests/capsule/test_planning.py::test_complete_input_bound_preflight_precedes_identity_and_rows tests/capsule/test_record_models.py -q
 ```
 
 Expected: FAIL because `materialize_parent_plan`, both bound fields, and the standard-tier rejection
@@ -2072,15 +2553,26 @@ are absent and current IDs require `run_id`.
 
 - [ ] **Step 3: Implement the stable parent plan API**
 
-Replace the three `run_id` preimages with the exact domain-separated mappings above. Rename `materialize_plan` to `materialize_parent_plan` and `validate_plan` to `validate_parent_plan`; both use the stable keyword-only signatures and class-bound validate `parent_manifest_sha256` as lowercase SHA-256.
+Replace the three `run_id` preimages with the exact domain-separated keyword-only helpers above.
+Rename `materialize_plan` to `materialize_parent_plan` and `validate_plan` to
+`validate_parent_plan`; both use only their stable signatures and class-bound validate
+`parent_manifest_sha256` as lowercase SHA-256. Delete the old function names and old identity
+signatures without aliases, wrappers, or compatibility shims.
 
 Add `prompt_utf8_bytes` and `input_token_bound` to the strict record models shown in the stable
-interface. `materialize_case_index` computes the former while hashing the exact prompt. For every
-case/arm row, `materialize_parent_plan` calls `conservative_input_token_bound` with the indexed prompt
-bytes and `len(arm.instruction_bytes)`, rejects a result above
-`OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS`, stores it on the row, and passes it into `plan_item_id`.
-`validate_parent_plan` independently repeats the complete derivation; it never trusts a supplied
-bound.
+interface. `materialize_case_index` computes the former while hashing the exact prompt. Validate
+each arm and derive its instruction bytes only as
+`b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")`; do not read
+`arm.instruction_bytes`. Before calling `request_config_sha256`, `block_id`, `pairing_unit_id`, or
+`plan_item_id`, and before constructing any `PlanRowV1`, `materialize_parent_plan` computes and
+retains the conservative bound for every prospective case/repetition/arm row. If any exceeds
+`OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS`, raise
+`PlanningError("public_benchmark_input_bound_exceeded")` with zero identity hashes and zero rows.
+Only after the complete preflight succeeds may it construct identities/rows using the precomputed
+bounds. `validate_parent_plan` independently repeats this full derivation; it never trusts a
+supplied bound, uses `public_benchmark_input_bound_exceeded` for a genuinely oversized
+reconstruction, and uses `plan_mismatch` for a forged bound/identity when the reconstructed input is
+within the maximum.
 
 Keep the seeded arm-order algorithm, row ordering, case/instruction hashes, and output-token exposure
 limits unchanged. Do not add `run_id` or `campaign_id` to a parent row. The cache/literal-default-tier
@@ -2096,9 +2588,13 @@ record payload builders, canonical key-order assertions, and independent goldens
 In `execution.py`, after recovering the verified captured case and arm but before constructing the
 request, require the resolved manifest's literal default service tier, reconstruct that exact field,
 recompute the conservative bound from the exact strings, and require equality with
-`row.input_token_bound`. Add execution tests forging only the row bound, omitting/altering the
-resolved tier, and using an oversized captured request; all must fail before the provider fake records
-a call.
+`row.input_token_bound`. Then recompute `plan_item_id` with
+`parent_manifest_sha256=context.capsule.manifest_sha256`, the verified row's `case_uid`,
+`repetition`, `arm`, `instruction_sha256`, and `request_config_sha256`, plus the recomputed bound;
+require exact equality with `row.plan_item_id` before constructing the request. Add execution tests
+forging only the row bound, plan-item ID, instruction hash, or request-config hash,
+omitting/altering the resolved tier, and using an oversized captured request; all must fail before
+the provider fake records a call.
 
 Add `test_two_preparations_have_distinct_runs_but_identical_parent_plans` to `tests/capsule/test_prepare.py`; prepare the same fake manifest twice into one results root and assert:
 
@@ -2157,12 +2653,18 @@ bool row_count
 
 Independently compute the expected self-hash from the exact preimage above.
 
+Also freeze `test_shard_plan_file_bytes_are_canonical_json_plus_one_lf`. Require exact bytes
+`canonical_json(shard.model_dump(mode="json")) + b"\n"`; the reader strips exactly one LF, strictly
+parses/class-bound revalidates, and re-encodes to byte equality. Reject no LF, two LFs, CRLF,
+leading/trailing whitespace, alternate key order/number/string escaping, unknown content, and a
+forged self-hash with `plan_mismatch`.
+
 - [ ] **Step 2: Run the model RED gate**
 
 Run:
 
 ```bash
-uv run pytest tests/capsule/test_sharding.py::test_shard_plan_round_trips_exact_shape -q
+uv run pytest tests/capsule/test_sharding.py::test_shard_plan_round_trips_exact_shape tests/capsule/test_sharding.py::test_shard_plan_file_bytes_are_canonical_json_plus_one_lf -q
 ```
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'laconian_eval.capsule.sharding'`.
@@ -2181,9 +2683,25 @@ Create `sharding.py` with `ShardPlanError`, `ShardPlanV1`, `project_shard_plans`
 6. require each ordered ID to occur once in the parent plan; and
 7. build each self-hash from the exact canonical preimage.
 
-`materialize_shard_projection` maps each requested ID to exactly one parent row and creates local rows with only `ordinal` changed to `0..row_count-1`.
+`materialize_shard_projection` class-bound revalidates the shard and every parent row, recomputes and
+requires the exact `parent_plan_sha256`, requires unique ordered IDs with exact parent membership,
+and requires every selected row to have the one `scenario_uid` named by the shard. It creates local
+rows with only `ordinal` changed to `0..row_count-1`; independently compare every other serialized
+field to its parent.
 
-`validate_public_generation_partition` requires exactly three parents of 480 rows, 36 shards of 40 rows, 12 shards per distinct model, disjoint IDs within each parent, and an ordered concatenation per parent equal to that parent's scenario-group order. Cross-model IDs must also be distinct because requested model participates in `request_config_sha256`.
+`validate_public_generation_partition` has exactly the keyword-only signature in the stable
+interface. It requires exact length three for the aligned manifests, hashes, case indexes, captured-
+arm sequences, and parent plans; class-bound revalidates every member and all shards; requires model
+order exactly Sol, Terra, Luna; and requires three distinct lowercase parent-manifest hashes. For
+each aligned tuple it calls
+`validate_parent_plan(parent_plan, parent_manifest_sha256=parent_manifest_sha256,
+resolved_manifest=resolved_manifest, case_index=case_index, captured_arms=captured_arms)` and requires
+the manifest's OpenAI provider/model and every row to agree with its aligned model/hash. It requires
+every shard's `campaign_id` to equal the exact caller value, exactly three parents of 480 rows, 36
+shards of 40 rows, 12 shards per parent/model, and disjoint IDs within and across parents. The one
+global shard tuple must equal caller parent order followed by each parent's 12 first-appearance
+scenario groups; set-equivalent reorderings fail. Cross-model IDs must also be distinct because
+requested model participates in `request_config_sha256`.
 
 - [ ] **Step 4: RED-test the public partition from three native-v2 models**
 
@@ -2209,6 +2727,15 @@ Delete each requested model, add a fourth, and substitute any nonliteral model i
 `validate_public_generation_partition` must reject every case before hashing or projection.
 
 For every shard projection assert exactly two locales, four arms, five repetitions, one scenario UID, and no duplicate `(case_uid, repetition, arm)` key. Then call `validate_public_generation_partition`.
+
+Call it with the exact aligned `campaign_id`, `(Sol, Terra, Luna)` resolved manifests, their three
+distinct parent-manifest hashes, case indexes, captured-arm sequences, parent plans, and the globally
+ordered shard tuple. Add one mutation per binding: any aligned sequence length other than three;
+wrong/blank campaign ID; any shard campaign mismatch; swapped manifest, parent hash, case index,
+captured arms, parent plan, or shard-parent segment; duplicate parent hash; wrong provider or model;
+model order other than Sol/Terra/Luna; forged/non-revalidated parent; and a globally reordered shard
+that preserves set coverage. Spy on `validate_parent_plan` and require one exact aligned call per
+parent. Every mutation must fail before projection is trusted.
 
 Run:
 
@@ -2250,9 +2777,30 @@ Add `test_prepare_shard_capsule_captures_parent_and_exact_projection` to `tests/
 
 Add rejection cases for a modified parent byte, modified shard byte, wrong model, wrong manifest hash, wrong parent hash, nonmember ID, reordered ID, 39 rows, 41 rows, and scenario mismatch.
 
+Add `test_planning_input_paths_use_invocation_cwd_and_no_follow_limits`. Exercise one absolute pair
+and one relative pair resolved only against `PrepareRequest.invocation_cwd`, with the files outside
+the manifest/input root; both must capture successfully. A relative path that exists only under the
+input root must not be found. Reject symlink/FIFO/directory, unsafe component, no-follow/open/read
+failure with `planning_input_read_failed`; reject a parent larger than
+`RESOURCE_LIMITS_V1.captured_input_total_bytes` with `parent_plan_limit` and a shard larger than
+`RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes` with `shard_plan_limit`. No test follows a link or
+falls back to the manifest root.
+
+Add direct `materialize_shard_projection` mutations for parent-plan hash, duplicate/missing/foreign
+ID, scenario mismatch, forged nested row, and any non-ordinal output change. Every canonical,
+content, hash, self-hash, or projection mutation must surface as `plan_mismatch` at the capsule
+boundary.
+
 - [ ] **Step 6: Implement planning-input capture and projection verification**
 
 Extend `InputRole` with `parent_plan` and `shard_plan`. In `InputFileRecordV1.validate_role_contract`, require the exact ordinal, locator, path, and null ownership fields shown above. Add `inputs/planning` to the exact tree policy used by current verification.
+
+Resolve each planning source path as itself when absolute or against
+`request.prepare.invocation_cwd` when relative, independently of the authored manifest/input root.
+Bounded-read both as no-follow regular files: parent bytes use
+`RESOURCE_LIMITS_V1.captured_input_total_bytes`/`parent_plan_limit`, shard bytes use
+`RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes`/`shard_plan_limit`, and unsafe/open/read failures map
+only to `planning_input_read_failed`. Do not broaden the manifest-root capture grammar.
 
 Implement `PrepareShardRequest` and `prepare_shard_capsule` as a common preparation path that:
 
@@ -2260,12 +2808,14 @@ Implement `PrepareShardRequest` and `prepare_shard_capsule` as a common preparat
 2. recomputes the complete stable parent plan from captured cases and arms;
 3. bounded-reads both caller-supplied planning files without following links;
 4. requires canonical parent JSONL bytes equal the recomputation;
-5. validates the canonical shard JSON and its self-hash;
+5. requires shard bytes exactly `canonical_json(shard.model_dump(mode="json")) + b"\n"`, strips
+   exactly one LF, strictly parses/class-bound revalidates, re-encodes to byte equality, and validates
+   its self-hash;
 6. materializes only the exact projection into `plan.jsonl`;
 7. adds both planning inputs to `inputs/index.json`; and
 8. preserves the existing random capsule run/operation IDs and atomic preparation flow.
 
-In `verify.py`, select full-parent validation when neither planning input exists and shard validation when both exist. One missing planning input is `missing_path`; an unexpected planning path or role is `unexpected_path`; any parent/shard/projection mismatch is `plan_mismatch`.
+In `verify.py`, select full-parent validation when neither planning input exists and shard validation when both exist. One missing planning input is `missing_path`; an unexpected planning path or role is `unexpected_path`; any canonical/content/hash/self-hash/projection mismatch is `plan_mismatch`. Task 5 extends the current verifier's exact path grammar with `inputs/planning` and its two files. Do not create or modify `tree_policy.py` in Task 5; Task 6 extracts this already-extended grammar unchanged.
 
 - [ ] **Step 7: Run shard, preparation, and verifier regressions**
 
@@ -2347,7 +2897,7 @@ def capsule_path_kind(path: str) -> MemberKind | None:
     """Classify one normalized possible capsule member without reading the filesystem."""
 ```
 
-Move the fixed file/directory sets and the case, protocol, runner-source, and seal-temp regular expressions from `verify.py`. Add the two planning files, `inputs/planning`, `seal.json`, and the strict lowercase canonical UUID4 seal temporary. Validate the whole relative POSIX path before applying patterns. Keep semantic required-member calculation in `verify.py`; this function answers only whether a member can ever belong to a capsule and which path type it may have.
+Move the fixed file/directory sets and the case, protocol, runner-source, and seal-temp regular expressions from `verify.py`. Preserve unchanged the two planning files and `inputs/planning` that Task 5 already added to that grammar; add `seal.json` and the strict lowercase canonical UUID4 seal temporary. Validate the whole relative POSIX path before applying patterns. Keep semantic required-member calculation in `verify.py`; this function answers only whether a member can ever belong to a capsule and which path type it may have.
 
 Replace `_file_allowed` and `_directory_allowed` calls in `verify.py` with this shared classifier. Run:
 
