@@ -52,6 +52,23 @@ The project keeps examples, adapters, history, and benchmark machinery outside t
 framework. More files or dependencies require evidence that their benefit exceeds their context
 and portability cost.
 
+## Why “if”?
+
+Plutarch, writing centuries later, preserves an anecdote about Philip II in *On Talkativeness*
+17 (Moralia 511A). Philip writes a threat concerning entry into Laconia; the Laconians answer
+in writing with one Doric word: `αἴκα`—“if.” The letter itself does not survive. What survives is
+Plutarch's later literary account, not a contemporary document.
+
+The story is an image for the project, not proof of its benchmark hypothesis. It is also not a
+story about an unfulfilled entry: Polybius 9.33 has a speaker acknowledge that Philip entered
+Laconia with an army.
+
+## Historical and linguistic sources
+
+- [Plutarch, *On Talkativeness* 17 (*Moralia* 511A)](https://www.perseus.tufts.edu/hopper/text?doc=Perseus%3Atext%3A2008.01.0287%3Asection%3D17), for the later literary account and `αἴκα`.
+- [Eva A. Mitchell, *Laconian Dialect*, University of Edinburgh](https://era.ed.ac.uk/items/385e1ac5-539c-47f6-94b7-8ab83a94a139), for the fragmentary and heterogeneous evidence for ancient Laconian.
+- [Polybius, *Histories* 9.33](https://penelope.uchicago.edu/Thayer/E/Roman/Texts/Polybius/9%2A.html), for ancient testimony that Philip entered Laconia with an army.
+
 ## Related fidelity method
 
 The decision rule was informed by the `KEEP` / `REMOVE` / `FLAG` model in
