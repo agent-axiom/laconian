@@ -4,7 +4,7 @@
 
 **Goal:** Build the immutable hard-score, blind-judge, statistical inference, human-audit, sensitivity, and reporting layer for the approved three-model public benchmark.
 
-**Architecture:** Slice 2 consumes only verified, sealed generation evidence and strict scored-attempt projections supplied by Slice 1. It writes a content-addressed attachment DAG: generation capsule → hard-score request set → judge attachment → audit and analysis attachments, then derives each model outcome independently with fixed denominators, scenario-clustered uncertainty, and fail-closed audit sensitivity. Legacy v1 smoke scoring and reporting remain separate and byte-compatible.
+**Architecture:** Slice 2 constructs and verifies the serial Git-native review DAG `T0 -> C0 -> Rstat -> Rjudge -> Rsecurity -> B0 <- T1`, then consumes only verified, sealed generation evidence and strict scored-attempt projections supplied by Slice 1. It owns the strict statement/envelope/bundle/tag-binding schemas, stable tag trust projections, raw Git-object archive, and the content-addressed hard-score/judge/audit/analysis DAG. Each model outcome remains independent with fixed denominators, scenario-clustered uncertainty, and fail-closed audit sensitivity; legacy v1 behavior remains separate and byte-compatible.
 
 **Tech Stack:** Python 3.11+, Pydantic 2 strict frozen models, NumPy Generator(PCG64), a new strict
 CanonicalJSONV1 validator/encoder at the registry/attestation boundary (the existing capsule encoder
@@ -16,17 +16,22 @@ alone is insufficient), SHA-256, pytest, Ruff, mypy, uv.
 
 Implement against the normative
 [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md)
-at full SHA `46147ef62b5bb009421d58928e879d92247d84b5`, especially Sections 6.2–6.6,
-7.1, 7.7, 9–11, 13.1, and 14.1. Approval metadata is full SHA
-`0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, recording explicit maintainer approval on
-2026-08-30. Milestone 0 is complete; implementation is pending and unblocked. Any later normative
-amendment re-blocks the affected tasks until separately approved.
+at full SHA `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, especially Sections 6.2–6.6,
+7.1, 7.7, 9–11, 13.1, and 14.1. Governance-only successor
+`d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` records the maintainer/user's exact 2026-08-31
+approval message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Prior approval
+metadata is historical only and confers no authority on this amendment. Implementation starts only
+from the synchronized five-plan `PLAN_BASE_SHA` recorded at handoff. Any later normative amendment
+re-blocks the affected tasks until separately approved.
 
-This is Slice 2. It starts only after Slice 1 exposes these public, tested interfaces:
+This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
+Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
+exposes these public, tested interfaces:
 
 ~~~python
 from laconian_eval.capsule.scorable import ScoredAttemptV2
 from laconian_eval.capsule.sidecars import VerifiedScoredCapsuleV2
+
 
 def load_verified_scored_capsule(
     capsule_path: Path,
@@ -55,7 +60,17 @@ index, and the four retained layer roots. Serialized provider-index fields alone
 wrapper or a verified projection. Slice 3
 and Slice 4 may import the benchmark types and construct the expectation/context/provider records from a verified
 `CampaignRegistryV1`; Slice 4 then binds the projection digest into the provenance-rich campaign
-inventory. Neither the campaign registry nor campaign inventory is ever an input type to Slice 2.
+inventory. Slice 2 loaders accept the strict campaign-registry, tag-binding, attestation, workflow,
+and archive/closure roots needed to verify identity, but never treat registry or inventory bytes as
+an authority capability.
+
+Slice 2 additionally owns `TagOperatorRegistryV1`, `TagRulesetPolicyV1`,
+`TagCreationRuleSuiteReceiptV1`, `WorkflowInventoryV1`, `ProtocolReviewStatementV1`,
+mode-discriminated `VerifiedProtocolAttestationV1`, `ProtocolAttestationBundleV1`,
+`ProtocolAttestationTagBindingV1`, REST/GraphQL/local signature projections and receipts, raw
+Git-object SHA-256 verification, and `ProtocolReviewObjectArchiveV1`. Runtime consumes only their
+verified roots/bindings and never redefines these types. Slice 2 performs no live GitHub mutation;
+registered humans/verifier construct the reviewed commits/tags before preflight.
 
 Out of scope for this slice:
 
@@ -64,6 +79,39 @@ Out of scope for this slice:
 - documentation/social promotion after RELEASED;
 - changes to legacy RawAttempt/ScoredAttempt/RunSummary v1 behavior.
 
+### Approved 05e3d7b synchronization boundary
+
+The constructive-liveness, credential-finality, and exact-wire amendment leaves the Slice 2
+estimand, workload, statistical gates, audit method, seven-command replay surface, workflow tuple,
+and protocol-review topology unchanged. Its Evaluation-owned normative delta is nevertheless
+mandatory: the `security_evidence` statement now has fourteen ordered subjects. Relative to the
+previous approved statement it inserts `publication_branch_ruleset_policy_sha256` immediately
+after `publication_correction_protocol_sha256`, then
+`broker_token_delivery_isolation_policy_sha256` and `broker_signing_keys_root_sha256` immediately
+after `state_writer_git_identity_sha256`. A statement with the former eleven-member inventory is
+invalid even when every retained digest is otherwise correct.
+
+Task 3 therefore owns and exports the single `ProtocolSubjectKindV1` Literal and immutable
+`PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1` mapping used by the statement validator, synthetic DAG,
+Runtime preflight, and Publication reconstruction. Runtime and Publication import those exact
+objects by identity; neither slice copies the tuple or adds an alias. They supply and independently
+verify the C0-owned security-policy/key roots, while Evaluation validates their exact kind/order and
+binds them into the signed statement, envelope, bundle, tag binding, archive, context, and every
+downstream attachment root.
+
+Task 1 likewise remains the sole owner of `CanonicalJSONV1Error`, `canonical_json_v1`, and
+`parse_canonical_json_v1`. These three names are package exports so the new Runtime/Publication
+wire schemas consume the same strict bytes rather than defining a second encoder. Their
+subsystem-specific LF domain helpers remain in their owning modules; the NUL-domain
+`canonical_json_v1_digest` stays internal to `attachments.py` and must not be used for the
+amendment's LF-domain broker/publication records.
+
+All new publication terminal-containment, publisher/security-attestor/release-finalizer broker,
+initial-receipt append, release-preauthorization, external-effect, and reconciliation schemas remain
+owned by Runtime or Publication. Slice 2 neither defines nor re-exports them. The exact downstream
+identity/export tests below enforce both sides of this boundary before either later slice can be
+GREEN.
+
 ## Locked file structure
 
 Create:
@@ -71,7 +119,8 @@ Create:
 - src/laconian_eval/benchmark/__init__.py — public Slice 2 exports only.
 - src/laconian_eval/benchmark/attachments.py — strict CanonicalJSONV1, attachment digests, rational values, and no-replace writers.
 - src/laconian_eval/benchmark/seeds.py — normative 128-bit domain-derived seeds.
-- src/laconian_eval/benchmark/context.py — campaign-neutral layer-root indexes, reviewer/protocol bindings, and the sealed pre-judge generation context.
+- src/laconian_eval/benchmark/context.py — campaign-neutral layer-root indexes, the downstream `BenchmarkProtocolBindingsV1` projection, and sealed generation expectation/context types.
+- src/laconian_eval/benchmark/protocol_review.py — strict operator/ruleset/workflow registries, statements, verified envelopes, bundle/tag binding, Git-object projections, creation-suite receipts, and network-free raw-object archive verification.
 - src/laconian_eval/benchmark/hard_score.py — HardScoreRequestSetV1 models and builder.
 - src/laconian_eval/benchmark/judge.py — blind requests, strict judgments, campaign-neutral judge-attempt roots, prompt rendering, and JudgeAttachmentV1.
 - src/laconian_eval/benchmark/bootstrap.py — frozen PCG64 scenario vectors and type-7 percentile intervals.
@@ -89,6 +138,7 @@ Create:
 - tests/benchmark/test_attachments.py
 - tests/benchmark/test_seeds.py
 - tests/benchmark/test_context.py
+- tests/benchmark/test_protocol_review.py — canonical schemas, serial DAG, Git bytes/OIDs/raw SHA-256, stable projections, archive replay, and hostile vectors.
 - tests/benchmark/test_hard_score.py
 - tests/benchmark/test_judge.py
 - tests/benchmark/test_bootstrap.py
@@ -164,11 +214,20 @@ def test_canonical_json_v1_is_strict_and_has_no_terminal_newline() -> None:
     for forbidden in (1.0, float("nan")):
         with pytest.raises(CanonicalJSONV1Error):
             canonical_json_v1({"value": forbidden})
-    for forbidden_bytes in (
-        b'{"a":1}\n', b'{ "a":1}', b'{"a":1,"a":1}', b'{"e\\u0301":1}'
-    ):
+    for forbidden_bytes in (b'{"a":1}\n', b'{ "a":1}', b'{"a":1,"a":1}', b'{"e\\u0301":1}'):
         with pytest.raises(CanonicalJSONV1Error):
             parse_canonical_json_v1(forbidden_bytes)
+
+
+def test_canonical_json_v1_package_exports_are_owner_identical() -> None:
+    import laconian_eval.benchmark as benchmark
+    from laconian_eval.benchmark import attachments
+
+    assert benchmark.CanonicalJSONV1Error is attachments.CanonicalJSONV1Error
+    assert benchmark.canonical_json_v1 is attachments.canonical_json_v1
+    assert benchmark.parse_canonical_json_v1 is attachments.parse_canonical_json_v1
+    assert benchmark.attachment_digest is attachments.attachment_digest
+    assert benchmark.write_attachment_json is attachments.write_attachment_json
 
 
 def test_write_attachment_is_canonical_fsynced_and_never_overwrites(
@@ -204,14 +263,14 @@ Use CapsuleModel and the existing canonical encoder:
 ~~~python
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
-import json
-import hashlib
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
-from typing import NoReturn, Self
+from typing import NoReturn, Self, cast
 
 from pydantic import model_validator
 
@@ -232,13 +291,23 @@ def _canonical_json_v1_tree(value: object) -> object:
         if unicodedata.normalize("NFC", value) != value:
             raise CanonicalJSONV1Error("strings must already be NFC")
         return value
-    if type(value) in (list, tuple):
-        return [_canonical_json_v1_tree(item) for item in value]
+    if type(value) is list:
+        return [_canonical_json_v1_tree(item) for item in cast(list[object], value)]
+    if type(value) is tuple:
+        return [_canonical_json_v1_tree(item) for item in cast(tuple[object, ...], value)]
     if type(value) is dict:
-        if not all(type(key) is str for key in value):
+        raw_mapping = cast(dict[object, object], value)
+        if not all(type(key) is str for key in raw_mapping):
             raise CanonicalJSONV1Error("object keys must be strings")
-        items = sorted(value.items(), key=lambda item: item[0].encode("utf-8"))
-        return {str(_canonical_json_v1_tree(key)): _canonical_json_v1_tree(item) for key, item in items}
+        mapping = cast(dict[str, object], raw_mapping)
+        items = sorted(mapping.items(), key=lambda item: item[0].encode("utf-8"))
+        canonical_mapping: dict[str, object] = {}
+        for key, item in items:
+            canonical_key = _canonical_json_v1_tree(key)
+            if not isinstance(canonical_key, str):
+                raise AssertionError("canonical string key changed type")
+            canonical_mapping[canonical_key] = _canonical_json_v1_tree(item)
+        return canonical_mapping
     raise CanonicalJSONV1Error("only null, strings, integer JSON, arrays, and objects are allowed")
 
 
@@ -326,7 +395,10 @@ def write_attachment_json(path: Path, payload: Mapping[str, object]) -> None:
         os.close(parent)
 ~~~
 
-Export RationalV1, attachment_digest, and write_attachment_json from benchmark/__init__.py.
+Export `CanonicalJSONV1Error`, `canonical_json_v1`, `parse_canonical_json_v1`, `RationalV1`,
+`attachment_digest`, and `write_attachment_json` from `benchmark/__init__.py`. Do not export
+`canonical_json_v1_digest`: its NUL-domain contract is intentionally not the LF-domain helper used
+by protocol-review, broker, publication, or release records.
 
 - [ ] **Step 4: Add and lock NumPy**
 
@@ -385,12 +457,15 @@ def test_seed128_matches_first_128_sha256_bits() -> None:
         + b"b" * 64
     )
     expected = int.from_bytes(hashlib.sha256(material).digest()[:16], "big")
-    assert derive_seed128(
-        "laconian-bootstrap-v1",
-        "campaign-seed-2026",
-        "a" * 40,
-        "b" * 64,
-    ) == expected
+    assert (
+        derive_seed128(
+            "laconian-bootstrap-v1",
+            "campaign-seed-2026",
+            "a" * 40,
+            "b" * 64,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -469,15 +544,22 @@ git commit -m "feat: freeze benchmark seed derivation"
 **Files:**
 
 - Create: `src/laconian_eval/benchmark/context.py`
+- Create: `src/laconian_eval/benchmark/protocol_review.py`
 - Create: `src/laconian_eval/benchmark/hard_score.py`
 - Create: `tests/benchmark/helpers.py`
 - Create: `tests/benchmark/test_context.py`
+- Create: `tests/benchmark/test_protocol_review.py`
 - Create: `tests/benchmark/test_hard_score.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
 
-This task owns the complete pre-judge `context.py` contract:
+This task owns the complete `protocol_review.py` and pre-judge `context.py` contracts. Implement
+`TagOperatorRegistryV1`, `TagRulesetPolicyV1`, `TagCreationRuleSuiteReceiptV1`,
+`WorkflowInventoryV1`, `ProtocolReviewStatementV1`, mode-discriminated
+`VerifiedProtocolAttestationV1`, `ProtocolAttestationBundleV1`,
+`ProtocolAttestationTagBindingV1`, stable REST/GraphQL/local projections and observation receipts,
+`GitObjectSHA256V1`, and `ProtocolReviewObjectArchiveV1` before the context imports them. Then implement:
 `LayerKindV1`, both discriminated layer-member models, `LayerRootIndexV1`, both reviewer registries
-and canonical digest helpers, `ProtocolAttestationV1`, `GenerationContextIndexV1`,
+and canonical digest helpers, the complete `protocol_review.py` contract, `GenerationContextIndexV1`,
 `GenerationContextExpectationV1`, both verified context wrappers,
 `write_layer_root_index`, `load_layer_root_index`,
 `write_generation_context_index`, and `load_verified_generation_context_index`. Implement and test
@@ -495,12 +577,12 @@ In tests/benchmark/helpers.py, build one verified 40-row model/scenario fixture 
 arms × five repetitions. Give each row a unique ordinal, plan_item_id, terminal ScoredAttemptV2,
 and exact captured case. Include one provider rejection, one deterministic format failure, and 38
 hard passes. The fixture must expose a nonnull generation capsule hash and must fail construction
-if Slice 1 returns an unsealed capsule. The expectation fixture binds campaign ID, both reviewer
-registry digests, attestation root, predecessor authority root, generation layer, expected context
+if Slice 1 returns an unsealed capsule. The expectation fixture binds campaign ID, campaign-registry
+self digest, both reviewer registry digests, attestation root, predecessor authority root, generation layer, expected context
 digest, and workflow root; its in-memory wrapper separately binds the reconstructed final authority
 root. The context fixture binds the exact generation layer,
 campaign/input identities, tagged hard-scorer source/protocol, judge protocol, requested tier,
-statistics protocol and singular `audit_protocol_sha256`, both reviewer registries, all three attestations, and their shared
+statistics protocol and singular `audit_protocol_sha256`, both reviewer registries, all three verified envelopes, and their shared
 verified C0 workflow root.
 
 - [ ] **Step 2: Write the failing request-set contract tests**
@@ -518,9 +600,32 @@ First create `tests/benchmark/test_context.py` with these exact pre-judge contra
 - `test_audit_and_protocol_reviewer_registries_have_separate_canonical_bytes_and_digests`.
 - `test_protocol_reviewer_registry_requires_three_ordered_distinct_role_bound_identities`.
 - `test_protocol_reviewer_registry_requires_null_github_fingerprint_and_exact_keyed_fingerprints`.
+- `test_protocol_reviewer_registry_freezes_four_ascii_author_committer_fields_and_raw_headers`.
+- `test_protocol_review_statement_has_exact_fields_and_forbids_commit_envelope_bundle_or_t1_values`.
+- `test_security_statement_has_exact_approved_fourteen_subjects`.
+- `test_protocol_subject_and_signature_exports_are_owner_identical`.
+- `test_verified_protocol_attestation_embeds_byte_identical_statement_and_mode_discriminated_evidence`.
+- `test_protocol_bundle_embeds_three_ordered_envelopes_and_no_b0_or_t1_identity`.
+- `test_tag_binding_binds_t0_c0_three_reviewers_b0_t1_bundle_closure_operator_and_policy`.
+- `test_operator_registry_has_one_exact_user_and_ascii_tagger_identity`.
+- `test_input_and_companion_tag_messages_have_exact_fields_canonical_bytes_and_no_self_reference`.
+- `test_bundle_builder_identity_has_exact_literal_ascii_name_email_and_lf_self_digest`.
+- `test_two_stable_rulesets_allow_only_operator_creation_bypass_and_no_update_delete_bypass`.
+- `test_ruleset_observation_receipt_has_exact_ordered_fields_lf_digest_and_no_creation_claim`.
+- `test_t0_and_t1_creation_suites_are_unique_nonreplayable_and_bind_all_zero_before_exact_after`.
+- `test_stable_rest_graphql_and_local_projections_exclude_transport_metadata`.
+- `test_workflow_inventory_has_exact_three_fields_and_fifteen_ordered_members`.
+- `test_object_archive_contains_raw_bytes_for_every_closure_object_and_replays_without_network`.
+- `test_archive_receipt_wrapper_has_exact_kind_order_paths_hash_binding_and_no_self_digest`.
+- `test_serial_git_dag_golden_bytes_oids_raw_sha256_paths_parents_deltas_headers_and_messages`.
+- `test_protocol_review_rejects_float_bool_numeric_string_non_nfc_duplicate_key_reordered_array_extra_or_missing_field`.
+- `test_protocol_review_rejects_self_reference_wrong_parent_path_role_order_tree_delta_header_signature_tag_or_cross_campaign_replay`.
+- `test_protocol_review_stable_identity_ignores_request_id_etag_timestamp_and_api_order`.
+- `test_protocol_review_digest_uses_exact_lf_separator_and_rejects_nul_missing_or_double_lf`.
 - `test_protocol_attestations_bind_both_registry_digests_role_identity_and_workflow_root`.
 - `test_generation_context_and_all_three_attestations_bind_same_c0_workflow_root`.
-- `test_generation_context_expectation_binds_registry_predecessor_generation_root_and_context`.
+- `test_generation_context_expectation_binds_campaign_registry_reviewers_predecessor_generation_root_and_context`.
+- `test_context_loader_rejects_campaign_registry_substitution_even_when_expectation_and_context_are_rehashed`.
 - `test_runtime_adapter_constructs_expectation_wrapper_only_after_bound_digest_predecessor_and_final_root_verify`.
 - `test_context_loader_rejects_forged_context_with_rehashed_index_against_external_expectation`.
 - `test_generation_context_loader_rejects_seed_commit_code_protocol_member_or_workflow_substitution`.
@@ -531,6 +636,150 @@ signatures for the absence of raw identity overrides, and mutate each bound valu
 substituted object is internally rehashed.
 
 ~~~python
+SECURITY_SUBJECT_KINDS_V1: tuple[ProtocolSubjectKindV1, ...] = (
+    "provider_request_contract_sha256",
+    "retry_spend_protocol_sha256",
+    "campaign_state_schema_sha256",
+    "workflow_endpoint_policy_sha256",
+    "artifact_security_protocol_sha256",
+    "publication_correction_protocol_sha256",
+    "publication_branch_ruleset_policy_sha256",
+    "identity_registry_bundle_sha256",
+    "state_writer_git_identity_sha256",
+    "broker_token_delivery_isolation_policy_sha256",
+    "broker_signing_keys_root_sha256",
+    "tag_operator_registry_sha256",
+    "tag_ruleset_policy_root",
+    "invalid_event_dismissal_policy_sha256",
+)
+
+
+def _security_statement_payload(
+    subject_kinds: tuple[ProtocolSubjectKindV1, ...],
+) -> dict[str, object]:
+    subjects = [
+        {"kind": kind, "sha256": f"{ordinal:064x}"}
+        for ordinal, kind in enumerate(subject_kinds, start=1)
+    ]
+    payload: dict[str, object] = {
+        "schema_version": "ProtocolReviewStatementV1",
+        "role": "security_evidence",
+        "protocol_registry_sha256": "a" * 64,
+        "reviewer_numeric_account_id": 101,
+        "reviewer_login": "security-reviewer",
+        "verification_mode": "ssh_sha256",
+        "signing_fingerprint": "SHA256:" + "A" * 43,
+        "input_tag_ref": "refs/tags/benchmark-input-20260831.1",
+        "input_tag_oid": "b" * 40,
+        "input_tag_object_sha256": "c" * 64,
+        "peeled_c0_oid": "d" * 40,
+        "peeled_c0_sha256": "e" * 64,
+        "workflow_root": "f" * 64,
+        "subjects": subjects,
+        "subject_root": protocol_review_digest(
+            "laconian-protocol-review-subjects-root-v1",
+            subjects,
+        ),
+        "signed_at": "2026-08-31T00:00:00Z",
+    }
+    payload["statement_sha256"] = protocol_review_digest(
+        "laconian-protocol-review-statement-v1",
+        payload,
+    )
+    return payload
+
+
+def test_security_statement_has_exact_approved_fourteen_subjects() -> None:
+    statement = ProtocolReviewStatementV1.model_validate(
+        _security_statement_payload(SECURITY_SUBJECT_KINDS_V1)
+    )
+    assert tuple(item.kind for item in statement.subjects) == SECURITY_SUBJECT_KINDS_V1
+    assert PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1["security_evidence"] == (
+        SECURITY_SUBJECT_KINDS_V1
+    )
+
+    former_eleven = tuple(
+        kind
+        for kind in SECURITY_SUBJECT_KINDS_V1
+        if kind
+        not in {
+            "publication_branch_ruleset_policy_sha256",
+            "broker_token_delivery_isolation_policy_sha256",
+            "broker_signing_keys_root_sha256",
+        }
+    )
+    mutations: tuple[tuple[ProtocolSubjectKindV1, ...], ...] = (
+        former_eleven,
+        SECURITY_SUBJECT_KINDS_V1[:-1],
+        (*SECURITY_SUBJECT_KINDS_V1, "invalid_event_dismissal_policy_sha256"),
+        (
+            *SECURITY_SUBJECT_KINDS_V1[:6],
+            SECURITY_SUBJECT_KINDS_V1[7],
+            SECURITY_SUBJECT_KINDS_V1[6],
+            *SECURITY_SUBJECT_KINDS_V1[8:],
+        ),
+    )
+    for mutated in mutations:
+        with pytest.raises(ValidationError):
+            ProtocolReviewStatementV1.model_validate(_security_statement_payload(mutated))
+
+
+def test_protocol_subject_and_signature_exports_are_owner_identical() -> None:
+    from collections.abc import MutableMapping
+    from typing import cast, get_args
+
+    import laconian_eval.benchmark as benchmark
+    from laconian_eval.benchmark import protocol_review
+
+    role_order: tuple[ProtocolReviewRoleV1, ...] = (
+        "statistical_method",
+        "blind_judge_audit_protocol",
+        "security_evidence",
+    )
+    assert benchmark.ProtocolSubjectKindV1 is protocol_review.ProtocolSubjectKindV1
+    assert benchmark.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1 is (
+        protocol_review.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1
+    )
+    assert get_args(benchmark.ProtocolSubjectKindV1) == tuple(
+        kind
+        for role in role_order
+        for kind in benchmark.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1[role]
+    )
+    assert len(benchmark.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1["security_evidence"]) == 14
+    mutable_alias = cast(
+        MutableMapping[ProtocolReviewRoleV1, tuple[ProtocolSubjectKindV1, ...]],
+        benchmark.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1,
+    )
+    with pytest.raises(TypeError):
+        mutable_alias["security_evidence"] = ()
+    assert benchmark.GitHubVerifiedCommitEvidenceV1 is (
+        protocol_review.GitHubVerifiedCommitEvidenceV1
+    )
+    assert benchmark.SSHVerifiedCommitEvidenceV1 is protocol_review.SSHVerifiedCommitEvidenceV1
+    assert benchmark.OpenPGPVerifiedCommitEvidenceV1 is (
+        protocol_review.OpenPGPVerifiedCommitEvidenceV1
+    )
+    common_signature_fields = (
+        "schema_version",
+        "verification_mode",
+        "commit_oid",
+        "commit_object_sha256",
+        "parent_commit_oid",
+        "statement_path",
+        "github_rest_verification",
+        "github_graphql_signature",
+    )
+    assert tuple(benchmark.GitHubVerifiedCommitEvidenceV1.model_fields) == common_signature_fields
+    keyed_signature_fields = (
+        *common_signature_fields,
+        "fingerprint",
+        "keyring_sha256",
+        "local_signature_verification",
+    )
+    assert tuple(benchmark.SSHVerifiedCommitEvidenceV1.model_fields) == keyed_signature_fields
+    assert tuple(benchmark.OpenPGPVerifiedCommitEvidenceV1.model_fields) == keyed_signature_fields
+
+
 def test_hard_score_request_set_covers_all_40_plan_rows_and_only_hard_passes() -> None:
     fixture = sealed_scored_scenario()
     attachment = build_hard_score_request_set(
@@ -581,10 +830,10 @@ failure even when the substituted context/index is internally rehashed.
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
+uv run pytest -q tests/benchmark/test_protocol_review.py tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
 ~~~
 
-Expected: imports fail because `context.py` and `hard_score.py` do not exist.
+Expected: imports fail because `protocol_review.py`, `context.py`, and `hard_score.py` do not exist.
 
 - [ ] **Step 4: Define the exact schemas**
 
@@ -592,7 +841,349 @@ Implement the strict frozen context schemas in `context.py` before the hard-scor
 The exact normative `context.py` schema and loader contract is frozen in the dedicated subsection
 immediately below; Task 8 only imports it and does not redefine it.
 
-#### Frozen `context.py` contract
+#### Frozen `protocol_review.py` and `context.py` contracts
+
+`laconian_eval.benchmark.protocol_review` alone defines and exports:
+
+~~~python
+def protocol_review_digest(domain: str, value: object) -> str:
+    if (
+        unicodedata.normalize("NFC", domain) != domain
+        or not domain
+        or "\n" in domain
+        or "\0" in domain
+    ):
+        raise CanonicalJSONV1Error(
+            "protocol-review digest domain must be nonempty NFC without LF or NUL"
+        )
+    return hashlib.sha256(domain.encode("utf-8") + b"\n" + canonical_json_v1(value)).hexdigest()
+~~~
+
+Every protocol-review statement/envelope/root, operator/ruleset/workflow registry, GitHub/local
+projection or receipt, creation suite, bundle, tag binding, closure, and archive digest uses this
+exact LF preimage. The pre-existing `canonical_json_v1_digest`, `attachment_digest`, and legacy
+attachment domains remain NUL-bound and are not silently changed. Golden tests independently hash
+`UTF8(domain + "\n") || CanonicalJSONV1(payload)` and reject NUL, missing LF, doubled LF, or any
+alternate separator.
+The negative vector separately rejects a NUL embedded in `domain` and independently compares
+preimages using a NUL separator, no separator, or two LF separators; only exactly one LF between
+the accepted domain and CanonicalJSONV1 bytes can pass.
+
+The protocol-review implementation is strict and noncyclic. C0 contains the reviewer/operator
+registries, stable two-ruleset policy, dismissal policy, and exact 15-member workflow inventory, but
+the entire `benchmarks/protocol-reviews/<T0>/` subtree is absent. The registered operator creates
+unsigned annotated T0 peeling to C0. Rstat, Rjudge, and Rsecurity then form a one-parent serial chain,
+each adding only its one fixed-path statement blob and using the closed signed-commit header/message
+grammar. After independently verifying all three signatures, the verifier creates one-parent B0,
+whose only delta is the three envelopes plus `bundle.json`; the same operator then creates unsigned
+annotated T1 peeling to B0. Lightweight/nested tags, alternate suffixes/namespaces, merge parents,
+extra tree deltas or headers, tag signatures, and repair-in-place are invalid.
+
+`GitObjectSHA256V1` always hashes `type SP decimal-size NUL raw-content`, while the repository OID is
+the distinct raw Git SHA-1. Golden vectors fix exact bytes, both hashes, tree modes, parent order,
+identity/timestamps/timezone, signature continuation lines, and messages for T0, every C0 closure
+object, all reviewers, B0, and T1. `ProtocolReviewObjectArchiveV1` stores the raw content bytes of
+every closure object plus every safe raw/canonical API blob and its strict receipt binding. Its
+network-free importer reconstructs both hashes, every tree/commit/tag and exact delta, stable
+REST/GraphQL/local signature projections, ruleset observations, and the two unique creation suites.
+
+`ProtocolAttestationTagBindingV1` is constructed only after T1 exists and binds both tags and peeled
+commits, the ordered reviewer commit identities, B0, bundle/envelope roots, object-closure root,
+operator registry and stable policy root. It is persisted first in secret-free preflight/campaign
+authority and is forbidden from C0, statements, reviewer commits, B0, T0, and T1. Every downstream
+generation context, hard-score/judge/provider/audit/analysis/report/archive record carries the exact
+campaign registry, tag binding, attestation root, workflow root, and applicable archive/closure roots;
+substitution from another otherwise-valid pair fails closed.
+
+`protocol_review.py` is the sole owner of `InputTagMessageV1`,
+`ProtocolAttestationTagMessageV1`, `ProtocolBundleBuilderGitIdentityV1`,
+`TagRulesetObservationReceiptV1`, and `ArchivedApiReceiptBindingV1`. Their golden vectors pin exact
+schema-order field inventories, strict canonical bytes, LF-domain preimages, raw T0/T1/B0 bytes and
+both Git hashes, observation ordering/pagination/hash arrays, and archive wrapper kind/path/hash
+bindings. Negative vectors independently exercise missing/extra/reordered fields, a NUL or alternate
+digest separator, future/self references, nonliteral builder identity, mismatched embedded receipt
+kind/digest, unequal path arrays, reused or unreferenced paths, and reordered receipt wrappers.
+
+The strict top-level field inventories are copied literally from the approved specification and no
+compatibility alias is exported:
+
+- `TagOperatorRegistryV1`: `schema_version,repository_id,operators,tag_operator_registry_sha256`;
+  exactly one strict operator projection and stored entry digest.
+- `TagRulesetPolicyV1`: `schema_version,repository_id,rulesets,tag_ruleset_policy_root`; exactly the
+  stable `creation_authorizer` and `immutability` projections, with only the frozen `User/always`
+  creation bypass and an empty update/delete bypass list.
+- `TagCreationRuleSuiteReceiptV1`: `schema_version,repository_id,rule_suite_id,operation,ref,
+  before_sha,after_sha,actor_account_id,actor_login,pushed_at,overall_result,evaluation_result,
+  rule_evaluations,creation_authorizer_ruleset_id,creation_bypass_grant,tag_ruleset_policy_root,
+  request_ids,api_version,raw_response_sha256,canonical_response_sha256,observed_at,
+  tag_creation_rule_suite_receipt_sha256`; T0 and T1 require different unique create suites with
+  all-zero `before_sha`, exact tag-object `after_sha`, top-level `bypass`/`fail`, and no replay.
+- `InputTagMessageV1`: `schema_version,input_tag_ref,companion_tag_ref,peeled_c0_oid,
+  protocol_reviewer_registry_sha256,tag_operator_registry_sha256,tag_ruleset_policy_root,
+  workflow_root`; its strict CanonicalJSON bytes are the complete T0 message before the one raw-tag
+  LF, and it contains no future commit/object/envelope/bundle/root/receipt value.
+- `ProtocolAttestationTagMessageV1`: `schema_version,input_tag_ref,input_tag_oid,
+  input_tag_object_sha256,companion_tag_ref,bundle_commit_oid,bundle_commit_object_sha256,
+  protocol_attestation_bundle_sha256,protocol_attestations_root,tag_operator_registry_sha256,
+  tag_ruleset_policy_root`; its strict CanonicalJSON bytes are the complete T1 message before the
+  one raw-tag LF, and it contains no T1 OID, T1 raw-object digest, or self digest.
+- `ProtocolBundleBuilderGitIdentityV1`: `schema_version,name_ascii,email_ascii,
+  protocol_bundle_builder_git_identity_sha256`, with literal
+  `name_ascii="Laconian Protocol Bundle Builder"` and literal
+  `email_ascii="laconian-protocol-bundle-builder@users.noreply.github.com"`; its digest is
+  `protocol_review_digest("laconian-protocol-bundle-builder-git-identity-v1", identity without
+  exactly protocol_bundle_builder_git_identity_sha256)`. B0 reproduces these author and committer
+  bytes exactly, with identical whole-second epoch and `+0000`.
+- `TagRulesetObservationReceiptV1`: `schema_version,repository_id,ruleset_ids,
+  tag_ruleset_policy_root,observed_at,request_ids,etags,raw_response_sha256s,
+  canonical_response_sha256s,pagination_root,tag_ruleset_observation_receipt_sha256`; the two IDs
+  are in stable semantic order and its self digest is
+  `protocol_review_digest("laconian-tag-ruleset-observation-receipt-v1", receipt without exactly
+  tag_ruleset_observation_receipt_sha256)`. It contains no creation actor or historical rule-suite
+  claim, and transport metadata cannot enter the sealed policy root.
+- `WorkflowInventoryV1`: `schema_version,members,workflow_root`; exactly 15 ordered C0-derived
+  `{path,sha256}` members. `sha256` hashes the exact workflow file bytes; repository blob OIDs and
+  raw-Git-object digests belong only to the separate Git closure inventory and are forbidden here.
+- `ProtocolAttestationBundleV1`: `schema_version,protocol_registry_sha256,input_tag_ref,
+  input_tag_oid,input_tag_object_sha256,peeled_c0_oid,peeled_c0_sha256,workflow_root,attestations,
+  protocol_attestations_root,protocol_attestation_bundle_sha256`.
+- `ProtocolAttestationTagBindingV1`: `schema_version,input_tag_ref,input_tag_oid,
+  input_tag_object_sha256,peeled_c0_oid,peeled_c0_sha256,reviewer_commits,bundle_commit_oid,
+  bundle_commit_object_sha256,companion_tag_ref,companion_tag_oid,companion_tag_object_sha256,
+  protocol_registry_sha256,workflow_root,protocol_attestations_root,
+  protocol_attestation_bundle_sha256,object_closure_root,tag_operator_registry_sha256,
+  tag_ruleset_policy_root,protocol_attestation_tag_binding_sha256`.
+- `ProtocolReviewObjectArchiveV1`: `schema_version,object_closure_root,objects,api_blobs,
+  api_receipts,protocol_review_object_archive_sha256`; every object entry stores exact raw content
+  bytes, and every safe raw/canonical API blob is referenced exactly once by a strict receipt.
+- `ArchivedApiReceiptBindingV1`: `receipt_kind,receipt_sha256,receipt,raw_blob_paths,
+  canonical_blob_paths`; `receipt_kind` is the closed discriminator `github_signature |
+  tag_ruleset_observation | t0_creation_suite | t1_creation_suite`, the embedded strict receipt
+  schema and recomputed digest must match it, and the wrapper has no self field. Kind order is the
+  displayed order; repeated observations sort by `(observed_at,receipt_sha256)`. Equal-cardinality
+  path arrays bind index-for-index to the embedded raw/canonical hash arrays (singular creation
+  hashes are normalized to one-element arrays only here), and the complete wrapper is bound by the
+  archive LF digest.
+
+The five security-critical projection schemas referenced above are literal, not names left for an
+implementer to infer. `CanonicalGitAsciiName` is 1–80 ASCII bytes in nonempty non-space tokens
+joined by one space and excludes `<`, `>`, controls, repeated/edge whitespace; `CanonicalGitAsciiEmail`
+is 3–254 printable non-space ASCII bytes with one `@`, nonempty sides, no edge/doubled dot, `<`,
+`>`, or controls. `BoundedCanonicalText` is NFC UTF-8 text of 1..1,048,576 bytes with no NUL/CR
+(LF is preserved). These aliases and validators are owned in the same module:
+
+~~~python
+class TagOperatorProjectionV1(CapsuleModel):
+    operator_account_id: StrictPositiveInt
+    operator_login: BoundedNonBlankString
+    tagger_name: CanonicalGitAsciiName
+    tagger_email: CanonicalGitAsciiEmail
+    tag_operator_sha256: Sha256
+
+
+class GitHubCommitVerificationProjectionV1(CapsuleModel):
+    schema_version: Literal["GitHubCommitVerificationProjectionV1"]
+    repository_id: StrictPositiveInt
+    commit_oid: GitObjectId
+    api_version: Literal["2022-11-28"]
+    endpoint: BoundedNonBlankString
+    verified: Literal[True]
+    reason: Literal["valid"]
+    payload: BoundedCanonicalText
+    signature: BoundedCanonicalText
+    verified_at: CanonicalTimestamp
+    rest_projection_sha256: Sha256
+
+
+class GitHubSignatureProjectionV1(CapsuleModel):
+    schema_version: Literal["GitHubSignatureProjectionV1"]
+    repository_id: StrictPositiveInt
+    commit_oid: GitObjectId
+    query_sha256: Sha256
+    signer_database_id: StrictPositiveInt
+    signer_login: BoundedNonBlankString
+    is_valid: Literal[True]
+    state: Literal["VALID"]
+    graphql_projection_sha256: Sha256
+
+
+class GitHubSignatureObservationReceiptV1(CapsuleModel):
+    schema_version: Literal["GitHubSignatureObservationReceiptV1"]
+    repository_id: StrictPositiveInt
+    commit_oid: GitObjectId
+    rest_projection_sha256: Sha256
+    graphql_projection_sha256: Sha256
+    observed_at: CanonicalTimestamp
+    request_ids: tuple[BoundedNonBlankString, BoundedNonBlankString]
+    etags: tuple[BoundedNonBlankString, BoundedNonBlankString]
+    raw_response_sha256s: tuple[Sha256, Sha256]
+    canonical_response_sha256s: tuple[Sha256, Sha256]
+    tls_endpoint_identity: Literal["api.github.com:443"]
+    github_signature_observation_receipt_sha256: Sha256
+
+
+class LocalSignatureVerificationReceiptV1(CapsuleModel):
+    verified: Literal[True]
+    signed_payload_sha256: Sha256
+    signature_sha256: Sha256
+    verifier_tool_sha256: Sha256
+    verification_receipt_sha256: Sha256
+~~~
+
+`TagOperatorProjectionV1.tag_operator_sha256` uses
+`protocol_review_digest("laconian-tag-operator-v1", entry without exactly tag_operator_sha256)`;
+the registry uses `laconian-tag-operator-registry-v1`. The REST projection endpoint is exactly
+`GET /repos/{owner}/{repo}/git/commits/{commit_oid}` and its digest domain is
+`laconian-github-commit-verification-projection-v1`; `payload` and `signature` byte-equal the values
+reconstructed from the raw signed commit. The GraphQL projection requires
+`query_sha256 == GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1`, uses domain
+`laconian-github-signature-projection-v1`, and contains no payload/signature/time/type/email/
+`wasSignedByGitHub` fields. The observation receipt arrays are REST then GraphQL in that exact
+order and use domain `laconian-github-signature-observation-receipt-v1`; transport fields enter no
+stable projection, statement, envelope, bundle, tag binding, registry, seed, or plan. The local
+five-field record uses `laconian-local-signature-verification-receipt-v1` and omits exactly its self
+digest.
+
+`GITHUB_COMMIT_SIGNER_QUERY_V1` is the exact 357-byte LF-terminated owner query repeated by
+Publication Task 2's transport table, and `GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1` is literal
+`141ec2ce356c197073e0aeece28a804b56b8c31a615a3d36995c72ce2c9b3d7b`. Evaluation owns both
+constants in `protocol_review.py`; Publication imports them by identity and may not copy or alter
+the query. The owner bytes are exactly:
+
+~~~graphql
+query ProtocolCommitSignature($owner: String!, $name: String!, $oid: GitObjectID!) {
+  repository(owner: $owner, name: $name) {
+    databaseId
+    object(oid: $oid) {
+      ... on Commit {
+        oid
+        signature {
+          isValid
+          state
+          signer {
+            databaseId
+            login
+          }
+        }
+      }
+    }
+  }
+}
+~~~
+
+Golden tests hash those UTF-8 bytes plus exactly the displayed final LF independently. GitHub-only evidence forbids
+`fingerprint`, `keyring_sha256`, and local receipt fields; SSH/OpenPGP evidence requires all three,
+byte-matches the frozen registry fingerprint/keyring, reconstructs the signed payload/signature
+hashes from the raw commit, and still requires both REST and GraphQL projections. Every class is
+strict/frozen/extra-forbid, each self digest omits only its named self field, and missing/extra,
+transport-field injection, tuple reordering, null signer, wrong endpoint/query, and alternate-domain
+preimages are negative vectors.
+
+The following neutral integration surface is also owned only by
+`laconian_eval.benchmark.protocol_review`. Runtime imports these exact objects by identity; it does
+not invoke an unnamed parser, DAG verifier, bundle/binding constructor, or archive importer:
+
+~~~python
+BENCHMARK_WORKFLOW_PATHS_V1: tuple[RelativePosixPath, ...] = (
+    ".github/workflows/audit-pr-validate.yml",
+    ".github/workflows/benchmark-analysis.yml",
+    ".github/workflows/benchmark-audit.yml",
+    ".github/workflows/benchmark-batch.yml",
+    ".github/workflows/benchmark-collect-complete.yml",
+    ".github/workflows/benchmark-dismiss-hold.yml",
+    ".github/workflows/benchmark-docs-validate.yml",
+    ".github/workflows/benchmark-evidence.yml",
+    ".github/workflows/benchmark-finalize-invalid.yml",
+    ".github/workflows/benchmark-hard-score.yml",
+    ".github/workflows/benchmark-preflight.yml",
+    ".github/workflows/benchmark-publication-state.yml",
+    ".github/workflows/benchmark-publish.yml",
+    ".github/workflows/benchmark-release.yml",
+    ".github/workflows/publication-pr-validate.yml",
+)
+
+
+def build_workflow_inventory(
+    *, c0_workflow_bytes: Mapping[RelativePosixPath, bytes]
+) -> WorkflowInventoryV1: ...
+
+
+def parse_protocol_git_object(
+    *, oid: GitObjectId, object_type: Literal["blob", "tree", "commit", "tag"], raw_content: bytes
+) -> ParsedProtocolGitObjectV1: ...
+
+
+def verify_protocol_review_prefix(
+    *,
+    input_tag_ref: InputTagRef,
+    objects: tuple[ParsedProtocolGitObjectV1, ...],
+    protocol_reviewer_registry: ProtocolReviewerRegistryV1,
+    tag_operator_registry: TagOperatorRegistryV1,
+    tag_ruleset_policy: TagRulesetPolicyV1,
+    signature_observations: tuple[
+        GitHubSignatureObservationReceiptV1,
+        GitHubSignatureObservationReceiptV1,
+        GitHubSignatureObservationReceiptV1,
+    ],
+    input_tag_creation_suite: TagCreationRuleSuiteReceiptV1,
+) -> VerifiedProtocolReviewPrefixV1: ...
+
+
+def verify_protocol_review_dag(
+    *,
+    input_tag_ref: InputTagRef,
+    companion_tag_ref: CompanionTagRef,
+    objects: tuple[ParsedProtocolGitObjectV1, ...],
+    protocol_reviewer_registry: ProtocolReviewerRegistryV1,
+    tag_operator_registry: TagOperatorRegistryV1,
+    tag_ruleset_policy: TagRulesetPolicyV1,
+    signature_observations: tuple[GitHubSignatureObservationReceiptV1, ...],
+    tag_creation_suites: tuple[TagCreationRuleSuiteReceiptV1, TagCreationRuleSuiteReceiptV1],
+) -> VerifiedProtocolReviewDagV1: ...
+
+
+def build_protocol_attestation_bundle(
+    *, verified_prefix: VerifiedProtocolReviewPrefixV1
+) -> ProtocolAttestationBundleV1: ...
+
+
+def build_protocol_attestation_tag_binding(
+    *,
+    verified_dag: VerifiedProtocolReviewDagV1,
+    bundle: ProtocolAttestationBundleV1,
+) -> ProtocolAttestationTagBindingV1: ...
+
+
+def build_protocol_review_object_archive(
+    *,
+    verified_dag: VerifiedProtocolReviewDagV1,
+    api_blobs: tuple[ArchivedApiBlobV1, ...],
+    api_receipts: tuple[ArchivedApiReceiptBindingV1, ...],
+) -> ProtocolReviewObjectArchiveV1: ...
+
+
+def load_verified_protocol_review_object_archive(
+    archive: ProtocolReviewObjectArchiveV1,
+) -> VerifiedProtocolReviewDagV1: ...
+~~~
+
+`ParsedProtocolGitObjectV1`, `VerifiedProtocolReviewPrefixV1`, and
+`VerifiedProtocolReviewDagV1` are frozen in-memory dataclasses, not additional serialized authority
+schemas. The parser recomputes both the raw Git SHA-1 OID and `GitObjectSHA256V1`. The prefix
+verifier accepts exactly the T0/C0/Rstat/Rjudge/Rsecurity closure, the one T0 creation suite, and
+the three signature observations; it forbids any B0/T1 object, companion-tag value, envelope,
+bundle, or future-object digest. Only that verified prefix can construct the three envelopes and
+`ProtocolAttestationBundleV1`, after which the deterministic B0 commit and operator-created T1 may
+be built. The complete DAG verifier internally repeats the prefix verification over its exact
+prefix, reconstructs the bundle, and requires the supplied B0/T1 closure and both creation suites
+to match it byte-for-byte. It accepts the literal tuple order above and no callback, porcelain
+result, precomputed trust Boolean, or caller-supplied parent/path/delta. Add a RED/GREEN vector that
+constructs B0 from the prefix API while B0/T1 do not yet exist, plus negative vectors for every
+future B0/T1 value smuggled into the prefix. `ArchivedApiBlobV1` contains one canonical relative archive
+path, byte length, SHA-256, and immutable bytes; its path and digest must match exactly one receipt
+wrapper. The archive importer repeats the same parser and DAG verification network-free rather than
+trusting the archive's stored roots. Tests inspect all signatures and assert package re-exports are
+the identical owner objects.
 
 `LayerKindV1` is the closed literal `generation|hard-score|judge-request|judge`.
 `GenerationLayerRootMemberV1` binds ordinal, model, scenario, both canonical relative paths, the
@@ -610,14 +1201,25 @@ fingerprint; keyed modes require an exact fingerprint; `security_evidence` alway
 fingerprint and therefore cannot use GitHub mode. Registry and attestation bytes use Task 1
 `CanonicalJSONV1` with no terminal newline and distinct domains.
 
-`ProtocolSubjectV1` is exactly `{kind, sha256}`. `ProtocolAttestationV1` has, in schema order,
-`schema_version`, `role`, `protocol_registry_sha256`, `reviewer_numeric_account_id`,
-`reviewer_login`, `verification_mode`, `signing_fingerprint`, `input_tag_object_sha256`,
-`peeled_c0_sha256`, `workflow_root`, `subjects`, `subject_root`, `signed_at`,
-`signature_evidence`, `attestation_sha256`; extra fields are forbidden. GitHub signature evidence
-has exactly `commit_oid`, `verified: true`, `reason: "valid"`, signer numeric ID/login. Keyed modes
-add exact matching `fingerprint`. `subject_root` hashes the ordered subject array; the three complete
-attestations hash in registry role order to `protocol_attestations_root`.
+Each `ProtocolReviewerBindingV1` has exactly `role`, `reviewer_numeric_account_id`,
+`reviewer_login`, `verification_mode`, `signing_fingerprint`, `author_name_ascii`,
+`author_email_ascii`, `committer_name_ascii`, and `committer_email_ascii`. All four identity strings
+are nonempty canonical printable ASCII satisfying the closed Git name/email grammar. The raw R*
+commit must reproduce the frozen author and committer bytes exactly; environment or Git-config
+identity, Unicode/control bytes, alternate email/name, or author/committer mismatch is rejected.
+
+`ProtocolReviewSubjectV1` is exactly `{kind, sha256}`. `ProtocolReviewStatementV1` has exactly, in
+schema order, `schema_version`, `role`, `protocol_registry_sha256`,
+`reviewer_numeric_account_id`, `reviewer_login`, `verification_mode`, `signing_fingerprint`,
+`input_tag_ref`, `input_tag_oid`, `input_tag_object_sha256`, `peeled_c0_oid`, `peeled_c0_sha256`,
+`workflow_root`, `subjects`, `subject_root`, `signed_at`, and `statement_sha256`. It contains no
+reviewer-commit OID, signature evidence, envelope/bundle value, or future T1 value.
+`VerifiedProtocolAttestationV1` has exactly `schema_version`, the complete canonical `statement`,
+closed mode-discriminated `signature_evidence`, and `attestation_sha256`; it never repeats or
+flattens statement fields. Every signature variant binds the exact reviewer commit/parent/path/raw
+Git-object SHA-256 plus stable REST and GraphQL projections; keyed variants additionally bind the
+frozen fingerprint/keyring and exact five-field local verification receipt. The three complete
+envelopes hash in registry role order to `protocol_attestations_root`.
 
 Exact subject inventories are owned by tasks: Task 4 owns `hard_score_protocol_sha256`,
 `judge_prompt_sha256`, `judge_schema_sha256`; Task 5 owns `corpus_case_root`,
@@ -628,8 +1230,12 @@ Exact subject inventories are owned by tasks: Task 4 owns `hard_score_protocol_s
 The security role owns exactly `provider_request_contract_sha256`, `retry_spend_protocol_sha256`,
 `campaign_state_schema_sha256`, `workflow_endpoint_policy_sha256`,
 `artifact_security_protocol_sha256`, `publication_correction_protocol_sha256`,
-`identity_registry_bundle_sha256`, `state_writer_git_identity_sha256`; Runtime supplies and verifies
-the last subject. No role may omit, reorder, duplicate, add, or borrow a subject.
+`publication_branch_ruleset_policy_sha256`, `identity_registry_bundle_sha256`,
+`state_writer_git_identity_sha256`, `broker_token_delivery_isolation_policy_sha256`,
+`broker_signing_keys_root_sha256`, `tag_operator_registry_sha256`, `tag_ruleset_policy_root`, and
+`invalid_event_dismissal_policy_sha256`. Runtime/Publication supply and independently verify their
+owned C0 subject values; Evaluation owns the exact kind/order contract and signed binding. No role
+may omit, reorder, duplicate, add, or borrow a subject.
 
 `GenerationContextIndexV1` is strict, frozen, extra-forbid, and contains exactly: schema version,
 campaign ID, plaintext 64-hex campaign seed and its domain digest,
@@ -640,12 +1246,12 @@ C0 workflow-inventory root,
 two ordered audit-reviewer bindings and their recomputed registry digest, the complete three-role
 protocol-reviewer registry, three ordered protocol attestation bindings and their recomputed root,
 the generation layer-root-index digest, the ordered 36 unique generation-capsule hashes, and its
-own domain-separated digest. Its validator requires all three attestations to repeat the context's
+own domain-separated digest. Its validator requires all three embedded statements to repeat the context's
 same workflow root and both recomputed registry digests and to match the corresponding role-bound
 account ID/login. No self-asserted verification Boolean is accepted.
 
-`GenerationContextExpectationV1` is strict/frozen/extra-forbid and binds exactly campaign ID, both
-registry digests, `protocol_attestations_root`, predecessor authority root, full generation-layer
+`GenerationContextExpectationV1` is strict/frozen/extra-forbid and binds exactly campaign ID,
+`campaign_registry_sha256`, both registry digests, `protocol_attestations_root`, predecessor authority root, full generation-layer
 root, `expected_context_index_sha256`, `workflow_root`, and its own domain-separated digest. Runtime
 reconstructs it privately from current authority and keeps the verified wrapper only in memory.
 Serialized expectation bytes may be ordinary offline replay evidence but never a capability. The
@@ -656,7 +1262,8 @@ the ordered 36 capsule hashes plus `generation_context_expectation_sha256` and
 
 ~~~python
 import re
-
+from collections.abc import Mapping
+from types import MappingProxyType
 
 LayerKindV1 = Literal["generation", "hard-score", "judge-request", "judge"]
 
@@ -744,9 +1351,7 @@ class LayerRootIndexV1(BaseModel):
         return self
 
 
-SignatureVerificationModeV1 = Literal[
-    "github_verified_commit", "ssh_sha256", "openpgp_fingerprint"
-]
+SignatureVerificationModeV1 = Literal["github_verified_commit", "ssh_sha256", "openpgp_fingerprint"]
 ProtocolReviewRoleV1 = Literal[
     "statistical_method",
     "blind_judge_audit_protocol",
@@ -819,6 +1424,16 @@ class ProtocolReviewerBindingV1(BaseModel):
     signing_fingerprint: str | None = Field(
         pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
     )
+    author_name_ascii: str
+    author_email_ascii: str
+    committer_name_ascii: str
+    committer_email_ascii: str
+
+    @model_validator(mode="after")
+    def validate_frozen_git_identities(self) -> Self:
+        validate_git_identity_ascii(self.author_name_ascii, self.author_email_ascii)
+        validate_git_identity_ascii(self.committer_name_ascii, self.committer_email_ascii)
+        return self
 
 
 class ProtocolReviewerRegistryV1(BaseModel):
@@ -876,38 +1491,115 @@ ProtocolSubjectKindV1 = Literal[
     "workflow_endpoint_policy_sha256",
     "artifact_security_protocol_sha256",
     "publication_correction_protocol_sha256",
+    "publication_branch_ruleset_policy_sha256",
     "identity_registry_bundle_sha256",
     "state_writer_git_identity_sha256",
+    "broker_token_delivery_isolation_policy_sha256",
+    "broker_signing_keys_root_sha256",
+    "tag_operator_registry_sha256",
+    "tag_ruleset_policy_root",
+    "invalid_event_dismissal_policy_sha256",
 ]
 
 
-class ProtocolSubjectV1(BaseModel):
+PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1: Mapping[
+    ProtocolReviewRoleV1,
+    tuple[ProtocolSubjectKindV1, ...],
+] = MappingProxyType(
+    {
+        "statistical_method": (
+            "corpus_case_root",
+            "estimand_protocol_sha256",
+            "statistical_protocol_sha256",
+            "bootstrap_protocol_sha256",
+            "outcome_classification_protocol_sha256",
+            "false_fail_sensitivity_protocol_sha256",
+        ),
+        "blind_judge_audit_protocol": (
+            "hard_score_protocol_sha256",
+            "judge_prompt_sha256",
+            "judge_schema_sha256",
+            "audit_sampling_protocol_sha256",
+            "audit_commit_reveal_protocol_sha256",
+            "audit_adjudication_protocol_sha256",
+        ),
+        "security_evidence": (
+            "provider_request_contract_sha256",
+            "retry_spend_protocol_sha256",
+            "campaign_state_schema_sha256",
+            "workflow_endpoint_policy_sha256",
+            "artifact_security_protocol_sha256",
+            "publication_correction_protocol_sha256",
+            "publication_branch_ruleset_policy_sha256",
+            "identity_registry_bundle_sha256",
+            "state_writer_git_identity_sha256",
+            "broker_token_delivery_isolation_policy_sha256",
+            "broker_signing_keys_root_sha256",
+            "tag_operator_registry_sha256",
+            "tag_ruleset_policy_root",
+            "invalid_event_dismissal_policy_sha256",
+        ),
+    }
+)
+
+
+class ProtocolReviewSubjectV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     kind: ProtocolSubjectKindV1
     sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
-class GitHubSignatureEvidenceV1(BaseModel):
+class GitHubVerifiedCommitEvidenceV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["GitHubVerifiedCommitEvidenceV1"]
+    verification_mode: Literal["github_verified_commit"]
     commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
-    verified: Literal[True]
-    reason: Literal["valid"]
-    signer_numeric_account_id: int = Field(gt=0)
-    signer_login: str
+    commit_object_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    parent_commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    statement_path: str
+    github_rest_verification: GitHubCommitVerificationProjectionV1
+    github_graphql_signature: GitHubSignatureProjectionV1
 
 
-class KeyedSignatureEvidenceV1(GitHubSignatureEvidenceV1):
-    fingerprint: str = Field(
-        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$"
-    )
-
-
-SignatureEvidenceV1 = GitHubSignatureEvidenceV1 | KeyedSignatureEvidenceV1
-
-
-class ProtocolAttestationV1(BaseModel):
+class SSHVerifiedCommitEvidenceV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
-    schema_version: Literal["protocol-attestation-v1"]
+    schema_version: Literal["SSHVerifiedCommitEvidenceV1"]
+    verification_mode: Literal["ssh_sha256"]
+    commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    commit_object_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    parent_commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    statement_path: str
+    github_rest_verification: GitHubCommitVerificationProjectionV1
+    github_graphql_signature: GitHubSignatureProjectionV1
+    fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+    keyring_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    local_signature_verification: LocalSignatureVerificationReceiptV1
+
+
+class OpenPGPVerifiedCommitEvidenceV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["OpenPGPVerifiedCommitEvidenceV1"]
+    verification_mode: Literal["openpgp_fingerprint"]
+    commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    commit_object_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    parent_commit_oid: str = Field(pattern="^[0-9a-f]{40}$")
+    statement_path: str
+    github_rest_verification: GitHubCommitVerificationProjectionV1
+    github_graphql_signature: GitHubSignatureProjectionV1
+    fingerprint: str = Field(pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64})$")
+    keyring_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    local_signature_verification: LocalSignatureVerificationReceiptV1
+
+
+SignatureEvidenceV1 = Annotated[
+    GitHubVerifiedCommitEvidenceV1 | SSHVerifiedCommitEvidenceV1 | OpenPGPVerifiedCommitEvidenceV1,
+    Field(discriminator="verification_mode"),
+]
+
+
+class ProtocolReviewStatementV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["ProtocolReviewStatementV1"]
     role: ProtocolReviewRoleV1
     protocol_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     reviewer_numeric_account_id: int = Field(gt=0)
@@ -916,74 +1608,48 @@ class ProtocolAttestationV1(BaseModel):
     signing_fingerprint: str | None = Field(
         pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
     )
+    input_tag_ref: str
+    input_tag_oid: str = Field(pattern="^[0-9a-f]{40}$")
     input_tag_object_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    peeled_c0_oid: str = Field(pattern="^[0-9a-f]{40}$")
     peeled_c0_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     workflow_root: str = Field(pattern="^[0-9a-f]{64}$")
-    subjects: tuple[ProtocolSubjectV1, ...]
+    subjects: tuple[ProtocolReviewSubjectV1, ...]
     subject_root: str = Field(pattern="^[0-9a-f]{64}$")
     signed_at: str
-    signature_evidence: SignatureEvidenceV1
-    attestation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    statement_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def validate_role_subjects_signature_and_digest(self) -> Self:
-        expected_subjects: dict[ProtocolReviewRoleV1, tuple[ProtocolSubjectKindV1, ...]] = {
-            "statistical_method": (
-                "corpus_case_root", "estimand_protocol_sha256",
-                "statistical_protocol_sha256", "bootstrap_protocol_sha256",
-                "outcome_classification_protocol_sha256",
-                "false_fail_sensitivity_protocol_sha256",
-            ),
-            "blind_judge_audit_protocol": (
-                "hard_score_protocol_sha256", "judge_prompt_sha256",
-                "judge_schema_sha256", "audit_sampling_protocol_sha256",
-                "audit_commit_reveal_protocol_sha256",
-                "audit_adjudication_protocol_sha256",
-            ),
-            "security_evidence": (
-                "provider_request_contract_sha256", "retry_spend_protocol_sha256",
-                "campaign_state_schema_sha256", "workflow_endpoint_policy_sha256",
-                "artifact_security_protocol_sha256",
-                "publication_correction_protocol_sha256",
-                "identity_registry_bundle_sha256", "state_writer_git_identity_sha256",
-            ),
-        }
-        if tuple(item.kind for item in self.subjects) != expected_subjects[self.role]:
-            raise ValueError("protocol attestation subject inventory/order mismatch")
+    def validate_role_subjects_and_digest(self) -> Self:
+        expected_subjects = PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1[self.role]
+        if tuple(item.kind for item in self.subjects) != expected_subjects:
+            raise ValueError("protocol statement subject inventory/order mismatch")
         validate_signature_mode_fingerprint(
             self.verification_mode,
             self.signing_fingerprint,
             require_keyed=self.role == "security_evidence",
         )
-        keyed = self.verification_mode != "github_verified_commit"
-        if keyed != (self.signing_fingerprint is not None):
-            raise ValueError("protocol attestation mode/fingerprint mismatch")
-        if keyed:
-            if not isinstance(self.signature_evidence, KeyedSignatureEvidenceV1):
-                raise ValueError("keyed attestation requires keyed signature evidence")
-            if self.signature_evidence.fingerprint != self.signing_fingerprint:
-                raise ValueError("keyed signature fingerprint mismatch")
-        elif isinstance(self.signature_evidence, KeyedSignatureEvidenceV1):
-            raise ValueError("GitHub verification forbids fingerprint evidence")
-        if (
-            self.signature_evidence.signer_numeric_account_id
-            != self.reviewer_numeric_account_id
-            or self.signature_evidence.signer_login != self.reviewer_login
-        ):
-            raise ValueError("protocol attestation signer identity mismatch")
-        expected_subject_root = canonical_json_v1_digest(
-            "laconian-protocol-attestation-subject-root-v1",
+        expected_subject_root = protocol_review_digest(
+            "laconian-protocol-review-subjects-root-v1",
             [item.model_dump(mode="json") for item in self.subjects],
         )
         if self.subject_root != expected_subject_root:
-            raise ValueError("protocol attestation subject root mismatch")
-        expected = canonical_json_v1_digest(
-            "laconian-protocol-attestation-v1",
-            self.model_dump(mode="json", exclude={"attestation_sha256"}),
+            raise ValueError("protocol statement subject root mismatch")
+        expected = protocol_review_digest(
+            "laconian-protocol-review-statement-v1",
+            self.model_dump(mode="json", exclude={"statement_sha256"}),
         )
-        if self.attestation_sha256 != expected:
-            raise ValueError("protocol attestation digest mismatch")
+        if self.statement_sha256 != expected:
+            raise ValueError("protocol statement digest mismatch")
         return self
+
+
+class VerifiedProtocolAttestationV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    schema_version: Literal["VerifiedProtocolAttestationV1"]
+    statement: ProtocolReviewStatementV1
+    signature_evidence: SignatureEvidenceV1
+    attestation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 def canonical_reviewer_registry_bytes(
@@ -1030,9 +1696,9 @@ def compute_protocol_reviewer_registry_sha256(
 
 def compute_protocol_attestations_root(
     attestations: tuple[
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
     ],
 ) -> str:
     expected_roles: tuple[ProtocolReviewRoleV1, ...] = (
@@ -1040,17 +1706,23 @@ def compute_protocol_attestations_root(
         "blind_judge_audit_protocol",
         "security_evidence",
     )
-    if tuple(item.role for item in attestations) != expected_roles:
+    if tuple(item.statement.role for item in attestations) != expected_roles:
         raise ValueError("protocol attestation root role order mismatch")
-    return canonical_json_v1_digest(
-        "laconian-protocol-review-attestations-root-v1",
+    return protocol_review_digest(
+        "laconian-verified-protocol-attestations-root-v1",
         [item.model_dump(mode="json") for item in attestations],
     )
 
 
 class BenchmarkProtocolBindingsV1(BaseModel):
     """One centrally owned immutable projection repeated by every downstream attachment."""
+
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestation_tag_binding_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestation_bundle_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_review_object_archive_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    object_closure_root: str = Field(pattern="^[0-9a-f]{64}$")
     audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1076,10 +1748,7 @@ def protocol_bindings_from_context(
     context: "GenerationContextIndexV1",
 ) -> BenchmarkProtocolBindingsV1:
     return BenchmarkProtocolBindingsV1.model_validate(
-        {
-            name: getattr(context, name)
-            for name in BenchmarkProtocolBindingsV1.model_fields
-        }
+        {name: getattr(context, name) for name in BenchmarkProtocolBindingsV1.model_fields}
     )
 
 
@@ -1087,6 +1756,11 @@ class GenerationContextIndexV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["benchmark-generation-context-index-v1"]
     campaign_id: str
+    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestation_tag_binding_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_attestation_bundle_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    protocol_review_object_archive_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    object_closure_root: str = Field(pattern="^[0-9a-f]{64}$")
     audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1114,9 +1788,9 @@ class GenerationContextIndexV1(BaseModel):
     audit_reviewer_registry: AuditReviewerRegistryV1
     protocol_reviewer_registry: ProtocolReviewerRegistryV1
     protocol_attestations: tuple[
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
     ]
     generation_root_index_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     provider_projection_root: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1154,7 +1828,7 @@ class GenerationContextIndexV1(BaseModel):
             "security_evidence",
         )
         protocol_reviewers = self.protocol_reviewer_registry.reviewers
-        if tuple(item.role for item in self.protocol_attestations) != expected_roles:
+        if tuple(item.statement.role for item in self.protocol_attestations) != expected_roles:
             raise ValueError("generation context requires the ordered protocol review roles")
         if tuple(reviewer.role for reviewer in protocol_reviewers) != expected_roles:
             raise ValueError("generation context protocol reviewer role order mismatch")
@@ -1174,13 +1848,13 @@ class GenerationContextIndexV1(BaseModel):
             strict=True,
         ):
             if (
-                attestation.role != reviewer.role
-                or attestation.reviewer_numeric_account_id != reviewer.reviewer_numeric_account_id
-                or attestation.reviewer_login != reviewer.reviewer_login
-                or attestation.protocol_registry_sha256
+                attestation.statement.role != reviewer.role
+                or attestation.statement.reviewer_numeric_account_id
+                != reviewer.reviewer_numeric_account_id
+                or attestation.statement.reviewer_login != reviewer.reviewer_login
+                or attestation.statement.protocol_registry_sha256
                 != self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
-                or attestation.workflow_root
-                != self.workflow_root
+                or attestation.statement.workflow_root != self.workflow_root
             ):
                 raise ValueError("generation context protocol attestation identity mismatch")
         if self.protocol_attestations_root != (
@@ -1200,6 +1874,7 @@ class GenerationContextExpectationV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["benchmark-generation-context-expectation-v1"]
     campaign_id: str
+    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1258,7 +1933,7 @@ def load_verified_generation_context_index(
     generation_root: Path,
     expectation: VerifiedGenerationContextExpectationV1,
 ) -> VerifiedGenerationContextIndexV1:
-    """Verify context against external expectation, layer index, and all 36 capsule/sidecar pairs."""
+    """Verify context against its expectation and all layer/capsule parents."""
 ~~~
 
 The two registry byte contracts are exact and independent:
@@ -1270,7 +1945,7 @@ bytewise-reviewer-ID-ordered audit bindings, and
 bindings. Neither byte string has a terminal newline. Each digest
 is raw SHA-256 over its own freshly
 regenerated bytes. The attestation root is
-`canonical_json_v1_digest("laconian-protocol-review-attestations-root-v1",
+`protocol_review_digest("laconian-verified-protocol-attestations-root-v1",
 [item.model_dump(mode="json") for item in protocol_attestations])` over the three complete
 attestations in fixed role order. Tests reject any cross-population reuse, reordered identity, string/Boolean numeric ID,
 login rename, omitted protocol fingerprint, or digest copied without exact byte equality.
@@ -1279,7 +1954,8 @@ login rename, omitted protocol fingerprint, or digest copied without exact byte 
 campaign-side module `laconian_eval.campaign.runtime` owns that trust transition: it
 reconstructs the predecessor and final `GENERATION_COMPLETE` authority roots read-only, parses the
 fixed expectation child canonically, recomputes its self digest, verifies every expectation field
-against the campaign registry and generation-layer roots, requires the final authority root to bind
+against the campaign registry and generation-layer roots, including exact equality of
+`campaign_registry_sha256` to the freshly verified registry self digest, requires the final authority root to bind
 that exact expectation digest,
 and only then constructs `VerifiedGenerationContextExpectationV1` in memory. Its three stage
 functions `Runtime.hard_score`, `Runtime.prepare_judge`, and `Runtime.seal_judge` import and
@@ -1299,10 +1975,11 @@ capsule/sidecar pair with `load_verified_scored_capsule`, and requires the order
 model/scenario identity to match. Before reading context authority fields it derives the expected
 digest only from `expectation.expectation.expected_context_index_sha256`, requires the parsed
 context self digest to equal that value, and requires campaign, both reviewer registries,
-attestation, workflow, and generation-root digests to match the expectation. There is no raw expected-digest
+campaign-registry, attestation, workflow, and generation-root digests to match the expectation. There is no raw expected-digest
 argument, argv option, environment value, or value read from the context/index under test. Runtime
 Task 7 is the sole producer adapter; it constructs this
-campaign-neutral record from verified `CampaignRegistryV1` and the class-bound tagged C0 inventory,
+campaign-neutral record from verified `CampaignRegistryV1` and the class-bound C0 inventory peeled
+from T0 and verified through the paired T1/tag-binding closure,
 including the statistics protocol later consumed by analysis, but no campaign type crosses into
 `context.py`.
 
@@ -1417,7 +2094,7 @@ def verify_hard_score_request_set(
     expectation: VerifiedGenerationContextExpectationV1,
     boundary_ordinal: int,
 ) -> None:
-    """Rebuild from verified context and require canonical equality, including all six identities."""
+    """Rebuild from verified context and require canonical equality of all identities."""
 ~~~
 
 Map existing CheckResult names to the closed HardReasonCode enum. Unknown check names are an
@@ -1434,20 +2111,26 @@ member, and capsule/sidecar, invokes the builder, and canonical-byte compares th
 hash, protocol hash, campaign/model/scenario identity, or workflow root comes from a CLI option,
 environment value, attachment-under-test, or caller inference.
 
+Before GREEN, re-export the Task 3 owner objects from `laconian_eval.benchmark`, including
+`ProtocolSubjectKindV1`, `PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1`,
+`GitHubVerifiedCommitEvidenceV1`, `SSHVerifiedCommitEvidenceV1`,
+`OpenPGPVerifiedCommitEvidenceV1`, and `SignatureEvidenceV1`. Import each name directly from
+`protocol_review`; do not rebuild the Literal, mapping, or union in `__init__.py`.
+
 - [ ] **Step 6: Run GREEN and commit**
 
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
-uv run ruff check src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py tests/benchmark
-uv run mypy src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py
+uv run pytest -q tests/benchmark/test_protocol_review.py tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
+uv run ruff check src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py tests/benchmark
+uv run mypy src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py
 ~~~
 
 Expected: all commands pass.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py tests/benchmark/helpers.py tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
+git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/context.py src/laconian_eval/benchmark/hard_score.py tests/benchmark/helpers.py tests/benchmark/test_protocol_review.py tests/benchmark/test_context.py tests/benchmark/test_hard_score.py
 git commit -m "feat: seal hard-score request sets"
 ~~~
 
@@ -1722,9 +2405,52 @@ when the attacker recomputes both self hashes; an independently rehashed forged 
 against the retained expectation. No overload accepts a raw seed, campaign ID, protocol
 hash, tier, wire field, generation model, scenario, or independently supplied evidence object.
 
-- [ ] **Step 5: Add capsule-bound judge attachments and exact coverage verification**
+- [ ] **Step 5: RED-test the judge SDK contract before credentials**
+
+Implement `test_judge_requires_openai_3_3_1_and_tagged_uv_lock_before_credentials` as a focused
+precredential test with credential-read, client-construction, and provider-call spies initialized to
+zero. Import Foundation's exact `BenchmarkSDKContractError` and
+`require_benchmark_sdk_contract` from `laconian_eval.providers`, assert object identity with
+`laconian_eval.providers.openai`, and monkeypatch only that owner's internal version/model lookup
+seams. Independently expose installed version `3.3.0`, a wrong C0 `uv.lock` SHA-256, a missing typed
+request field, and a missing canonical response path. Each case must raise the shared closed SDK
+contract error before any spy increments; `judge.py` defines no wrapper or local error.
+
+Run:
+
+~~~bash
+uv run pytest -q tests/benchmark/test_judge.py::test_judge_requires_openai_3_3_1_and_tagged_uv_lock_before_credentials
+~~~
+
+Expected: FAIL because the shared Foundation validator is not yet wired into the judge boundary;
+credential reads, client constructions, and provider calls all remain exactly zero.
+
+- [ ] **Step 6: Implement and GREEN the judge precredential gate**
+
+In `judge.py`, import Foundation's exact `require_benchmark_sdk_contract` object without wrapping or
+re-exporting it from `laconian_eval.benchmark`. The focused judge test calls that identical object
+with fixture C0 `uv.lock` bytes and the fixture's independently retained member SHA-256 before
+invoking the fake credential/client/provider boundary. The live Runtime adapter owns those two C0
+arguments and performs the identical call immediately before judge credentials; the neutral
+generation context and judge attachment retain only the expected member hash and never serialize
+lock bytes. No CLI, environment, judge attachment, or caller scalar may override either value.
+Foundation alone owns the installed-version/lock-entry/typed-request/canonical-response checks,
+constants, error, and implementation. Static tests reject a copied validator/constant, a
+catch-and-continue path, or any credential/client access before the literal `None` return.
+
+Run:
+
+~~~bash
+uv run pytest -q tests/benchmark/test_judge.py::test_judge_requires_openai_3_3_1_and_tagged_uv_lock_before_credentials
+~~~
+
+Expected: PASS; all invalid-contract cases fail closed and all three spies remain exactly zero.
+
+- [ ] **Step 7: Add capsule-bound judge attachments and exact coverage verification**
 
 ~~~python
+from itertools import pairwise
+
 from laconian_eval.providers import (
     AppliedCacheControlStatus,
     CacheReadStatus,
@@ -1732,7 +2458,6 @@ from laconian_eval.providers import (
     ProviderMetadataString,
     ServiceTierStatus,
 )
-
 
 JudgeAttemptDispositionV1 = Literal[
     "success",
@@ -1793,8 +2518,7 @@ class JudgeAttemptUsageV1(BaseModel):
         if self.availability == "partial" and present not in (1, 2):
             raise ValueError("partial judge usage requires one or two core counts")
         if self.availability == "complete" and (
-            present != 3
-            or self.total_tokens != self.input_tokens + self.output_tokens  # type: ignore[operator]
+            present != 3 or self.total_tokens != self.input_tokens + self.output_tokens  # type: ignore[operator]
         ):
             raise ValueError("complete judge usage is inconsistent")
         for status, value in (
@@ -1808,26 +2532,20 @@ class JudgeAttemptUsageV1(BaseModel):
             if status == "reported_nonzero" and (value is None or value <= 0):
                 raise ValueError("judge reported_nonzero requires positive value")
         if (
-            (self.cache_read_tokens is not None or self.cache_write_tokens is not None)
-            and self.input_tokens is None
-        ):
+            self.cache_read_tokens is not None or self.cache_write_tokens is not None
+        ) and self.input_tokens is None:
             raise ValueError("judge cache components require input tokens")
         if (
             self.input_tokens is not None
-            and (self.cache_read_tokens or 0) + (self.cache_write_tokens or 0)
-            > self.input_tokens
+            and (self.cache_read_tokens or 0) + (self.cache_write_tokens or 0) > self.input_tokens
         ):
             raise ValueError("judge cache components exceed input")
         if self.input_tokens is not None and self.ordinary_uncached_input_tokens != (
             self.input_tokens - (self.cache_read_tokens or 0) - (self.cache_write_tokens or 0)
         ):
             raise ValueError("judge ordinary uncached input mismatch")
-        if (
-            self.reasoning_tokens is not None
-            and (
-                self.output_tokens is None
-                or self.reasoning_tokens > self.output_tokens
-            )
+        if self.reasoning_tokens is not None and (
+            self.output_tokens is None or self.reasoning_tokens > self.output_tokens
         ):
             raise ValueError("judge reasoning tokens exceed output")
         return self
@@ -1941,13 +2659,11 @@ class JudgeAttemptEvidenceV1(BaseModel):
         ):
             raise ValueError("judge retry lineage shape mismatch")
         if self.attempt_number > 1 and (
-            self.retry_of_judge_attempt_sha256 is None
-            or self.retry_authorization_sha256 is None
+            self.retry_of_judge_attempt_sha256 is None or self.retry_authorization_sha256 is None
         ):
             raise ValueError("judge retry lineage shape mismatch")
-        if (
-            (self.disposition in {"retry_scheduled", "retry_exhausted"})
-            != (self.structured_retry_status == 429)
+        if (self.disposition in {"retry_scheduled", "retry_exhausted"}) != (
+            self.structured_retry_status == 429
         ):
             raise ValueError("only a structured 429 may schedule or exhaust a retry")
         if self.disposition == "success":
@@ -1979,8 +2695,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 self.terminal
                 or self.attempt_number >= 6
                 or self.delivery_certainty != "definitely_rejected"
-                or self.service_tier_status
-                != "not_applicable_definitely_rejected"
+                or self.service_tier_status != "not_applicable_definitely_rejected"
                 or self.cost_availability != "definitely_rejected_zero"
                 or self.usage.availability != "unavailable"
                 or self.retry_evidence_sha256 is None
@@ -2017,10 +2732,7 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 or self.cost_availability != "retained_worst_case"
                 or (
                     self.delivery_certainty == "response_received"
-                    and (
-                        self.provider_request_id is None
-                        or self.raw_response_sha256 is None
-                    )
+                    and (self.provider_request_id is None or self.raw_response_sha256 is None)
                 )
                 or self.judgment is not None
                 or self.terminal_evidence_sha256 is None
@@ -2063,18 +2775,14 @@ class JudgeAttemptEvidenceV1(BaseModel):
                 not self.terminal
                 or self.terminal_evidence_sha256 is None
                 or self.retry_evidence_sha256 is not None
-                or (
-                    expected_delivery is not None
-                    and self.delivery_certainty != expected_delivery
-                )
+                or (expected_delivery is not None and self.delivery_certainty != expected_delivery)
                 or (
                     self.disposition == "provider_rejected"
                     and self.delivery_certainty
                     not in {"definitely_not_sent", "definitely_rejected"}
                 )
                 or (
-                    self.delivery_certainty
-                    in {"definitely_not_sent", "definitely_rejected"}
+                    self.delivery_certainty in {"definitely_not_sent", "definitely_rejected"}
                     and self.cost_availability != "definitely_rejected_zero"
                 )
                 or (
@@ -2155,13 +2863,12 @@ class JudgeAttemptBoundaryV1(BaseModel):
                 raise ValueError("judge boundary attempt-number gap")
             if sum(attempt.terminal for attempt in history) != 1 or not history[-1].terminal:
                 raise ValueError("judge boundary requires one final terminal attempt")
-            for previous, current in zip(history, history[1:]):
+            for previous, current in pairwise(history):
                 if (
                     previous.disposition != "retry_scheduled"
                     or current.retry_of_judge_attempt_sha256
                     != previous.judge_attempt_evidence_sha256
-                    or current.retry_authorization_sha256
-                    != previous.retry_evidence_sha256
+                    or current.retry_authorization_sha256 != previous.retry_evidence_sha256
                 ):
                     raise ValueError("judge boundary retry chain mismatch")
         expected = stable_digest(
@@ -2420,7 +3127,7 @@ literal requested tier `default`; every record's returned tier must also be exac
 its source attempt's provider-wire hash must equal the corresponding request wrapper. The attachment digest excludes only
 `judge_attachment_sha256` and uses domain `laconian-judge-attachment-v1`.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [ ] **Step 8: Run GREEN and commit**
 
 Run:
 
@@ -2584,18 +3291,24 @@ class PlannedObservationV1(BaseModel):
             expected_ordinary_uncached = (
                 self.input_tokens - self.cache_read_tokens - self.cache_write_tokens
             )
-            if expected_ordinary_uncached < 0 or self.ordinary_uncached_input_tokens != expected_ordinary_uncached:
+            if (
+                expected_ordinary_uncached < 0
+                or self.ordinary_uncached_input_tokens != expected_ordinary_uncached
+            ):
                 raise ValueError("uncached input projection mismatch")
         elif self.ordinary_uncached_input_tokens is not None:
             raise ValueError("uncached input requires complete cache detail")
         if (self.cost_availability == "unavailable") != (self.reconciled_cost_usd is None):
             raise ValueError("cost availability/value mismatch")
-        if self.response_id is not None and self.cache_write_status in {"missing", "invalid"}:
-            if (
+        if (
+            self.response_id is not None
+            and self.cache_write_status in {"missing", "invalid"}
+            and (
                 self.cache_policy_status != "missing_write_detail"
                 or self.cost_availability != "retained_worst_case"
-            ):
-                raise ValueError("missing cache-write detail must retain worst-case cost")
+            )
+        ):
+            raise ValueError("missing cache-write detail must retain worst-case cost")
         if self.response_id is not None and self.cache_write_status.startswith("not_applicable_"):
             raise ValueError("explicit cache policy requires write accounting on success")
         if self.cache_write_status in {"reported_zero", "reported_nonzero"}:
@@ -2761,15 +3474,17 @@ class BootstrapIntervalV1(BaseModel):
     valid_replicates: int = Field(ge=0, le=10_000)
     total_replicates: Literal[10_000] = 10_000
     available: bool
-    inferential_target: Literal[
+    inferential_target: Literal["scenario-superpopulation-conditional-on-fixed-campaign"] = (
         "scenario-superpopulation-conditional-on-fixed-campaign"
-    ] = "scenario-superpopulation-conditional-on-fixed-campaign"
-    coverage: Literal[
+    )
+    coverage: Literal["nominal-95-percent-approximate-12-cluster-percentile"] = (
         "nominal-95-percent-approximate-12-cluster-percentile"
-    ] = "nominal-95-percent-approximate-12-cluster-percentile"
+    )
 
 
-def make_cluster_vectors(*, seed: int, scenario_uids: Sequence[str]) -> tuple[BootstrapVectorsV1, NDArray[np.uint8]]:
+def make_cluster_vectors(
+    *, seed: int, scenario_uids: Sequence[str]
+) -> tuple[BootstrapVectorsV1, NDArray[np.uint8]]:
     ordered = tuple(sorted(scenario_uids, key=lambda value: value.encode("utf-8")))
     if len(ordered) != 12 or len(set(ordered)) != 12:
         raise ValueError("exactly twelve distinct scenario UIDs are required")
@@ -2808,7 +3523,9 @@ def median_visible_delta(rows: Sequence[PlannedObservationV1], *, gate: GateName
     """Return median concise-minus-if visible tokens among jointly eligible token pairs."""
 
 
-def arm_pass_proportion(rows: Sequence[PlannedObservationV1], *, arm: ArmName, gate: GateName) -> float:
+def arm_pass_proportion(
+    rows: Sequence[PlannedObservationV1], *, arm: ArmName, gate: GateName
+) -> float:
     """Return the selected gate successes over the fixed 120 planned observations."""
 
 
@@ -3089,9 +3806,9 @@ class ProviderEvidenceIndexV1(BaseModel):
     audit_reviewer_registry: AuditReviewerRegistryV1
     protocol_reviewer_registry: ProtocolReviewerRegistryV1
     protocol_attestations: tuple[
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
-        ProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
+        VerifiedProtocolAttestationV1,
     ]
     protocol_attestations_root: str = Field(pattern="^[0-9a-f]{64}$")
     generation_context_expectation_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -3126,10 +3843,13 @@ class ProviderEvidenceIndexV1(BaseModel):
             ("generation", "gpt-5.6-luna"),
             ("judge", "gpt-5.6-sol"),
         )
-        if tuple(
-            (item.purpose, item.requested_model_id)
-            for item in self.requested_returned_model_ids
-        ) != exact_model_projection:
+        if (
+            tuple(
+                (item.purpose, item.requested_model_id)
+                for item in self.requested_returned_model_ids
+            )
+            != exact_model_projection
+        ):
             raise ValueError("provider index requested/returned model projection mismatch")
         vectors = (
             self.ordered_generation_capsule_sha256s,
@@ -3156,7 +3876,7 @@ class ProviderEvidenceIndexV1(BaseModel):
             "blind_judge_audit_protocol",
             "security_evidence",
         )
-        if tuple(item.role for item in self.protocol_attestations) != expected_roles:
+        if tuple(item.statement.role for item in self.protocol_attestations) != expected_roles:
             raise ValueError("provider index requires the three ordered protocol review roles")
         if len({item.attestation_sha256 for item in self.protocol_attestations}) != 3:
             raise ValueError("provider index requires three distinct protocol reviews")
@@ -3178,13 +3898,13 @@ class ProviderEvidenceIndexV1(BaseModel):
             strict=True,
         ):
             if (
-                attestation.role != reviewer.role
-                or attestation.reviewer_numeric_account_id != reviewer.reviewer_numeric_account_id
-                or attestation.reviewer_login != reviewer.reviewer_login
-                or attestation.protocol_registry_sha256
+                attestation.statement.role != reviewer.role
+                or attestation.statement.reviewer_numeric_account_id
+                != reviewer.reviewer_numeric_account_id
+                or attestation.statement.reviewer_login != reviewer.reviewer_login
+                or attestation.statement.protocol_registry_sha256
                 != self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
-                or attestation.workflow_root
-                != self.workflow_root
+                or attestation.statement.workflow_root != self.workflow_root
             ):
                 raise ValueError("provider index protocol attestation identity mismatch")
         if self.protocol_attestations_root != (
@@ -3382,6 +4102,7 @@ class BlindAuditRecordV1(BaseModel):
 
 class BlindAuditPacketV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     sample_manifest_sha256: str
     records: tuple[BlindAuditRecordV1, ...]
     packet_sha256: str
@@ -3539,12 +4260,12 @@ retains both canonical projections; substituting either population never silentl
 other's digest.
 
 The adapter copies that complete protocol registry plus exactly three
-`ProtocolAttestationV1` records from the verified campaign registry. Each attestation repeats its
+`VerifiedProtocolAttestationV1` records from the verified campaign registry. Each envelope embeds its
 role, numeric account ID/login, verification mode/fingerprint, the separate protocol-registry
 digest, complete exact role subject inventory, and the same verified C0 `workflow_root`; all must
 match the corresponding role-bound protocol reviewer and generation-context root. The generation
 context, not the attestation schema, separately repeats the audit-registry digest. Their root is
-`canonical_json_v1_digest("laconian-protocol-review-attestations-root-v1",
+`protocol_review_digest("laconian-verified-protocol-attestations-root-v1",
 [binding.model_dump(mode="json") for binding in attestations])`; duplicate record hashes, a missing
 or fourth role, role/identity reordering, either registry mismatch, or root mismatch fails. Thus the generation context binds the
 runtime's exact three-role review authorization, not an assumed two-reviewer audit count. This is
@@ -3553,8 +4274,10 @@ signed commit or detached proof under its role binding and exact required finger
 `security_evidence`; a copied fingerprint or `signature_verified` Boolean is not a verified source
 binding. The attestation hash carried here must be the digest of that complete verified source
 record, including the workflow root. Evaluation deliberately carries only this neutral verified
-SHA-256: Runtime remains the sole owner of the 15-member workflow inventory schema, canonical-byte
-loader, and member verification, and no Runtime or campaign inventory type is duplicated or
+SHA-256: Evaluation remains the sole owner of the 15-member `WorkflowInventoryV1` schema,
+`BENCHMARK_WORKFLOW_PATHS_V1`, canonical-byte builder, member verifier, and network-free loader in
+`laconian_eval.benchmark.protocol_review`; Runtime imports those exact objects and owns only the
+repository/C0 observation orchestration. No Runtime or campaign inventory type is duplicated or
 imported below `laconian_eval.benchmark`. This is
 the only context from which Runtime's `Runtime.prepare_judge` obtains the
 plaintext seed, peeled input commit, judge protocol, literal requested service tier `default`, or
@@ -3750,12 +4473,19 @@ inclusion probabilities.
 Derive opaque audit IDs from campaign ID, sample-manifest hash precursor, and canonical record ID.
 The packet schema must make it impossible to serialize model, arm, record order, response length,
 tokens, latency, judge decision, cost, or provider metadata.
+Copy `campaign_registry_sha256` directly from the class-bound verified provider context and require
+it to equal `AuditSampleManifestV1.protocol_bindings.campaign_registry_sha256`. Include that field
+in the `laconian-blind-audit-packet-v1` preimage before `sample_manifest_sha256` and reject a
+missing, substituted, or independently rehashed cross-campaign packet before writing any byte or
+admitting it to audit authority; component hashes alone confer no campaign authority.
 
 - [ ] **Step 6: Add verifier tests and implementation**
 
 Create tests named
 `test_sample_verifier_recomputes_seeds_permutations_quotas_probabilities_and_digest` and
-`test_sample_verifier_rejects_duplicate_or_unrepresented_population_record`.
+`test_sample_verifier_rejects_duplicate_or_unrepresented_population_record`. Add a
+digest-recomputed packet substitution case whose direct `campaign_registry_sha256` differs from
+the manifest/provider binding and require rejection before the sample writer opens its staging root.
 
 Then implement:
 
@@ -3804,13 +4534,15 @@ root/audit/blind-packet.json
 "records_sha256": population.attachment.records_sha256,
 "sample_manifest_sha256": manifest.sample_manifest_sha256,
 "blind_packet_sha256": packet.packet_sha256})` in that fixed field order. The writer class-bound
-revalidates every argument, calls `verify_audit_sample`, stages
+revalidates every argument, requires the packet's direct `campaign_registry_sha256` to equal both
+the manifest protocol binding and verified provider context, calls `verify_audit_sample`, stages
 only beneath an operation-owned empty sibling of an absent `output_root`, emits the four canonical
 members with final newlines, fsyncs every file and directory, installs without replacement, and
 returns only the result of a fresh `load_verified_audit_sample_root` call. The loader descriptor-
 opens that exact allowlist, rejects extras/missing files/symlinks/aliases/noncanonical bytes, calls
 `load_verified_audit_population(root / "audit", provider_evidence=provider_evidence)`, replays
-`verify_audit_sample`, recomputes the root digest, and returns the frozen wrapper. Neither function
+`verify_audit_sample`, rechecks the same direct registry equality, recomputes the root digest, and
+returns the frozen wrapper. Neither function
 accepts a raw seed, index digest, or caller-asserted verified Boolean. On failure the writer removes
 only its validated staging directory and leaves the destination absent.
 Export `VerifiedAuditSampleRootV1`, `write_audit_sample_root`, and
@@ -3932,9 +4664,7 @@ def canonical_label_jsonl(labels: Sequence[HumanAuditLabelV1]) -> bytes:
     """Sort by UTF-8 audit ID, emit one canonical JSON object per line and one final newline."""
 
 
-def compute_commitment(
-    *, header: CommitmentHeaderV1, salt: bytes, exact_label_bytes: bytes
-) -> str:
+def compute_commitment(*, header: CommitmentHeaderV1, salt: bytes, exact_label_bytes: bytes) -> str:
     """Require a 32-byte salt and return the fixed commitment digest defined below."""
 ~~~
 
@@ -4554,10 +5284,7 @@ class SensitivityResultV1(BaseModel):
                 or self.certificate_sha256 is not None
             ):
                 raise ValueError("exhausted search must discard uncertified outputs")
-            if (
-                self.exhaustion_reason == "visited_node_cap"
-                and self.visited_nodes != 1_000_000
-            ):
+            if self.exhaustion_reason == "visited_node_cap" and self.visited_nodes != 1_000_000:
                 raise ValueError("visited-node exhaustion counter mismatch")
             if self.exhaustion_reason == "bootstrap_evaluation_cap" and (
                 self.evaluated_assignments != 4_096 or self.visited_nodes >= 1_000_000
@@ -5359,7 +6086,7 @@ git commit -m "feat: seal benchmark analysis and reports"
 - Modify: `evals/README.md`
 - Modify: `tests/test_public_contract.py`
 
-- [ ] **Step 1: Write exactly eleven failing end-to-end analysis tests**
+- [ ] **Step 1: Write exactly fifteen failing end-to-end analysis tests**
 
 Create tests named:
 
@@ -5374,17 +6101,21 @@ Create tests named:
 - `test_synthetic_security_attestation_requires_nonnull_keyed_fingerprint`
 - `test_synthetic_attestations_reject_cross_role_reorder_extra_missing_or_duplicate_subject`
 - `test_synthetic_attestations_reject_extra_top_level_field_or_signature_mode_mismatch`
+- `test_synthetic_protocol_review_constructs_exact_t0_c0_rstat_rjudge_rsecurity_b0_t1_dag`
+- `test_synthetic_protocol_review_reconstructs_all_raw_objects_and_receipts_without_network`
+- `test_synthetic_protocol_review_rejects_every_canonical_json_git_header_tree_delta_signature_ruleset_creation_suite_and_cross_campaign_negative`
+- `test_synthetic_every_downstream_attachment_binds_campaign_registry_tag_binding_attestation_workflow_and_archive_closure_roots`
 
 Do not add the helper yet. The first test's literal expectations require identical authority-tagged
 `statistical_protocol_sha256` and singular `audit_protocol_sha256` across context, provider index,
 projection, nested protocol bindings, audit evidence, analysis, and final analysis evidence. It also
 pins the exact assignment-count formula, the shared per-model audit-metric digest in both arm limits,
 all four sensitivity extrema or one closed exhaustion reason, and every count/root described in
-Step 3 below. The other ten tests cover independent outcomes, deterministic bytes, parent
+Step 3 below. The other fourteen tests cover independent outcomes, deterministic bytes, parent
 substitution, full audit re-verification, atomic writers, Wilson-to-K propagation, and the four
 attestation mode/inventory failures named above.
 
-- [ ] **Step 2: Run the eleven tests RED**
+- [ ] **Step 2: Run the complete synthetic tests RED**
 
 Run:
 
@@ -5418,11 +6149,26 @@ sealed zero-call attachment. Provider-ready request/attempt fixtures use literal
 that retains worst-case exposure and cannot seal. Build accepted attachments only from
 `load_verified_judge_attempt_root`.
 
-Build a fixed synthetic `GenerationContextExpectationV1`, authority wrapper,
+Build a complete provider-offline synthetic `TagOperatorRegistryV1`, two-entry
+`TagRulesetPolicyV1`, 15-member `WorkflowInventoryV1`, T0/C0/Rstat/Rjudge/Rsecurity/B0/T1 raw Git
+closure, unique T0/T1 creation suites, stable REST/GraphQL/local signature projections/receipts,
+three statements/envelopes, bundle, post-tag binding, and `ProtocolReviewObjectArchiveV1`. Reimport
+the archive without network and require byte-identical objects, OIDs, raw SHA-256 values, projections,
+roots, and campaign identity. The fixed C0 input-package blob includes the exact ordered three
+broker-signing public-key records and exact token-delivery-isolation policy bytes required by the
+approved amendment. Evaluation freezes those canonical bytes and their subject digests as a golden
+Git-object fixture but defines no campaign-side schema; Runtime's cumulative contract test rebuilds
+the same bytes from its sole-owner `BrokerSigningKeyV1` and
+`BrokerTokenDeliveryIsolationPolicyV1` types and requires byte equality. The `security_evidence`
+statement contains the exact fourteen-kind tuple from
+`PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1`, including the branch-ruleset policy,
+token-delivery-isolation policy, and broker-signing-key root in their approved positions; deleting,
+reordering, duplicating, or restoring the former eleven-kind tuple fails even after recomputing all
+outer digests. Then build a fixed synthetic `GenerationContextExpectationV1`, authority wrapper,
 `GenerationContextIndexV1`, and `ProviderEvidenceIndexV1` with independently fixed plaintext
 seed/input commit; the exact two audit reviewers and recomputed registry digest; the separate exact
 three-role protocol reviewer registry; allowed null GitHub and exact keyed fingerprints; the three
-exact `ProtocolAttestationV1` records with unchanged role subject inventories; their shared
+exact `VerifiedProtocolAttestationV1` records with unchanged role subject inventories; their shared
 `workflow_root`; exact authority-tagged statistics and singular audit protocol hashes; expectation,
 context, four layer-index, and attempt-root digests; and the provider projection/wrapper. Propagate
 the same `audit_protocol_sha256` through every nested `BenchmarkProtocolBindingsV1` and every final
@@ -5442,15 +6188,15 @@ Shape outcomes deliberately: one model has a verified hard or semantic negative-
 one is inconclusive through a declared audit or sensitivity gate, and one is supported with strict
 positive brevity and non-inferior quality. Assert those outcomes by literal exact model ID.
 
-- [ ] **Step 4: Run the eleven tests GREEN**
+- [ ] **Step 4: Run the fifteen tests GREEN**
 
 Run after implementing the helper and exact assertions:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_synthetic_analysis.py
+uv run pytest -q tests/benchmark/test_protocol_review.py tests/benchmark/test_synthetic_analysis.py
 ~~~
 
-Expected: all eleven named tests pass without network access or environment secrets.
+Expected: all fifteen named tests pass without network access or environment secrets.
 
 - [ ] **Step 5: Replace the public no-interval limitation with the frozen contract**
 
@@ -5517,9 +6263,10 @@ explicitly non-evidentiary. State that all seven `laconian-benchmark` commands a
 validation only. Name the exact Runtime and Publication method tuple above, the two private
 constructors, and the separate `analyze` and `verify` operations; neither live module imports the
 CLI. State
-that all three protocol attestations, the generation context,
+that all three verified protocol-attestation envelopes, the generation context,
 provider index, and benchmark projection carry the same verified
-`workflow_root`, while Runtime alone owns the 15-workflow inventory schema.
+`workflow_root`, while `laconian_eval.benchmark.protocol_review` alone owns the exact 15-member
+`WorkflowInventoryV1` schema and Runtime only verifies/consumes its sealed root.
 Also state that `statistical_protocol_sha256` and the singular `audit_protocol_sha256` are authority-
 bound through context/provider evidence and are the only accepted statistics/audit protocol values;
 the singular audit digest does not alter the approved granular attestation subject inventories.
@@ -5653,6 +6400,7 @@ cross-slice contract; it neither imports nor fabricates those future modules as 
 Create tests named:
 
 - `test_help_lists_exact_seven_commands_and_no_abbreviated_command_is_accepted`
+- `test_cli_main_signature_is_exactly_main_argv_program_none_and_preserves_legacy_dispatch`
 - `test_help_lists_offline_replay_only_and_never_names_live_callables`
 - `test_every_option_rejects_abbreviation_and_every_command_rejects_unknown_options`
 - `test_all_seven_commands_require_one_canonical_generation_expectation_path`
@@ -5680,10 +6428,20 @@ from the implementation, `EXPECTED_BENCHMARK_SLICE2_EXPORTS` containing every pu
 in that exact order and `EXPECTED_BENCHMARK_COMMANDS` equal to:
 
 ~~~python
-("hard-score", "prepare-judge", "seal-judge", "sample-audit", "seal-audit", "analyze", "verify")
+EXPECTED_BENCHMARK_COMMANDS = (
+    "hard-score",
+    "prepare-judge",
+    "seal-judge",
+    "sample-audit",
+    "seal-audit",
+    "analyze",
+    "verify",
+)
 ~~~
 
-All tests invoke only `laconian_eval.cli.main` with the benchmark program selector. The first six commands may write exactly one quarantined
+All tests invoke only `laconian_eval.cli.main(argv, program=None)` with the benchmark program
+selector, assert that positional/keyword compatibility exactly, and prove the existing legacy
+dispatcher remains byte-compatible. The first six commands may write exactly one quarantined
 `offline-non-evidentiary.json`; `verify` is read-only. Tests assert no command writes a
 layer index, provider index, audit root, analysis root, or any live schema, and that every live
 complete-root loader rejects the offline report. Task 3/4/8/13 tests remain the owners of real
@@ -5917,7 +6675,10 @@ Offline command validation responsibilities are fixed:
    sensitivity, or analysis builder and writes no result root.
 7. `verify` performs the same offline structural checks over `RESULT`, including both
    `audit/` and `analysis/`, all four ordered 36-parent layer vectors, and the judge-attempt
-   root/vector. It is read-only and emits only the offline stdout envelope.
+   root/vector. It also imports `ProtocolReviewObjectArchiveV1` without network, reconstructs every
+   T0/C0/reviewer/B0/T1 raw Git object, stable projection/receipt and campaign/tag binding, and
+   rejects any downstream campaign/archive-root mismatch. It is read-only and emits only the
+   offline stdout envelope.
 
 Every input path is opened beneath a retained parent descriptor; reject absolute references inside
 indexes, parent traversal, symlinks, devices, FIFOs, sockets, duplicate inode aliases, unstable
@@ -5956,7 +6717,8 @@ names, fixed option names, and fixed descriptions; it exits zero and creates no 
 Export these Slice 2 boundaries from `laconian_eval.benchmark` without importing `cli`:
 
 ~~~text
-RationalV1, derive_seed128,
+CanonicalJSONV1Error, canonical_json_v1, parse_canonical_json_v1,
+RationalV1, attachment_digest, write_attachment_json, derive_seed128,
 HardScoreRequestSetV1, build_hard_score_request_set, verify_hard_score_request_set,
 JUDGE_REQUESTED_SERVICE_TIER, JUDGE_SERVICE_TIER_WIRE_FIELD,
 BlindJudgeRequestV1, JudgeProviderRequestV1, JudgeRequestAttachmentV1, JudgeAttemptUsageV1,
@@ -5970,13 +6732,31 @@ BootstrapVectorsV1, BootstrapIntervalV1, make_cluster_vectors,
 BootstrapArtifactV1, build_bootstrap_artifact,
 LayerKindV1, GenerationLayerRootMemberV1, AttachmentLayerRootMemberV1,
 LayerRootMemberV1, LayerRootIndexV1, write_layer_root_index, load_layer_root_index,
-SignatureVerificationModeV1, SignatureEvidenceV1, ProtocolReviewRoleV1,
+SignatureVerificationModeV1, GitHubVerifiedCommitEvidenceV1,
+SSHVerifiedCommitEvidenceV1, OpenPGPVerifiedCommitEvidenceV1,
+SignatureEvidenceV1, ProtocolReviewRoleV1, ProtocolSubjectKindV1,
+PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1,
 ReviewerAccountBindingV1, AuditReviewerRegistryV1,
 ProtocolReviewerBindingV1, ProtocolReviewerRegistryV1,
-ProtocolSubjectV1, ProtocolAttestationV1,
+TagOperatorProjectionV1, TagOperatorRegistryV1, TagRulesetPolicyV1,
+GITHUB_COMMIT_SIGNER_QUERY_V1, GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1,
+InputTagMessageV1, ProtocolAttestationTagMessageV1,
+ProtocolBundleBuilderGitIdentityV1, TagRulesetObservationReceiptV1,
+TagCreationRuleSuiteReceiptV1, ArchivedApiReceiptBindingV1,
+WorkflowInventoryV1, BENCHMARK_WORKFLOW_PATHS_V1, build_workflow_inventory,
+GitObjectSHA256V1, ParsedProtocolGitObjectV1, VerifiedProtocolReviewPrefixV1,
+VerifiedProtocolReviewDagV1, ArchivedApiBlobV1,
+parse_protocol_git_object, verify_protocol_review_prefix, verify_protocol_review_dag,
+build_protocol_attestation_bundle, build_protocol_attestation_tag_binding,
+build_protocol_review_object_archive, load_verified_protocol_review_object_archive,
+ProtocolReviewSubjectV1, ProtocolReviewStatementV1, VerifiedProtocolAttestationV1,
+GitHubCommitVerificationProjectionV1, GitHubSignatureProjectionV1,
+GitHubSignatureObservationReceiptV1, LocalSignatureVerificationReceiptV1,
+ProtocolAttestationBundleV1, ProtocolAttestationTagBindingV1,
+ProtocolReviewObjectArchiveV1,
 canonical_reviewer_registry_bytes, compute_audit_reviewer_registry_sha256,
 canonical_protocol_reviewer_registry_bytes, compute_protocol_reviewer_registry_sha256,
-compute_protocol_attestations_root,
+protocol_review_digest, compute_protocol_attestations_root,
 BenchmarkProtocolBindingsV1, protocol_bindings_from_context,
 GenerationContextExpectationV1, VerifiedGenerationContextExpectationV1,
 GenerationContextIndexV1, VerifiedGenerationContextIndexV1,
@@ -6006,10 +6786,13 @@ the expectation from `dir()`, annotations, source parsing, or the current `__all
 `ServiceTierStatus` remains owned and exported by `laconian_eval.providers`; benchmark
 models import that exact type but neither re-export it here nor introduce a benchmark alias.
 
-The cumulative public-contract test also pins module ownership. Concrete layer-root,
-reviewer-registry, protocol-attestation, generation-expectation, and generation-context
-classes/functions must have `__module__ == "laconian_eval.benchmark.context"`; typing aliases are
-asserted by object identity with the attributes imported from that module. Provider index/projection
+The cumulative public-contract test also pins module ownership. Every reviewer/operator/ruleset/
+workflow registry, statement, verified envelope, bundle/tag binding, Git-object projection,
+signature projection/receipt, creation-suite receipt, digest helper, and object-archive type/function
+must have `__module__ == "laconian_eval.benchmark.protocol_review"`. Concrete layer-root,
+`BenchmarkProtocolBindingsV1`, generation-expectation, and generation-context classes/functions must
+have `__module__ == "laconian_eval.benchmark.context"`; typing aliases are asserted by object
+identity with attributes imported from their sole owner module. Provider index/projection
 classes/functions must similarly identify `laconian_eval.benchmark.provider_evidence`. A package
 re-export is allowed only from those owners, and neither module may define a shadow copy.
 `VerifiedAuditSampleRootV1`, `write_audit_sample_root`, and
@@ -6019,6 +6802,14 @@ re-export is allowed only from those owners, and neither module may define a sha
 `write_audit_evidence_root`, and the audit/analysis loaders are owned only by
 `laconian_eval.benchmark.reporting`. The cumulative public-contract test pins those modules and
 rejects shadow definitions.
+`CanonicalJSONV1Error`, `canonical_json_v1`, `parse_canonical_json_v1`, `attachment_digest`, and
+`write_attachment_json` must be object-identical to their sole definitions in
+`laconian_eval.benchmark.attachments`. `ProtocolSubjectKindV1`, the immutable
+`PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1`, and all three concrete signature-evidence variants must
+be object-identical to their sole definitions in `laconian_eval.benchmark.protocol_review`; the
+mapping's exact `security_evidence` tuple has fourteen members in approved order. Runtime and
+Publication contract tests import these package exports and reject copied Literals, tuples,
+encoders, parsers, or mode variants.
 
 The console target remains `laconian_eval.cli:main`; `laconian_eval.replay.benchmark` owns only the
 offline parser/handlers. The existing `laconian` command continues to route through its legacy

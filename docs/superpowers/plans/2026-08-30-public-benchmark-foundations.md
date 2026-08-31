@@ -12,14 +12,14 @@
 
 ## Execution contract
 
-- Normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `46147ef62b5bb009421d58928e879d92247d84b5`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16.
-- Approval metadata: full SHA `0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, recording the maintainer's explicit approval on 2026-08-30. Milestone 0 is complete; implementation is pending and unblocked. A later normative amendment re-blocks every affected task until separately approved.
+- Normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16.
+- Approval metadata: governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad`, recording the maintainer/user's exact 2026-08-31 approval message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Milestone 0 is complete, but implementation starts only after the synchronized five-plan commit is recorded at handoff as `PLAN_BASE_SHA`. A later normative amendment re-blocks every affected task until separately approved.
 - Seal grammar: [Laconian v0.1 Generation Capsule Design](../specs/2026-08-24-v0.1-generation-capsule-design.md), especially Sections 14–17.
 - Provider cache/usage contract: [OpenAI Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create), [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching), and [GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model), frozen into the reviewed manifest rather than fetched during execution.
 - Worktree: `/Users/if/PycharmProjects/agent-axiom/laconian/.worktrees/public-benchmark-design`.
-- Starting point: the committed plan bundle named in the roadmap handoff. Record its exact SHA before Task 1 and keep implementation on an isolated `codex/` branch or worktree.
+- Starting point: the synchronized roadmap plus four slice plans. The handoff records their already-created commit as `PLAN_BASE_SHA` before Task 1; the plan source does not embed its own future commit SHA. Keep implementation on an isolated `codex/` branch or worktree based on that exact commit.
 - This slice ends when exact capsule bytes can be prepared as a scenario projection, executed with the approved wire fields, finalized, verified without a lock on transport storage, packed as uncompressed USTAR, restored into a new directory, and fully reverified.
-- Downstream orchestration, analysis, judging, human review, and repository release mechanics are separate implementation plans.
+- Protocol-review attestations, paired-tag construction, campaign authority/state, downstream orchestration, analysis, judging, human review, and repository release mechanics remain owned by the other slice plans. Slice 1 implements none of those authorities. It does bind every downstream C0 input it owns: exact code and `uv.lock`, provider/request policy, price evidence, corpus and parent/shard plans, capsule/seal/checkpoint schemas, and their canonical digests.
 - No test reads a real credential, opens a network connection, depends on wall-clock sleeps, invokes `tar -xf`, or calls `tarfile.extractall`.
 - Every public error added here stores a stable code, renders a constant message, and excludes paths, provider payloads, output text, environment values, and archive member bytes.
 - Every mutation uses already-open descriptors, `O_NOFOLLOW`, exclusive creation, explicit fsync, and no-replace publication. A failed operation never overwrites an existing capsule, archive, sidecar, seal, or restored directory.
@@ -236,9 +236,7 @@ OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE = 65_536
 OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS = 272_000
 
 
-def conservative_input_token_bound(
-    *, instruction_utf8_bytes: int, prompt_utf8_bytes: int
-) -> int:
+def conservative_input_token_bound(*, instruction_utf8_bytes: int, prompt_utf8_bytes: int) -> int:
     """Return one-token-per-byte plus the frozen Responses-envelope allowance."""
     if (
         type(instruction_utf8_bytes) is not int
@@ -247,11 +245,7 @@ def conservative_input_token_bound(
         or prompt_utf8_bytes < 0
     ):
         raise ValueError("input byte counts must be nonnegative integers")
-    return (
-        instruction_utf8_bytes
-        + prompt_utf8_bytes
-        + OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE
-    )
+    return instruction_utf8_bytes + prompt_utf8_bytes + OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE
 ```
 
 Every public-campaign request must have the value returned by
@@ -311,10 +305,13 @@ when null and continues sending `store=False`. The request-config preimage is:
 }
 ```
 
-Task 2 pins `openai==3.3.1` in `pyproject.toml`/`uv.lock`. Task 3 asserts the installed distribution
-is exactly `3.3.1`, the C0 `uv.lock` member hash equals the tagged hash, and the SDK typed request and
-response models expose every frozen field/path before any credential can be read. Request bytes,
-provider kwargs, and captured projection must be byte-equivalent for all frozen members.
+Task 2 pins `openai==3.3.1` in `pyproject.toml`/`uv.lock` and solely owns the pure SDK-contract gate
+and its public exports. Runtime invokes that gate with the independently verified C0 `uv.lock` bytes
+and tagged member hash before any credential lookup, client construction, or provider access. The
+gate proves the installed distribution is exactly `3.3.1`, the complete frozen `openai` lock member
+is exact, and the SDK typed request and response models expose every frozen field/path. Task 3 owns
+the benchmark-only request/response adapter used only after that precredential gate. Request bytes,
+provider kwargs, and captured projection must be byte-equivalent for all frozen request members.
 
 ### Applied-cache, cache-read/write, reasoning, tier, and model evidence
 
@@ -489,13 +486,15 @@ def visible_output_tokens(usage: AttemptUsageV2) -> int | None:
     return usage.output_tokens - usage.reasoning_tokens
 ```
 
-The canonical raw-response paths are exactly `response.service_tier`,
+The canonical cache/tier/usage raw-response paths are exactly `response.service_tier`,
 `response.prompt_cache_options.mode`, `response.prompt_cache_options.ttl`,
 `response.usage.input_tokens`, `response.usage.input_tokens_details.cached_tokens`,
 `response.usage.input_tokens_details.cache_write_tokens`, `response.usage.output_tokens`,
-`response.usage.output_tokens_details.reasoning_tokens`, `response.usage.total_tokens`, and
-`response.model`. Alternate, flattened, inferred, billing, or convenience paths are rejected. Each
-field retains an independent raw-response source digest even when sanitization yields null.
+`response.usage.output_tokens_details.reasoning_tokens`, and `response.usage.total_tokens`. That
+nine-member list is exact. Returned-model evidence is a separate field read only from the exact
+`response.model` path; it does not extend or alias the canonical nine-member accounting list.
+Alternate, flattened, inferred, billing, or convenience paths are rejected. Each field retains an
+independent raw-response source digest even when sanitization yields null.
 
 For a Responses result, exact zero/positive read and write counts independently map to
 `reported_zero`/`reported_nonzero`; absence maps to `missing`; wrong type, negative/bound/total
@@ -1004,17 +1003,23 @@ git commit -m "feat: freeze neutral response corpus"
 ### Task 2: Carry the exact benchmark policy, five prices, SDK pin, and request hash through native-v2
 
 **Files:**
+- Import-only prerequisite (Evaluation Task 1; do not modify): `src/laconian_eval/benchmark/attachments.py`
+- Import-only prerequisite (Evaluation Task 1; do not modify): `src/laconian_eval/benchmark/__init__.py`
 - Modify: `src/laconian_eval/capsule/schema.py`
 - Modify: `src/laconian_eval/capsule/manifest_models.py`
 - Modify: `src/laconian_eval/capsule/capture.py`
 - Modify: `src/laconian_eval/capsule/planning.py`
 - Modify: `src/laconian_eval/providers/base.py`
+- Modify: `src/laconian_eval/providers/openai.py`
+- Modify: `src/laconian_eval/providers/__init__.py`
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
 - Modify: `tests/capsule_helpers.py`
 - Modify: `tests/capsule/test_manifest_models.py`
 - Modify: `tests/capsule/test_capture.py`
 - Modify: `tests/capsule/test_planning.py`
+- Modify: `tests/test_public_contract.py`
+- Modify: `tests/test_openai_provider.py`
 
 - [ ] **Step 1: RED-test exact native-v2 fields and strict values**
 
@@ -1174,12 +1179,386 @@ service_tier
 Serialize price fields in the exact order `currency`, `effective_date`, `source_url`,
 `service_tier`, the five rate fields in stable-interface order, and `source_evidence`.
 
-Pin `openai==3.3.1` in `pyproject.toml`, regenerate `uv.lock`, and add a RED test that asserts
-`importlib.metadata.version("openai") == "3.3.1"`. The test also hashes the exact `uv.lock` member
-bytes used by preflight and rejects a different installed version, lock hash, typed request field,
-or canonical response path before any credential lookup.
+Pin `openai==3.3.1` in `pyproject.toml` and regenerate `uv.lock`. The separate precredential RED/GREEN
+steps below prove the installed version, lock member, and typed SDK contract before provider access.
+Cross-slice prerequisite: Evaluation Task 1 must first provide the package-exported canonical trio
+owned by `laconian_eval.benchmark.attachments`. This slice imports that owner object; it does not
+define an interim encoder while waiting for Evaluation.
 
-- [ ] **Step 5: RED-test request-config identity coverage**
+- [ ] **Step 5: RED-test the pinned SDK precredential gate and public exports**
+
+Add `test_benchmark_sdk_contract_rejects_invalid_inputs_without_provider_access` to
+`tests/test_openai_provider.py`. Use provider-call, environment-read, credential-read,
+client-construction, and network spies initialized to zero. Monkeypatch only the validator's private
+installed-version seam to return `3.3.0`, a non-string, and to raise
+`importlib.metadata.PackageNotFoundError`; each maps to `installed-version`. Independently supply a
+wrong C0 `uv.lock` digest, delete one
+required typed request field from each exact request-union member, replace either exact request-union
+member, and remove or replace each canonical response path and the separate returned-model path in
+the exact SDK model graph. Import/forward-reference/type-hint resolution failures map only to the
+matching `request-model` or `response-model` code. Independently monkeypatch the sole pure
+Responses-kwargs builder to omit,
+rename, add, reorder, or change each frozen projection member and require `serializer-projection`.
+Parameterize `c0_uv_lock_bytes` as `str`, `bytearray`, `memoryview`, a `bytes` subclass, empty bytes,
+and `1_048_577` bytes; parameterize the expected digest as null, bool, bytes, uppercase, short, and
+non-hex text, plus a `str` subclass. Exact built-in bytes and exact built-in string are required and
+the digest is exactly 64 lowercase hexadecimal
+characters; type/bound failures use `lock-entry`, malformed expected hashes and digest mismatches use
+`lock-digest`.
+
+Also parametrize malicious but digest-consistent lock bytes: pass each fixture's own independently
+computed SHA-256 as `expected_c0_uv_lock_sha256`, then require `lock-entry` for a missing or duplicate
+`openai` package; invalid UTF-8 or TOML; wrong version; unknown or duplicate member key; missing,
+duplicate, reordered, or
+renamed dependency; registry, editable, path, git, or directory source; missing or duplicate sdist or
+wheel; and a changed artifact URL, SHA-256, byte length, or upload time. Include one case for every
+literal in the frozen member below. This proves semantic lock validation independently of the whole-
+file digest check. The public validator has no caller override for version, lock interpretation,
+allowlist values, qualified model names, union members, fields, or paths. Every case must raise the
+stable SDK-contract error before constructing a provider/client, reading environment or credentials,
+or touching the network:
+
+```python
+assert (
+    provider_calls,
+    environment_reads,
+    credential_reads,
+    client_constructions,
+    network_calls,
+) == (
+    0,
+    0,
+    0,
+    0,
+    0,
+)
+```
+
+Add `test_benchmark_sdk_contract_accepts_frozen_openai_member`. Read the checked-in `uv.lock` as
+bytes, independently SHA-256 those bytes, leave the real installed `openai==3.3.1` typed models in
+place, and assert the function returns literal `None` while the same five spies remain zero. Parse
+the lock independently with `tomllib`, select its sole `openai` member, and assert its complete
+source/dependency/sdist/wheel structure equals the Step 6 constants; this positive assertion must not
+call or import the production lock-member normalizer.
+
+In `tests/test_public_contract.py`, add
+`test_benchmark_sdk_contract_has_one_public_owner`. Import these exact public names from both
+`laconian_eval.providers.openai` and `laconian_eval.providers`:
+
+```text
+BENCHMARK_OPENAI_REQUEST_FIELDS_V1
+BENCHMARK_OPENAI_RESPONSE_PATHS_V1
+BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1
+BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1
+BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1
+BENCHMARK_OPENAI_LOCK_REGISTRY_V1
+BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1
+BENCHMARK_OPENAI_LOCK_SDIST_V1
+BENCHMARK_OPENAI_LOCK_WHEELS_V1
+BenchmarkSDKContractErrorCode
+BenchmarkSDKContractError
+VerifiedBenchmarkSDKContractV1
+require_benchmark_sdk_contract
+```
+
+Assert each re-export is the identical object, the record/error/function `__module__` values are
+`laconian_eval.providers.openai`, and `laconian_eval.providers.__all__` contains each name exactly
+once. `providers/__init__.py` defines no wrapper, alias record, fallback constant, or second validator.
+
+The same test imports `CanonicalJSONV1Error`, `canonical_json_v1`, and
+`parse_canonical_json_v1` from `laconian_eval.benchmark`, imports their owner module as
+`laconian_eval.benchmark.attachments`, and requires package-export identity for all three. Production
+`providers/openai.py` imports only
+`canonical_json_v1 as _canonical_json_v1` from the package export; assert that private imported object
+is identical to `attachments.canonical_json_v1`, that its `__module__` is
+`laconian_eval.benchmark.attachments`, and that none of the canonical trio appears in
+`laconian_eval.providers.__all__`. AST/source assertions reject a locally defined encoder, parser,
+error class, wrapper, or fallback. Foundations neither imports nor defines
+`ProtocolSubjectKindV1` or `PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1`; those are irrelevant to this
+slice and remain solely owned by `laconian_eval.benchmark.protocol_review`.
+
+```python
+import ast
+import inspect
+
+import laconian_eval.benchmark as benchmark
+import laconian_eval.providers as providers
+from laconian_eval.benchmark import attachments
+from laconian_eval.providers import openai as provider_openai
+
+assert benchmark.CanonicalJSONV1Error is attachments.CanonicalJSONV1Error
+assert benchmark.canonical_json_v1 is attachments.canonical_json_v1
+assert benchmark.parse_canonical_json_v1 is attachments.parse_canonical_json_v1
+assert provider_openai._canonical_json_v1 is attachments.canonical_json_v1
+assert provider_openai._canonical_json_v1.__module__ == "laconian_eval.benchmark.attachments"
+canonical_owner_names = {
+    "CanonicalJSONV1Error",
+    "canonical_json_v1",
+    "parse_canonical_json_v1",
+}
+assert canonical_owner_names.isdisjoint(providers.__all__)
+
+tree = ast.parse(inspect.getsource(provider_openai))
+locally_defined = {
+    node.name
+    for node in tree.body
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+}
+assert canonical_owner_names.isdisjoint(locally_defined)
+assert not {name for name in locally_defined if "canonical_json_v1" in name.lower()}
+```
+
+Run:
+
+```bash
+uv run pytest tests/test_openai_provider.py::test_benchmark_sdk_contract_rejects_invalid_inputs_without_provider_access tests/test_openai_provider.py::test_benchmark_sdk_contract_accepts_frozen_openai_member tests/test_public_contract.py::test_benchmark_sdk_contract_has_one_public_owner -q
+```
+
+Expected: FAIL because the pure precredential SDK/lock/type/path/projection validator does not exist; the
+provider-call spy remains exactly zero.
+
+- [ ] **Step 6: Implement and GREEN the pinned SDK precredential gate**
+
+Implement and export this sole owner contract from `src/laconian_eval/providers/openai.py` and
+re-export the identical objects from `laconian_eval.providers`. The string tuples below are immutable,
+ordered protocol constants; no implementation may reconstruct them from the caller-supplied lock
+bytes or installed SDK:
+
+```python
+BENCHMARK_OPENAI_REQUEST_FIELDS_V1 = (
+    "model",
+    "instructions",
+    "input",
+    "max_output_tokens",
+    "store",
+    "tools",
+    "reasoning",
+    "text",
+    "prompt_cache_options",
+    "service_tier",
+)
+BENCHMARK_OPENAI_RESPONSE_PATHS_V1 = (
+    "response.service_tier",
+    "response.prompt_cache_options.mode",
+    "response.prompt_cache_options.ttl",
+    "response.usage.input_tokens",
+    "response.usage.input_tokens_details.cached_tokens",
+    "response.usage.input_tokens_details.cache_write_tokens",
+    "response.usage.output_tokens",
+    "response.usage.output_tokens_details.reasoning_tokens",
+    "response.usage.total_tokens",
+)
+BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1 = "response.model"
+BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1 = (
+    b'{"input":"sdk-contract-input-v1","instructions":"sdk-contract-instructions-v1",'
+    b'"max_output_tokens":1024,"model":"gpt-5.6-sol","prompt_cache_options":'
+    b'{"mode":"explicit","ttl":"30m"},"reasoning":{"effort":"medium"},'
+    b'"service_tier":"default","store":false,"text":{"verbosity":"medium"}}'
+)
+BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1 = (
+    "c7f3d0d8d7b056226b10195e76e9974c213881e3678d09aee071ad3cbedb0211"
+)
+BENCHMARK_OPENAI_LOCK_REGISTRY_V1 = "https://pypi.org/simple"
+BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1 = (
+    "anyio",
+    "httpx2",
+    "jiter",
+    "pydantic",
+    "sniffio",
+    "typing-extensions",
+)
+BENCHMARK_OPENAI_LOCK_SDIST_V1 = (
+    "https://files.pythonhosted.org/packages/7d/9c/ba0c292b4032ede74c249ca314ad64eb1bb5a03a843f6e01facb02f80cd8/openai-3.3.1.tar.gz",
+    "sha256:6f22807de1a976c932cecda620e8172a8c3fdbaeed29c7f21564e0c2410edf56",
+    1_282_113,
+    "2026-08-19T16:31:35.006Z",
+)
+BENCHMARK_OPENAI_LOCK_WHEELS_V1 = (
+    (
+        "https://files.pythonhosted.org/packages/6a/db/2b7a1b3de659bb82aef979116c74e809982b13e42c057759767552b5155f/openai-3.3.1-py3-none-any.whl",
+        "sha256:9652df7fdf8ee6f5bd58e0a12f2b1d414a18e0f06bb7a9a57c8643a5f5469bd3",
+        1_690_337,
+        "2026-08-19T16:31:32.812Z",
+    ),
+)
+
+BenchmarkSDKContractErrorCode: TypeAlias = Literal[
+    "installed-version",
+    "lock-digest",
+    "lock-entry",
+    "request-model",
+    "response-model",
+    "serializer-projection",
+]
+
+
+class BenchmarkSDKContractError(RuntimeError):
+    code: BenchmarkSDKContractErrorCode
+
+    def __init__(self, code: BenchmarkSDKContractErrorCode) -> None:
+        self.code = code
+        super().__init__("public benchmark SDK contract verification failed")
+
+
+class VerifiedBenchmarkSDKContractV1(CapsuleModel):
+    schema_version: Literal["VerifiedBenchmarkSDKContractV1"]
+    distribution: Literal["openai"]
+    installed_version: Literal["3.3.1"]
+    c0_uv_lock_sha256: Sha256
+    lock_version: Literal["3.3.1"]
+    lock_registry: Literal["https://pypi.org/simple"]
+    lock_dependencies: tuple[
+        Literal["anyio"],
+        Literal["httpx2"],
+        Literal["jiter"],
+        Literal["pydantic"],
+        Literal["sniffio"],
+        Literal["typing-extensions"],
+    ]
+    lock_sdist_url: Literal[
+        "https://files.pythonhosted.org/packages/7d/9c/ba0c292b4032ede74c249ca314ad64eb1bb5a03a843f6e01facb02f80cd8/openai-3.3.1.tar.gz"
+    ]
+    lock_sdist_hash: Literal[
+        "sha256:6f22807de1a976c932cecda620e8172a8c3fdbaeed29c7f21564e0c2410edf56"
+    ]
+    lock_sdist_size: Literal[1282113]
+    lock_sdist_upload_time: Literal["2026-08-19T16:31:35.006Z"]
+    lock_wheel_url: Literal[
+        "https://files.pythonhosted.org/packages/6a/db/2b7a1b3de659bb82aef979116c74e809982b13e42c057759767552b5155f/openai-3.3.1-py3-none-any.whl"
+    ]
+    lock_wheel_hash: Literal[
+        "sha256:9652df7fdf8ee6f5bd58e0a12f2b1d414a18e0f06bb7a9a57c8643a5f5469bd3"
+    ]
+    lock_wheel_size: Literal[1690337]
+    lock_wheel_upload_time: Literal["2026-08-19T16:31:32.812Z"]
+    request_model_qualified_name: Literal[
+        "openai.types.responses.response_create_params.ResponseCreateParams"
+    ]
+    response_model_qualified_name: Literal["openai.types.responses.response.Response"]
+    request_fields: tuple[
+        Literal["model"],
+        Literal["instructions"],
+        Literal["input"],
+        Literal["max_output_tokens"],
+        Literal["store"],
+        Literal["tools"],
+        Literal["reasoning"],
+        Literal["text"],
+        Literal["prompt_cache_options"],
+        Literal["service_tier"],
+    ]
+    response_paths: tuple[
+        Literal["response.service_tier"],
+        Literal["response.prompt_cache_options.mode"],
+        Literal["response.prompt_cache_options.ttl"],
+        Literal["response.usage.input_tokens"],
+        Literal["response.usage.input_tokens_details.cached_tokens"],
+        Literal["response.usage.input_tokens_details.cache_write_tokens"],
+        Literal["response.usage.output_tokens"],
+        Literal["response.usage.output_tokens_details.reasoning_tokens"],
+        Literal["response.usage.total_tokens"],
+    ]
+    returned_model_path: Literal["response.model"]
+    serializer_projection_sha256: Literal[
+        "c7f3d0d8d7b056226b10195e76e9974c213881e3678d09aee071ad3cbedb0211"
+    ]
+    contract_sha256: Sha256
+```
+
+`BENCHMARK_OPENAI_REQUEST_FIELDS_V1` is the exact typed-model field capability set checked against
+both request union members; it is not the emitted-key set. In particular, the captured request
+configuration binds `tools=[]`, the SDK request type must expose `tools`, and the sole live serializer
+enforces “no tools” by omitting that key. The emitted nine-key probe below is the distinct exact
+serializer projection.
+
+Task 2 also implements the sole pure serializer builder with exact signature
+`_public_benchmark_responses_kwargs(request: PublicBenchmarkRequestV1) -> dict[str, object]` in
+`providers/openai.py`. It returns a new insertion-ordered mapping with keys in this exact order:
+`model`, `instructions`, `input`, `max_output_tokens`, `store`, optional `reasoning`, optional `text`,
+`prompt_cache_options`, `service_tier`. It never emits `temperature` when null and never emits
+`tools`, `reasoning_mode`, `prompt_cache_key`, `prompt_cache_retention`,
+`prompt_cache_breakpoint`, or another key. Task 3 must call this same object for canonical request
+bytes, capture projection, and the provider call; no second serializer builder or projection exists.
+
+The exact public function signature is
+`require_benchmark_sdk_contract(*, c0_uv_lock_bytes: bytes,
+expected_c0_uv_lock_sha256: Sha256) -> None`; it has no positional or additional keyword parameters.
+The validator first requires `type(c0_uv_lock_bytes) is bytes`, length `1..1_048_576`,
+`type(expected_c0_uv_lock_sha256) is str`, and an expected digest matching `^[0-9a-f]{64}$`;
+annotations or coercion never substitute for those checks. It
+SHA-256-hashes the exact supplied bytes and uses `hmac.compare_digest` against the independently
+verified expected member hash. It then requires
+`importlib.metadata.version("openai") == "3.3.1"`, decodes the lock as strict UTF-8, and parses TOML
+with `tomllib`; it rejects a non-list
+`package`, more than `4_096` package members, and every parser exception as `lock-entry`. It requires
+exactly one `openai` package and exact parsed equality of its `name`, `version`, source mapping,
+ordered dependency mappings, sdist mapping, and
+single ordered wheel mapping to the frozen literals above; it rejects missing, duplicate, unknown,
+editable, path, git, or directory-source members. Upload times are compared as the exact source
+strings, never normalized datetimes. Other package entries are not authority for this check.
+
+It imports only the two literal SDK qualified types above. For `ResponseCreateParams`, it uses
+`typing.get_args` and requires the ordered union to be exactly
+`ResponseCreateParamsNonStreaming | ResponseCreateParamsStreaming`; it resolves each member with
+`typing.get_type_hints` and requires every request field in the literal tuple in both members. It
+walks each of the nine response paths and the separate `response.model` path through only the
+`Response.model_fields`/resolved annotation graph, unwrapping typed nullable/union members and
+requiring every branch to expose the next component. Runtime values, examples, serialization output,
+`getattr` fallbacks, `Any`, and SDK convenience aliases cannot satisfy a typed-model check.
+
+Finally, the gate constructs one internal `PublicBenchmarkRequestV1` with
+`case_id="sdk-contract-probe-v1"`, `arm="if"`, `repetition=0`, requested model `gpt-5.6-sol`, the two
+literal instruction/input strings encoded above, `max_output_tokens=1024`, `temperature=None`,
+`timeout_seconds=120.0`, medium effort/verbosity, and the exact explicit/`30m`/default/omitted/
+`openai-utf8-envelope-v1`/`272000` policy. It passes that request through the sole pure builder,
+first requires `tuple(result)` to equal the nine-key order above, then encodes it with the identical
+package-exported `_canonical_json_v1` owner object, requires byte equality with the frozen canonical
+bytes, and independently recomputes their plain SHA-256. It never calls Foundation's more permissive
+capsule encoder or defines a local CanonicalJSONV1 implementation.
+Missing, extra, reordered, renamed, defaulted, or
+changed members raise `serializer-projection`; the test mutates every member independently. This
+probe never creates a provider/client and never reads environment, credentials, or network.
+
+Internally it constructs and self-verifies the strict record whose digest is
+`stable_digest("laconian-benchmark-sdk-contract-v1", payload_without_contract_sha256)`, then returns
+`None`; callers cannot serialize the transient record as authority. The sole private builder has the
+exact signature `_build_verified_benchmark_sdk_contract(*, c0_uv_lock_bytes: bytes,
+expected_c0_uv_lock_sha256: Sha256) -> VerifiedBenchmarkSDKContractV1`. The public function calls it,
+requires its class-bound self digest, discards the object, and returns literal `None`. Tests call the
+private builder only to inspect every exact field and independently recompute the digest; no package
+exports or Runtime code may import it.
+It accepts no installed-version/model/path override, filesystem path, credential, client, callback,
+or provider object. Tests patch only the private installed-version, SDK-type import, and serializer-
+projection seams and assert the exact signature,
+field order, nine response paths, separate returned-model path, frozen lock constants, module
+ownership, package object identity, internal self digest, and literal `None` return.
+`BenchmarkSDKContractError` is the sole exported error for this function and has only the closed
+codes `installed-version`, `lock-digest`, `lock-entry`, `request-model`, `response-model`, and
+`serializer-projection`.
+Every failure sets `.code` to exactly one of those literals and `.args` to the one constant message
+shown above; no parser text, import exception, type representation, path, bytes, or provider value is
+chained, rendered, or retained on the public exception. Every RED vector asserts
+`exc.value.__cause__ is None`, `exc.value.__context__ is None`, and
+`exc.value.args == ("public benchmark SDK contract verification failed",)`; implementations collect
+the closed code inside `except` and raise only after leaving that handler.
+
+This Foundation function is a pure precredential boundary and does not construct or call a provider.
+Runtime is the sole orchestration owner: it passes the verified C0 member bytes/hash and calls this
+exact exported object before every benchmark credential lookup, client construction, or provider
+access, including immediately before the secret-read expression. Do not change the legacy provider
+path. Any version/lock/type/path/projection failure raises the closed content-free
+`BenchmarkSDKContractError(code)` while all five spies remain zero.
+
+Run:
+
+```bash
+uv run pytest tests/test_openai_provider.py::test_benchmark_sdk_contract_rejects_invalid_inputs_without_provider_access tests/test_openai_provider.py::test_benchmark_sdk_contract_accepts_frozen_openai_member tests/test_public_contract.py::test_benchmark_sdk_contract_has_one_public_owner -q
+```
+
+Expected: PASS; every invalid-contract case and malicious lock variant fails closed and all five
+spies remain exactly zero, and every public re-export is the owner object.
+
+- [ ] **Step 7: RED-test request-config identity coverage**
 
 Add `test_request_config_hash_binds_reasoning_cache_and_tier_policy` to
 `tests/capsule/test_planning.py`. Starting with one resolved manifest, mutate exactly one of these
@@ -1222,7 +1601,7 @@ uv run pytest tests/capsule/test_planning.py::test_request_config_hash_binds_rea
 Expected: FAIL because the current preimage ignores the request-policy fields and the frozen
 input-bound constants/helper are absent.
 
-- [ ] **Step 6: Bind the new fields and run focused regressions**
+- [ ] **Step 8: Bind the new fields and run focused regressions**
 
 Add the exact generation, prompt-cache, literal default-service-tier, and input-bound mappings from the stable preimage to
 `request_config_sha256`.
@@ -1235,10 +1614,10 @@ uv run pytest tests/capsule/test_manifest_models.py tests/capsule/test_capture.p
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit manifest and request identity support**
+- [ ] **Step 9: Commit manifest and request identity support**
 
 ```bash
-git add src/laconian_eval/capsule/schema.py src/laconian_eval/capsule/manifest_models.py src/laconian_eval/capsule/capture.py src/laconian_eval/capsule/planning.py src/laconian_eval/providers/base.py pyproject.toml uv.lock tests/capsule_helpers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py
+git add src/laconian_eval/capsule/schema.py src/laconian_eval/capsule/manifest_models.py src/laconian_eval/capsule/capture.py src/laconian_eval/capsule/planning.py src/laconian_eval/providers/base.py src/laconian_eval/providers/openai.py src/laconian_eval/providers/__init__.py pyproject.toml uv.lock tests/capsule_helpers.py tests/capsule/test_manifest_models.py tests/capsule/test_capture.py tests/capsule/test_planning.py tests/test_public_contract.py tests/test_openai_provider.py
 git commit -m "feat: bind generation cache and default-tier pricing policy"
 ```
 
@@ -1316,8 +1695,11 @@ for a different tier must not affect captured kwargs.
 Also add
 `test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical` and
 `test_recursive_breakpoint_key_is_rejected_under_every_instructions_or_input_object`. The first
-independently CanonicalJSONV1-encodes the frozen request members, returned kwargs, and captured
-projection and requires byte equality. The second parameterizes `prompt_cache_breakpoint` at the
+constructs the one exact expected canonical byte literal without calling the production mapper, then
+uses the identical package-exported `canonical_json_v1` owner on the frozen request-member projection,
+returned kwargs, and captured projection and requires all four byte strings to be equal. It imports
+that object and its error/parser companions through `laconian_eval.benchmark`, proves identity to
+`benchmark.attachments`, and defines no local encoder. The second parameterizes `prompt_cache_breakpoint` at the
 root and at two nested dict/list depths under both canonical `instructions` and `input`; every case
 must fail before the fake client records a call. Repeat for `prompt_cache_key`,
 `prompt_cache_retention`, and an unknown cache-control key.
@@ -1349,17 +1731,11 @@ client.
 
 Implement `OpenAIProvider.generate_benchmark(request: PublicBenchmarkRequestV1) ->
 PublicBenchmarkProviderOutcomeV1` without changing legacy `generate`. In that benchmark-only method,
-first implement and call these exact helpers:
+implement the recursive validator and call both it and the sole Task 2-owned serializer builder:
 
 ```python
 def _assert_no_public_benchmark_cache_control(value: object) -> None:
     """Recursively reject breakpoint/key/retention and every unapproved cache-control key."""
-
-
-def _public_benchmark_responses_kwargs(
-    request: PublicBenchmarkRequestV1,
-) -> dict[str, object]:
-    """Return the sole mapping used for canonical bytes, capture, and the provider call."""
 ```
 
 Run the recursive validator on the exact canonical `instructions` and `input` trees before
@@ -1508,7 +1884,8 @@ helper is absent.
 
 - [ ] **Step 6: Implement exact applied/read/write/reasoning/tier/model evidence without hiding usable evidence**
 
-Parse only the canonical response paths listed in the stable interface. Derive
+Parse only the nine canonical cache/tier/usage response paths listed in the stable interface, plus
+the separately frozen `response.model` path solely for returned-model evidence. Derive
 `AppliedCacheControlStatus`, `CacheReadStatus`, `CacheWriteStatus`, and `ServiceTierStatus` from raw
 values and delivery evidence; never accept status text from fixtures or provider objects. Preserve
 one raw-response source digest per applied/read/write/tier/usage/reasoning/model field even when the
@@ -1675,11 +2052,7 @@ ASCII and Cyrillic prompts to prove `prompt_utf8_bytes` counts strict UTF-8 byte
 a baseline arm, independently calculate:
 
 ```python
-expected_bound = (
-    case_index[0].prompt_utf8_bytes
-    + len(arm.instruction_bytes)
-    + 65_536
-)
+expected_bound = case_index[0].prompt_utf8_bytes + len(arm.instruction_bytes) + 65_536
 assert parent_plan[0].input_token_bound == expected_bound
 ```
 
@@ -1829,9 +2202,7 @@ assert [len(parent) for parent in parents] == [480, 480, 480]
 assert len(shards) == 36
 assert {shard.row_count for shard in shards} == {40}
 assert sum(shard.row_count for shard in shards) == 1440
-assert {shard.model_id for shard in shards} == {
-    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
-}
+assert {shard.model_id for shard in shards} == {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 ```
 
 Delete each requested model, add a fourth, and substitute any nonliteral model independently;
@@ -2077,11 +2448,14 @@ class SealV1(CapsuleModel):
     structural_integrity: Literal["valid"]
     missing_plan_item_ids: tuple[Sha256, ...]
     operational_blocker_codes: tuple[OperationalBlocker, ...]
-    never_started_detail: Literal[
-        "credential_unavailable",
-        "provider_unavailable",
-        "operator_abandoned",
-    ] | None
+    never_started_detail: (
+        Literal[
+            "credential_unavailable",
+            "provider_unavailable",
+            "operator_abandoned",
+        ]
+        | None
+    )
     disclosures: SealDisclosuresV1
     final_event_sequence: StrictNonNegativeInt
     raw_attempt_count: StrictNonNegativeInt
@@ -2522,9 +2896,10 @@ assert tuple(row.plan_item_id for row in evidence.plan) == tuple(
     row.plan_item_id for row in evidence.scored_attempts
 )
 assert set(evidence.cases_by_uid) == {row.case_uid for row in evidence.plan}
-assert sidecar_hash == ScoredCapsuleSidecarV2.model_validate_json(
-    sidecar_path.read_bytes()
-).sidecar_sha256
+assert (
+    sidecar_hash
+    == ScoredCapsuleSidecarV2.model_validate_json(sidecar_path.read_bytes()).sidecar_sha256
+)
 ```
 
 Use an immutable mapping proxy for `cases_by_uid`. Reject an unsealed capsule, `SEALED_BLOCKED`, a nullable capsule hash, a sidecar symlink/FIFO, noncanonical sidecar JSON, output collision, and any one-byte change to seal, manifest, case input, case index, plan, raw journal, or sidecar. Snapshot both capsule and parent before/after loading and assert the loader is read-only.
@@ -3111,7 +3486,7 @@ Before handing off this slice, record the fresh command outputs and final commit
 - the only sentence-count gates are the two prompt-grounded `user-decline` localized cases;
 - every material warning has exactly one frozen `material` or `critical` severity;
 - benchmark-only native-v2 request identity and injected Responses kwargs contain medium reasoning, medium verbosity, literal reasoning-mode omission, exact explicit/30m cache control with recursive no-breakpoint proof, and literal `service_tier=default`, while legacy `GenerationRequest` bytes remain unchanged;
-- OpenAI SDK 3.3.1, the tagged C0 `uv.lock` hash, typed request/response fields, and canonical response paths verify before credentials;
+- OpenAI SDK 3.3.1, the `uv.lock` hash from C0 peeled from approved annotated T0 and verified through the paired T1/`ProtocolAttestationTagBindingV1` closure, typed request/response fields, the exact serializer projection, and canonical response paths verify before credentials with zero provider calls on failure;
 - every plan row binds that exact default-tier request identity plus a conservative input-token bound at or below 272,000, and the price snapshot binds literal default tier plus five non-null sourced dimensions: ordinary uncached input, cache-read input, cache-write input, visible output, and reasoning output;
 - every attempt independently preserves applied mode/TTL, read, write, tier, usage, reasoning, requested model, returned model, and raw source digests with the exact closed status vocabularies; only `reported_exact/reported_zero/reported_zero/reported_default` may reconcile trusted no-cache usage, while missing/mismatch/invalid or nonzero evidence retains exposure and requires Runtime STOP; the exact not-applicable values are restricted to independently proven no-result/no-usage delivery states;
 - reported reasoning tokens yield visible tokens by exact subtraction, while missing or invalid reasoning breakdowns yield an unavailable metric;
