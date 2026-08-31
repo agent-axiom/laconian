@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from math import inf, nan
 from typing import Any
@@ -9,11 +10,14 @@ from capsule_helpers import SHA_A, resolved_manifest_v2_payload, source_manifest
 from pydantic import BaseModel, ValidationError
 
 from laconian_eval import __version__
+from laconian_eval.capsule.canonical import canonical_json
 from laconian_eval.capsule.manifest_models import (
     ResolvedManifestV2,
+    ResolvedPriceSnapshotV1,
     SourceManifestV2,
     project_v1_manifest,
 )
+from laconian_eval.capsule.planning import request_config_sha256
 
 
 def _set_nested(payload: dict[str, Any], path: tuple[str | int, ...], value: object) -> None:
@@ -21,6 +25,24 @@ def _set_nested(payload: dict[str, Any], path: tuple[str | int, ...], value: obj
     for part in path[:-1]:
         current = current[part]
     current[path[-1]] = value
+
+
+def _replace_price_evidence_value(payload: dict[str, Any], dimension: str, value: float) -> None:
+    snapshot = payload["price_snapshot"]
+    snapshot[dimension] = value
+    evidence = next(item for item in snapshot["source_evidence"] if item["dimension"] == dimension)
+    evidence["usd_per_million"] = value
+    evidence_payload = {key: evidence[key] for key in tuple(evidence)[:-1]}
+    evidence["source_sha256"] = hashlib.sha256(canonical_json(evidence_payload)).hexdigest()
+
+
+def _replace_price_evidence_url(payload: dict[str, Any], value: str) -> None:
+    snapshot = payload["price_snapshot"]
+    snapshot["source_url"] = value
+    for evidence in snapshot["source_evidence"]:
+        evidence["source_url"] = value
+        evidence_payload = {key: evidence[key] for key in tuple(evidence)[:-1]}
+        evidence["source_sha256"] = hashlib.sha256(canonical_json(evidence_payload)).hexdigest()
 
 
 def test_source_manifest_v2_round_trips_complete_shape() -> None:
@@ -228,6 +250,12 @@ def test_source_manifest_materializes_existing_v1_defaults() -> None:
     assert manifest.generation.model_dump(mode="json") == {
         "max_output_tokens": 1024,
         "temperature": None,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "reasoning_mode": "omitted",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+        "service_tier": "default",
     }
     assert manifest.retry.model_dump(mode="json") == {
         "max_transient_retries": 2,
@@ -240,13 +268,13 @@ def test_numeric_float_fields_accept_integer_spelling_and_dump_as_floats() -> No
     payload = source_manifest_v2_payload()
     _set_nested(payload, ("generation", "temperature"), 1)
     _set_nested(payload, ("retry", "timeout_seconds"), 60)
-    _set_nested(payload, ("price_snapshot", "input_per_million"), 1)
+    _replace_price_evidence_value(payload, "ordinary_uncached_input_per_million", 1.0)
 
     dumped = SourceManifestV2.model_validate(payload).model_dump(mode="json")
 
     assert dumped["generation"]["temperature"] == 1.0
     assert dumped["retry"]["timeout_seconds"] == 60.0
-    assert dumped["price_snapshot"]["input_per_million"] == 1.0
+    assert dumped["price_snapshot"]["ordinary_uncached_input_per_million"] == 1.0
     assert type(dumped["generation"]["temperature"]) is float
 
 
@@ -254,12 +282,12 @@ def test_numeric_float_fields_normalize_negative_zero() -> None:
     payload = source_manifest_v2_payload()
     _set_nested(payload, ("generation", "temperature"), -0.0)
     _set_nested(payload, ("retry", "timeout_seconds"), 60.0)
-    _set_nested(payload, ("price_snapshot", "input_per_million"), -0.0)
+    _replace_price_evidence_value(payload, "ordinary_uncached_input_per_million", -0.0)
 
     dumped = SourceManifestV2.model_validate(payload).model_dump(mode="json")
 
     assert dumped["generation"]["temperature"] == 0.0
-    assert dumped["price_snapshot"]["input_per_million"] == 0.0
+    assert dumped["price_snapshot"]["ordinary_uncached_input_per_million"] == 0.0
     assert str(dumped["generation"]["temperature"]) == "0.0"
 
 
@@ -279,7 +307,7 @@ def test_numeric_float_fields_normalize_negative_zero() -> None:
 )
 def test_price_url_is_exact_and_bounded(exact_url: str) -> None:
     payload = source_manifest_v2_payload()
-    _set_nested(payload, ("price_snapshot", "source_url"), exact_url)
+    _replace_price_evidence_url(payload, exact_url)
 
     manifest = SourceManifestV2.model_validate(payload)
 
@@ -330,9 +358,16 @@ def test_price_snapshot_rejects_invalid_exact_dates(effective_date: str) -> None
         SourceManifestV2.model_validate(payload)
 
 
-@pytest.mark.parametrize("value", [-0.01, inf, -inf, nan, True, "1.0"])
+@pytest.mark.parametrize("value", [None, -0.01, inf, -inf, nan, True, "1.0"])
 @pytest.mark.parametrize(
-    "field", ["input_per_million", "cached_input_per_million", "output_per_million"]
+    "field",
+    [
+        "ordinary_uncached_input_per_million",
+        "cache_read_input_per_million",
+        "cache_write_input_per_million",
+        "visible_output_per_million",
+        "reasoning_output_per_million",
+    ],
 )
 def test_price_snapshot_rejects_invalid_prices(field: str, value: object) -> None:
     payload = source_manifest_v2_payload()
@@ -340,6 +375,135 @@ def test_price_snapshot_rejects_invalid_prices(field: str, value: object) -> Non
 
     with pytest.raises(ValidationError):
         SourceManifestV2.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("reasoning_effort", "minimal"),
+        ("reasoning_effort", "xhigh"),
+        ("text_verbosity", "minimal"),
+        ("text_verbosity", "verbose"),
+        ("reasoning_mode", None),
+        ("reasoning_mode", "auto"),
+        ("prompt_cache_mode", None),
+        ("prompt_cache_mode", "implicit"),
+        ("prompt_cache_ttl", None),
+        ("prompt_cache_ttl", "1h"),
+        ("service_tier", None),
+        ("service_tier", True),
+        ("service_tier", 1),
+        ("service_tier", "auto"),
+        ("service_tier", "flex"),
+        ("service_tier", "priority"),
+        ("service_tier", "ultrafast"),
+    ],
+)
+def test_generation_request_policy_fields_are_strict(field: str, value: object) -> None:
+    payload = source_manifest_v2_payload()
+    payload["generation"][field] = value
+    with pytest.raises(ValidationError):
+        SourceManifestV2.model_validate(payload)
+
+
+def test_native_v2_round_trips_generation_request_policy() -> None:
+    manifest = SourceManifestV2.model_validate(source_manifest_v2_payload())
+    assert manifest.generation.model_dump(mode="json") == {
+        "max_output_tokens": 2048,
+        "temperature": 0.25,
+        "reasoning_effort": "medium",
+        "text_verbosity": "medium",
+        "reasoning_mode": "omitted",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+        "service_tier": "default",
+    }
+
+
+def test_price_snapshot_requires_five_sourced_dimensions() -> None:
+    manifest = SourceManifestV2.model_validate(source_manifest_v2_payload())
+    assert manifest.price_snapshot is not None
+    assert manifest.price_snapshot.service_tier == "default"
+    assert manifest.price_snapshot.cache_read_input_per_million == 0.125
+    assert manifest.price_snapshot.cache_write_input_per_million == 1.5625
+    assert manifest.price_snapshot.ordinary_uncached_input_per_million > 0
+    assert manifest.price_snapshot.visible_output_per_million > 0
+    assert manifest.price_snapshot.reasoning_output_per_million >= 0
+    assert len(manifest.price_snapshot.source_evidence) == 5
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda evidence: evidence.pop(),
+        lambda evidence: evidence.append(deepcopy(evidence[-1])),
+        lambda evidence: evidence.reverse(),
+        lambda evidence: evidence[0].update(dimension="cache_read_input_per_million"),
+        lambda evidence: evidence[0].update(source_url="https://other.example/prices"),
+        lambda evidence: evidence[0].update(effective_date="2026-08-28"),
+        lambda evidence: evidence[0].update(usd_per_million=9.0),
+        lambda evidence: evidence[0].update(source_sha256="0" * 64),
+    ],
+)
+def test_price_source_evidence_requires_exact_order_and_self_binding(mutation: Any) -> None:
+    payload = source_manifest_v2_payload()
+    mutation(payload["price_snapshot"]["source_evidence"])
+    with pytest.raises(ValidationError):
+        SourceManifestV2.model_validate(payload)
+
+
+def test_price_evidence_may_have_independent_self_digested_provenance() -> None:
+    payload = source_manifest_v2_payload()
+    evidence = payload["price_snapshot"]["source_evidence"][0]
+    evidence["source_url"] = "https://independent.example/source"
+    evidence["effective_date"] = "2026-08-26"
+    evidence["source_sha256"] = hashlib.sha256(
+        canonical_json({key: evidence[key] for key in tuple(evidence)[:-1]})
+    ).hexdigest()
+
+    manifest = SourceManifestV2.model_validate(payload)
+
+    assert manifest.price_snapshot is not None
+    assert manifest.price_snapshot.source_evidence[0].source_url == evidence["source_url"]
+
+
+@pytest.mark.parametrize("value", [None, True, 1, "auto", "flex", "priority", "ultrafast"])
+def test_price_snapshot_service_tier_is_strict(value: object) -> None:
+    payload = source_manifest_v2_payload()
+    payload["price_snapshot"]["service_tier"] = value
+    with pytest.raises(ValidationError):
+        SourceManifestV2.model_validate(payload)
+
+
+def test_price_snapshot_digest_binds_literal_default_service_tier() -> None:
+    snapshot = resolved_manifest_v2_payload()["price_snapshot"]
+    encoded = canonical_json(snapshot)
+    assert b'"service_tier":"default"' in encoded
+    baseline_digest = hashlib.sha256(encoded).hexdigest()
+
+    for replacement in (None, "flex"):
+        forged = deepcopy(snapshot)
+        if replacement is None:
+            del forged["service_tier"]
+        else:
+            forged["service_tier"] = replacement
+        assert hashlib.sha256(canonical_json(forged)).hexdigest() != baseline_digest
+        with pytest.raises(ValidationError):
+            ResolvedPriceSnapshotV1.model_validate(forged)
+
+
+def test_cache_write_price_changes_manifest_but_not_request_configuration() -> None:
+    baseline_payload = resolved_manifest_v2_payload()
+    changed_payload = deepcopy(baseline_payload)
+    _replace_price_evidence_value(changed_payload, "cache_write_input_per_million", 1.75)
+    baseline = ResolvedManifestV2.model_validate(baseline_payload)
+    changed = ResolvedManifestV2.model_validate(changed_payload)
+
+    baseline_bytes = canonical_json(baseline.model_dump(mode="json"))
+    changed_bytes = canonical_json(changed.model_dump(mode="json"))
+    assert changed_bytes != baseline_bytes
+    assert hashlib.sha256(changed_bytes).digest() != hashlib.sha256(baseline_bytes).digest()
+    assert request_config_sha256(changed) == request_config_sha256(baseline)
 
 
 @pytest.mark.parametrize(
@@ -588,6 +752,12 @@ def test_v1_upgrade_defaults() -> None:
     assert upgraded.generation.model_dump(mode="json") == {
         "max_output_tokens": 1024,
         "temperature": None,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "reasoning_mode": "omitted",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+        "service_tier": "default",
     }
     assert upgraded.retry.model_dump(mode="json") == {
         "max_transient_retries": 2,
@@ -615,6 +785,24 @@ def test_v1_upgrade_defaults() -> None:
         ],
         "protocol_bindings": [],
     }
+
+
+def test_v1_authored_manifest_rejects_benchmark_reasoning_fields() -> None:
+    legacy = {
+        "schema_version": "1",
+        "runner_version": __version__,
+        "run_name": "legacy-smoke",
+        "provider": {"kind": "fake", "model": "fixture-v1"},
+        "case_files": ["cases/en.yaml"],
+        "arms": ["baseline"],
+        "generation": {
+            "max_output_tokens": 1024,
+            "temperature": None,
+            "reasoning_effort": "medium",
+        },
+    }
+    with pytest.raises(ValidationError):
+        project_v1_manifest(legacy)
 
 
 @pytest.mark.parametrize(
@@ -767,6 +955,9 @@ def test_resolved_manifest_rejects_noncanonical_hashes(digest: str) -> None:
 def _resolved_v1_manifest_payload() -> dict[str, Any]:
     payload = resolved_manifest_v2_payload()
     payload["source_manifest_schema_version"] = "1"
+    payload["generation"]["reasoning_effort"] = None
+    payload["generation"]["text_verbosity"] = None
+    payload["price_snapshot"] = None
     payload["capsule"]["datasets"] = [
         {
             "dataset_id": payload["run_name"],
@@ -787,6 +978,27 @@ def _resolved_v1_manifest_payload() -> dict[str, Any]:
     ]
     payload["capsule"]["protocol_bindings"] = []
     return payload
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("generation", "reasoning_effort"), "low"),
+        (("generation", "text_verbosity"), "low"),
+        (("price_snapshot",), resolved_manifest_v2_payload()["price_snapshot"]),
+    ],
+)
+def test_resolved_v1_projection_rejects_native_v2_semantics(
+    path: tuple[str, ...], value: object
+) -> None:
+    payload = _resolved_v1_manifest_payload()
+    current = payload
+    for component in path[:-1]:
+        current = current[component]
+    current[path[-1]] = value
+
+    with pytest.raises(ValidationError, match="v1 source marker"):
+        ResolvedManifestV2.model_validate(payload)
 
 
 def _add_resolved_protocol_to_v1_projection(payload: dict[str, Any]) -> None:
@@ -854,7 +1066,19 @@ def test_resolved_v1_marker_requires_exact_upgrade_projection(mutator: Any) -> N
         ("provider", "replay_file"),
         ("generation", "temperature"),
         ("price_snapshot",),
-        ("price_snapshot", "cached_input_per_million"),
+        ("generation", "reasoning_effort"),
+        ("generation", "text_verbosity"),
+        ("generation", "reasoning_mode"),
+        ("generation", "prompt_cache_mode"),
+        ("generation", "prompt_cache_ttl"),
+        ("generation", "service_tier"),
+        ("price_snapshot", "service_tier"),
+        ("price_snapshot", "ordinary_uncached_input_per_million"),
+        ("price_snapshot", "cache_read_input_per_million"),
+        ("price_snapshot", "cache_write_input_per_million"),
+        ("price_snapshot", "visible_output_per_million"),
+        ("price_snapshot", "reasoning_output_per_million"),
+        ("price_snapshot", "source_evidence"),
     ],
 )
 def test_optional_serialized_resolved_fields_require_explicit_null(
@@ -890,14 +1114,26 @@ def test_nullable_source_fields_materialize_v1_defaults() -> None:
     assert dumped["generation"]["temperature"] is None
 
 
-def test_cached_input_price_materializes_explicit_null_default() -> None:
+def test_source_generation_policy_materializes_literal_defaults() -> None:
     payload = source_manifest_v2_payload()
-    del payload["price_snapshot"]["cached_input_per_million"]
+    for field in ("prompt_cache_mode", "prompt_cache_ttl", "service_tier"):
+        del payload["generation"][field]
 
     dumped = SourceManifestV2.model_validate(payload).model_dump(mode="json")
 
-    assert "cached_input_per_million" in dumped["price_snapshot"]
-    assert dumped["price_snapshot"]["cached_input_per_million"] is None
+    assert dumped["generation"]["prompt_cache_mode"] == "explicit"
+    assert dumped["generation"]["prompt_cache_ttl"] == "30m"
+    assert dumped["generation"]["service_tier"] == "default"
+
+
+def test_source_price_snapshot_materializes_default_service_tier() -> None:
+    payload = source_manifest_v2_payload()
+    del payload["price_snapshot"]["service_tier"]
+
+    manifest = SourceManifestV2.model_validate(payload)
+
+    assert manifest.price_snapshot is not None
+    assert manifest.price_snapshot.service_tier == "default"
 
 
 def test_resolved_manifest_rejects_host_paths() -> None:
@@ -946,14 +1182,20 @@ def test_resolved_replay_manifest_uses_fixed_capsule_path() -> None:
     assert manifest.provider.replay_file == "inputs/provider/replay.yaml"
 
 
-def test_nullable_cached_price_is_retained() -> None:
+def test_public_price_dimensions_are_never_nullable() -> None:
     payload = source_manifest_v2_payload()
-    payload["price_snapshot"]["cached_input_per_million"] = None
+    payload["price_snapshot"]["cache_read_input_per_million"] = None
 
-    dumped = SourceManifestV2.model_validate(payload).model_dump(mode="json")
+    with pytest.raises(ValidationError):
+        SourceManifestV2.model_validate(payload)
 
-    assert "cached_input_per_million" in dumped["price_snapshot"]
-    assert dumped["price_snapshot"]["cached_input_per_million"] is None
+
+def test_zero_price_is_allowed_only_with_exact_evidence() -> None:
+    payload = source_manifest_v2_payload()
+    _replace_price_evidence_value(payload, "reasoning_output_per_million", 0.0)
+    manifest = SourceManifestV2.model_validate(payload)
+    assert manifest.price_snapshot is not None
+    assert manifest.price_snapshot.reasoning_output_per_million == 0.0
 
 
 def test_resolved_protocol_integrity_fields_are_strict() -> None:

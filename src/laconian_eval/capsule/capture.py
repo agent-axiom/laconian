@@ -41,6 +41,10 @@ from laconian_eval.yaml_io import StrictYamlError, safe_load_unique_bytes
 _PathLike: TypeAlias = os.PathLike[str] | str
 _SourceManifest: TypeAlias = SourceManifestV2 | V1UpgradeProjection
 _CaptureKind: TypeAlias = Literal["case", "arm", "replay", "protocol"]
+_V1_PRICE_SNAPSHOT_MIGRATION_MESSAGE = (
+    "v1 price snapshots require explicit migration to a native-v2 five-rate "
+    "source-evidence manifest"
+)
 
 
 class CaptureError(ValueError):
@@ -312,6 +316,11 @@ def load_source_manifest_capture(
     )
     source_manifest = parse_source_manifest_bytes(source_bytes)
     if isinstance(source_manifest, V1UpgradeProjection):
+        if source_manifest.price_snapshot is not None:
+            raise CaptureError(
+                "v1_price_snapshot_requires_native_v2",
+                _V1_PRICE_SNAPSHOT_MIGRATION_MESSAGE,
+            )
         if input_root is not None:
             raise CaptureError("v1_input_root_forbidden", "v1 forbids an input root")
         resolution_root = invocation_root
@@ -647,6 +656,11 @@ def upgrade_v1_manifest(
 ) -> ResolvedManifestV2:
     """Project the exact v1 compatibility defaults into a resolved v2 manifest."""
 
+    if manifest.price_snapshot is not None:
+        raise CaptureError(
+            "v1_price_snapshot_requires_native_v2",
+            _V1_PRICE_SNAPSHOT_MIGRATION_MESSAGE,
+        )
     dataset = manifest.capsule.datasets[0]
     provider_replay = "inputs/provider/replay.yaml" if manifest.provider.kind == "replay" else None
     return ResolvedManifestV2.model_validate(
@@ -669,13 +683,18 @@ def upgrade_v1_manifest(
             "arm_order_seed": manifest.arm_order_seed,
             "instruction_placement": manifest.instruction_placement,
             "schedule_algorithm_version": "laconian-schedule-v1",
-            "generation": manifest.generation.model_dump(mode="json"),
+            "generation": {
+                "max_output_tokens": manifest.generation.max_output_tokens,
+                "temperature": manifest.generation.temperature,
+                "reasoning_effort": manifest.generation.reasoning_effort,
+                "text_verbosity": manifest.generation.text_verbosity,
+                "reasoning_mode": manifest.generation.reasoning_mode,
+                "prompt_cache_mode": manifest.generation.prompt_cache_mode,
+                "prompt_cache_ttl": manifest.generation.prompt_cache_ttl,
+                "service_tier": manifest.generation.service_tier,
+            },
             "retry": manifest.retry.model_dump(mode="json"),
-            "price_snapshot": (
-                None
-                if manifest.price_snapshot is None
-                else manifest.price_snapshot.model_dump(mode="json")
-            ),
+            "price_snapshot": None,
             "capsule": {
                 "run_purpose": manifest.capsule.run_purpose,
                 "claim_intent": manifest.capsule.claim_intent,
@@ -734,12 +753,45 @@ def _resolve_v2_manifest(
             "arm_order_seed": manifest.arm_order_seed,
             "instruction_placement": manifest.instruction_placement,
             "schedule_algorithm_version": "laconian-schedule-v1",
-            "generation": manifest.generation.model_dump(mode="json"),
+            "generation": {
+                "max_output_tokens": manifest.generation.max_output_tokens,
+                "temperature": manifest.generation.temperature,
+                "reasoning_effort": manifest.generation.reasoning_effort,
+                "text_verbosity": manifest.generation.text_verbosity,
+                "reasoning_mode": manifest.generation.reasoning_mode,
+                "prompt_cache_mode": manifest.generation.prompt_cache_mode,
+                "prompt_cache_ttl": manifest.generation.prompt_cache_ttl,
+                "service_tier": manifest.generation.service_tier,
+            },
             "retry": manifest.retry.model_dump(mode="json"),
             "price_snapshot": (
                 None
                 if manifest.price_snapshot is None
-                else manifest.price_snapshot.model_dump(mode="json")
+                else {
+                    "currency": manifest.price_snapshot.currency,
+                    "effective_date": manifest.price_snapshot.effective_date,
+                    "source_url": manifest.price_snapshot.source_url,
+                    "service_tier": manifest.price_snapshot.service_tier,
+                    "ordinary_uncached_input_per_million": (
+                        manifest.price_snapshot.ordinary_uncached_input_per_million
+                    ),
+                    "cache_read_input_per_million": (
+                        manifest.price_snapshot.cache_read_input_per_million
+                    ),
+                    "cache_write_input_per_million": (
+                        manifest.price_snapshot.cache_write_input_per_million
+                    ),
+                    "visible_output_per_million": (
+                        manifest.price_snapshot.visible_output_per_million
+                    ),
+                    "reasoning_output_per_million": (
+                        manifest.price_snapshot.reasoning_output_per_million
+                    ),
+                    "source_evidence": [
+                        evidence.model_dump(mode="json")
+                        for evidence in manifest.price_snapshot.source_evidence
+                    ],
+                }
             ),
             "capsule": {
                 "run_purpose": manifest.capsule.run_purpose,
@@ -766,6 +818,14 @@ def capture_authored_inputs(
 ) -> CapturedInputs:
     """Capture cases, selected arms, replay, and protocols without writing an index."""
 
+    if (
+        isinstance(source.source_manifest, V1UpgradeProjection)
+        and source.source_manifest.price_snapshot is not None
+    ):
+        raise CaptureError(
+            "v1_price_snapshot_requires_native_v2",
+            _V1_PRICE_SNAPSHOT_MIGRATION_MESSAGE,
+        )
     input_root_fd: int | None = None
     if isinstance(source.source_manifest, SourceManifestV2):
         input_root_fd = _open_verified_directory(source._input_root, code="invalid_input_root")

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from laconian_eval import __version__
+from laconian_eval.capsule.canonical import canonical_json
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -18,6 +20,27 @@ CANONICAL_TIMESTAMP = "2026-08-27T12:34:56.123456Z"
 
 
 def source_manifest_v2_payload() -> dict[str, Any]:
+    source_url = "HTTPS://Pricing.Example.test:443/v1?b=2&a=1"
+    effective_date = "2026-08-27"
+    rates = {
+        "ordinary_uncached_input_per_million": 1.25,
+        "cache_read_input_per_million": 0.125,
+        "cache_write_input_per_million": 1.5625,
+        "visible_output_per_million": 10.0,
+        "reasoning_output_per_million": 12.5,
+    }
+    evidence = []
+    for dimension, rate in rates.items():
+        evidence_payload = {
+            "dimension": dimension,
+            "source_url": source_url,
+            "effective_date": effective_date,
+            "usd_per_million": rate,
+        }
+        evidence.append(
+            evidence_payload
+            | {"source_sha256": hashlib.sha256(canonical_json(evidence_payload)).hexdigest()}
+        )
     return {
         "schema_version": "2",
         "runner_version": __version__,
@@ -33,15 +56,24 @@ def source_manifest_v2_payload() -> dict[str, Any]:
         "repetitions": 2,
         "arm_order_seed": -17,
         "instruction_placement": "system_suffix",
-        "generation": {"max_output_tokens": 2048, "temperature": 0.25},
+        "generation": {
+            "max_output_tokens": 2048,
+            "temperature": 0.25,
+            "reasoning_effort": "medium",
+            "text_verbosity": "medium",
+            "reasoning_mode": "omitted",
+            "prompt_cache_mode": "explicit",
+            "prompt_cache_ttl": "30m",
+            "service_tier": "default",
+        },
         "retry": {"max_transient_retries": 2, "timeout_seconds": 60.0},
         "price_snapshot": {
             "currency": "USD",
-            "effective_date": "2026-08-27",
-            "source_url": "HTTPS://Pricing.Example.test:443/v1?b=2&a=1",
-            "input_per_million": 1.25,
-            "cached_input_per_million": 0.125,
-            "output_per_million": 10.0,
+            "effective_date": effective_date,
+            "source_url": source_url,
+            "service_tier": "default",
+            **rates,
+            "source_evidence": evidence,
         },
         "capsule": {
             "run_purpose": "integration_smoke",

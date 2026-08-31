@@ -7,9 +7,37 @@ from laconian_eval.providers.base import (
     TokenUsage,
 )
 from laconian_eval.providers.fake import FakeProvider
+from laconian_eval.providers.openai import (
+    BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1,
+    BENCHMARK_OPENAI_LOCK_REGISTRY_V1,
+    BENCHMARK_OPENAI_LOCK_SDIST_V1,
+    BENCHMARK_OPENAI_LOCK_WHEELS_V1,
+    BENCHMARK_OPENAI_REQUEST_FIELDS_V1,
+    BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1,
+    BENCHMARK_OPENAI_RESPONSE_PATHS_V1,
+    BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1,
+    BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1,
+    BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1,
+    BenchmarkSDKContractError,
+    BenchmarkSDKContractErrorCode,
+    VerifiedBenchmarkSDKContractV1,
+    require_benchmark_sdk_contract,
+)
 from laconian_eval.providers.replay import ReplayProvider
 
 __all__ = [
+    "BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1",
+    "BENCHMARK_OPENAI_LOCK_REGISTRY_V1",
+    "BENCHMARK_OPENAI_LOCK_SDIST_V1",
+    "BENCHMARK_OPENAI_LOCK_WHEELS_V1",
+    "BENCHMARK_OPENAI_REQUEST_FIELDS_V1",
+    "BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1",
+    "BENCHMARK_OPENAI_RESPONSE_PATHS_V1",
+    "BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1",
+    "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1",
+    "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1",
+    "BenchmarkSDKContractError",
+    "BenchmarkSDKContractErrorCode",
     "DeliveryCertainty",
     "FakeProvider",
     "GenerationRequest",
@@ -18,4 +46,6 @@ __all__ = [
     "ProviderError",
     "ReplayProvider",
     "TokenUsage",
+    "VerifiedBenchmarkSDKContractV1",
+    "require_benchmark_sdk_contract",
 ]

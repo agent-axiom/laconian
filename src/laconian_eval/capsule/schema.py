@@ -27,6 +27,13 @@ from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, bounded_utf8_length
 
 Arm: TypeAlias = Literal["baseline", "concise", "caveman", "if"]
 ProviderKind: TypeAlias = Literal["fake", "replay", "openai"]
+ReasoningEffort: TypeAlias = Literal["low", "medium", "high"]
+TextVerbosity: TypeAlias = Literal["low", "medium", "high"]
+ReasoningMode: TypeAlias = Literal["omitted"]
+PromptCacheMode: TypeAlias = Literal["explicit"]
+PromptCacheTTL: TypeAlias = Literal["30m"]
+ServiceTier: TypeAlias = Literal["default"]
+PublicBenchmarkModelId: TypeAlias = Literal["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 RunPurpose: TypeAlias = Literal[
     "integration_smoke", "development", "confirmatory_author_run", "replication"
 ]

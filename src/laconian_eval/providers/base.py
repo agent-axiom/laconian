@@ -1,6 +1,65 @@
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
+from pydantic import field_validator
+
+from laconian_eval.capsule.schema import (
+    CapsuleModel,
+    PromptCacheMode,
+    PromptCacheTTL,
+    PublicBenchmarkModelId,
+    ReasoningEffort,
+    ReasoningMode,
+    ServiceTier,
+    TextVerbosity,
+)
+
+INPUT_TOKEN_BOUND_VERSION = "openai-utf8-envelope-v1"
+OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE = 65_536
+OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS = 272_000
+
+
+def conservative_input_token_bound(*, instruction_utf8_bytes: int, prompt_utf8_bytes: int) -> int:
+    """Return one-token-per-byte plus the frozen Responses-envelope allowance."""
+    for value in (instruction_utf8_bytes, prompt_utf8_bytes):
+        if type(value) is not int or value < 0:
+            raise ValueError("input byte counts must be nonnegative integers")
+    return instruction_utf8_bytes + prompt_utf8_bytes + OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE
+
+
+class PublicBenchmarkRequestPolicyV1(CapsuleModel):
+    schema_version: Literal["PublicBenchmarkRequestPolicyV1"]
+    service_tier: ServiceTier
+    prompt_cache_mode: PromptCacheMode
+    prompt_cache_ttl: PromptCacheTTL
+    reasoning_mode: ReasoningMode
+    input_token_bound_version: Literal["openai-utf8-envelope-v1"]
+    max_input_tokens: Literal[272000]
+
+    @field_validator("max_input_tokens", mode="before")
+    @classmethod
+    def validate_exact_token_ceiling(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("max_input_tokens must be an exact integer")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PublicBenchmarkRequestV1:
+    case_id: str
+    arm: str
+    repetition: int
+    requested_model_id: PublicBenchmarkModelId
+    instructions: str | None
+    prompt: str
+    max_output_tokens: int
+    temperature: float | None
+    timeout_seconds: float
+    policy: PublicBenchmarkRequestPolicyV1
+    reasoning_effort: ReasoningEffort | None = None
+    text_verbosity: TextVerbosity | None = None
+
+
 DeliveryCertainty: TypeAlias = Literal[
     "definitely_not_sent",
     "definitely_rejected",

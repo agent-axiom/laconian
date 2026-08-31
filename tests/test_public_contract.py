@@ -697,3 +697,65 @@ def test_social_card_has_exact_copy_and_dimensions() -> None:
     assert hashlib.sha256(png).hexdigest() == (
         "53edc82ed51ce4dfd16280de39b0c6285dbbd0b7e1c7dfa94de817a0918b47f9"
     )
+
+
+def test_benchmark_sdk_contract_has_one_public_owner() -> None:
+    import ast
+    import inspect
+
+    import laconian_eval.benchmark as benchmark
+    import laconian_eval.providers as providers
+    from laconian_eval.benchmark import attachments
+    from laconian_eval.providers import openai as provider_openai
+
+    names = (
+        "BENCHMARK_OPENAI_REQUEST_FIELDS_V1",
+        "BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1",
+        "BENCHMARK_OPENAI_RESPONSE_PATHS_V1",
+        "BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1",
+        "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1",
+        "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1",
+        "BENCHMARK_OPENAI_LOCK_REGISTRY_V1",
+        "BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1",
+        "BENCHMARK_OPENAI_LOCK_SDIST_V1",
+        "BENCHMARK_OPENAI_LOCK_WHEELS_V1",
+        "BenchmarkSDKContractErrorCode",
+        "BenchmarkSDKContractError",
+        "VerifiedBenchmarkSDKContractV1",
+        "require_benchmark_sdk_contract",
+    )
+    for name in names:
+        assert getattr(providers, name) is getattr(provider_openai, name)
+        assert providers.__all__.count(name) == 1
+    for name in ("BenchmarkSDKContractError", "VerifiedBenchmarkSDKContractV1"):
+        assert getattr(providers, name).__module__ == "laconian_eval.providers.openai"
+    assert providers.require_benchmark_sdk_contract.__module__ == "laconian_eval.providers.openai"
+    assert str(inspect.signature(providers.require_benchmark_sdk_contract)) == (
+        "(*, c0_uv_lock_bytes: 'bytes', expected_c0_uv_lock_sha256: 'Sha256') -> 'None'"
+    )
+    assert str(inspect.signature(provider_openai._build_verified_benchmark_sdk_contract)) == (
+        "(*, c0_uv_lock_bytes: 'bytes', expected_c0_uv_lock_sha256: 'Sha256') "
+        "-> 'VerifiedBenchmarkSDKContractV1'"
+    )
+
+    assert benchmark.CanonicalJSONV1Error is attachments.CanonicalJSONV1Error
+    assert benchmark.canonical_json_v1 is attachments.canonical_json_v1
+    assert benchmark.parse_canonical_json_v1 is attachments.parse_canonical_json_v1
+    assert provider_openai._canonical_json_v1 is attachments.canonical_json_v1
+    canonical_names = {
+        "CanonicalJSONV1Error",
+        "canonical_json_v1",
+        "parse_canonical_json_v1",
+    }
+    assert canonical_names.isdisjoint(providers.__all__)
+    tree = ast.parse(inspect.getsource(provider_openai))
+    locally_defined = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    assert canonical_names.isdisjoint(locally_defined)
+    assert not {name for name in locally_defined if "canonical_json_v1" in name.lower()}
+    source = inspect.getsource(provider_openai)
+    assert "ProtocolSubjectKindV1" not in source
+    assert "PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1" not in source

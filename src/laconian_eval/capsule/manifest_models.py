@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from typing import Literal, Self
+from typing import Literal, Self, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
 from laconian_eval import __version__
+from laconian_eval.capsule.canonical import canonical_json
 from laconian_eval.capsule.schema import (
     PROTOCOL_STAGE_ORDER,
     ApiKeyEnvironmentName,
@@ -25,11 +26,16 @@ from laconian_eval.capsule.schema import (
     MediaType,
     NamespacedString,
     NonNegativeFiniteFloat,
+    PromptCacheMode,
+    PromptCacheTTL,
     ProtocolStage,
     ProviderKind,
+    ReasoningEffort,
+    ReasoningMode,
     RelativePosixPath,
     RunName,
     RunPurpose,
+    ServiceTier,
     Sha256,
     StrictMaxOutputTokens,
     StrictNonNegativeInt,
@@ -37,6 +43,7 @@ from laconian_eval.capsule.schema import (
     StrictSigned64Int,
     StrictTransientRetries,
     Temperature,
+    TextVerbosity,
     TimeoutSeconds,
     require_fixed_order,
     require_unique,
@@ -99,11 +106,23 @@ class ResolvedProviderV2(CapsuleModel):
 class SourceGenerationSettingsV2(CapsuleModel):
     max_output_tokens: StrictMaxOutputTokens = 1024
     temperature: Temperature | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    text_verbosity: TextVerbosity | None = None
+    reasoning_mode: ReasoningMode = "omitted"
+    prompt_cache_mode: PromptCacheMode = "explicit"
+    prompt_cache_ttl: PromptCacheTTL = "30m"
+    service_tier: ServiceTier = "default"
 
 
 class ResolvedGenerationSettingsV2(CapsuleModel):
     max_output_tokens: StrictMaxOutputTokens
     temperature: Temperature | None
+    reasoning_effort: ReasoningEffort | None
+    text_verbosity: TextVerbosity | None
+    reasoning_mode: ReasoningMode
+    prompt_cache_mode: PromptCacheMode
+    prompt_cache_ttl: PromptCacheTTL
+    service_tier: ServiceTier
 
 
 class SourceRetryPolicyV2(CapsuleModel):
@@ -116,21 +135,90 @@ class ResolvedRetryPolicyV2(CapsuleModel):
     timeout_seconds: TimeoutSeconds
 
 
+PriceDimensionV1: TypeAlias = Literal[
+    "ordinary_uncached_input_per_million",
+    "cache_read_input_per_million",
+    "cache_write_input_per_million",
+    "visible_output_per_million",
+    "reasoning_output_per_million",
+]
+_PRICE_DIMENSIONS_V1 = (
+    "ordinary_uncached_input_per_million",
+    "cache_read_input_per_million",
+    "cache_write_input_per_million",
+    "visible_output_per_million",
+    "reasoning_output_per_million",
+)
+
+
+class PriceSourceEvidenceV1(CapsuleModel):
+    dimension: PriceDimensionV1
+    source_url: ExactAsciiHttpUrl
+    effective_date: ExactDate
+    usd_per_million: NonNegativeFiniteFloat
+    source_sha256: Sha256
+
+
+def _validate_price_evidence(
+    snapshot: SourcePriceSnapshotV1 | ResolvedPriceSnapshotV1,
+) -> None:
+    if tuple(item.dimension for item in snapshot.source_evidence) != _PRICE_DIMENSIONS_V1:
+        raise ValueError("source_evidence must contain the five dimensions in canonical order")
+    for item in snapshot.source_evidence:
+        if item.usd_per_million != getattr(snapshot, item.dimension):
+            raise ValueError("source evidence rate must equal snapshot rate")
+        payload = {
+            "dimension": item.dimension,
+            "source_url": item.source_url,
+            "effective_date": item.effective_date,
+            "usd_per_million": item.usd_per_million,
+        }
+        if item.source_sha256 != hashlib.sha256(canonical_json(payload)).hexdigest():
+            raise ValueError("source evidence digest mismatch")
+
+
 class SourcePriceSnapshotV1(CapsuleModel):
     currency: Literal["USD"] = "USD"
     effective_date: ExactDate
     source_url: ExactAsciiHttpUrl
-    input_per_million: NonNegativeFiniteFloat
-    cached_input_per_million: NonNegativeFiniteFloat | None = None
-    output_per_million: NonNegativeFiniteFloat
+    service_tier: ServiceTier = "default"
+    ordinary_uncached_input_per_million: NonNegativeFiniteFloat
+    cache_read_input_per_million: NonNegativeFiniteFloat
+    cache_write_input_per_million: NonNegativeFiniteFloat
+    visible_output_per_million: NonNegativeFiniteFloat
+    reasoning_output_per_million: NonNegativeFiniteFloat
+    source_evidence: tuple[PriceSourceEvidenceV1, ...]
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> Self:
+        _validate_price_evidence(self)
+        return self
 
 
 class ResolvedPriceSnapshotV1(CapsuleModel):
     currency: Literal["USD"]
     effective_date: ExactDate
     source_url: ExactAsciiHttpUrl
+    service_tier: ServiceTier
+    ordinary_uncached_input_per_million: NonNegativeFiniteFloat
+    cache_read_input_per_million: NonNegativeFiniteFloat
+    cache_write_input_per_million: NonNegativeFiniteFloat
+    visible_output_per_million: NonNegativeFiniteFloat
+    reasoning_output_per_million: NonNegativeFiniteFloat
+    source_evidence: tuple[PriceSourceEvidenceV1, ...]
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> Self:
+        _validate_price_evidence(self)
+        return self
+
+
+class _V1LegacyPriceSnapshotProjection(CapsuleModel):
+    currency: Literal["USD"] = "USD"
+    effective_date: ExactDate
+    source_url: ExactAsciiHttpUrl
     input_per_million: NonNegativeFiniteFloat
-    cached_input_per_million: NonNegativeFiniteFloat | None
+    cached_input_per_million: NonNegativeFiniteFloat | None = None
     output_per_million: NonNegativeFiniteFloat
 
 
@@ -318,7 +406,7 @@ class V1UpgradeProjection(CapsuleModel):
     instruction_placement: Literal["system_suffix"]
     generation: SourceGenerationSettingsV2
     retry: SourceRetryPolicyV2
-    price_snapshot: SourcePriceSnapshotV1 | None
+    price_snapshot: _V1LegacyPriceSnapshotProjection | None
     capsule: SourceCapsuleDeclarationsV2
 
     @field_validator("arms")
@@ -357,7 +445,7 @@ class _V1ProjectionInput(CapsuleModel):
     instruction_placement: Literal["system_suffix"] = "system_suffix"
     generation: SourceGenerationSettingsV2 = Field(default_factory=SourceGenerationSettingsV2)
     retry: SourceRetryPolicyV2 = Field(default_factory=SourceRetryPolicyV2)
-    price_snapshot: SourcePriceSnapshotV1 | None = None
+    price_snapshot: _V1LegacyPriceSnapshotProjection | None = None
 
     @field_validator("arms")
     @classmethod
@@ -462,6 +550,9 @@ class ResolvedManifestV2(CapsuleModel):
                 or not exact_dataset
                 or not exact_comparisons
                 or self.capsule.protocol_bindings
+                or self.generation.reasoning_effort is not None
+                or self.generation.text_verbosity is not None
+                or self.price_snapshot is not None
             ):
                 raise ValueError("v1 source marker requires the exact upgrade projection")
         expected_case_paths = tuple(
@@ -485,8 +576,21 @@ class ResolvedManifestV2(CapsuleModel):
 def project_v1_manifest(payload: Mapping[str, object]) -> V1UpgradeProjection:
     """Validate raw v1 scalars and project defaults without resolving source locators."""
 
-    RunManifest.model_validate(payload)
-    manifest = _V1ProjectionInput.model_validate(payload)
+    validated = RunManifest.model_validate(payload)
+    projection_payload = dict(payload)
+    if validated.price_snapshot is not None:
+        raw_price = payload.get("price_snapshot")
+        if not isinstance(raw_price, Mapping):
+            raise ValueError("validated price snapshot must retain its authored mapping")
+        projection_payload["price_snapshot"] = {
+            "currency": validated.price_snapshot.currency,
+            "effective_date": validated.price_snapshot.effective_date,
+            "source_url": raw_price.get("source_url"),
+            "input_per_million": validated.price_snapshot.input_per_million,
+            "cached_input_per_million": validated.price_snapshot.cached_input_per_million,
+            "output_per_million": validated.price_snapshot.output_per_million,
+        }
+    manifest = _V1ProjectionInput.model_validate(projection_payload)
     api_key_env = manifest.provider.api_key_env if manifest.provider.kind == "openai" else None
     replay_file = manifest.provider.replay_file if manifest.provider.kind == "replay" else None
     comparisons: list[dict[str, str]] = []

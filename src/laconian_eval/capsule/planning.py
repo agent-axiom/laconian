@@ -34,6 +34,12 @@ from laconian_eval.capsule.schema import Arm as ArmName
 from laconian_eval.capsule.schema import Locale
 from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import ResponseCase
+from laconian_eval.providers.base import (
+    INPUT_TOKEN_BOUND_VERSION,
+    OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE,
+    OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS,
+    conservative_input_token_bound,
+)
 
 _SCHEDULE_VERSION = "laconian-schedule-v1"
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -327,6 +333,12 @@ def request_config_sha256(manifest: ResolvedManifestV2) -> str:
     """Bind every provider-request setting except secrets and environment values."""
 
     manifest = _revalidate_resolved_manifest(manifest)
+    envelope_allowance = conservative_input_token_bound(
+        instruction_utf8_bytes=0,
+        prompt_utf8_bytes=0,
+    )
+    if envelope_allowance != OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE:
+        raise PlanningError("input_token_bound_contract_mismatch")
     return stable_digest(
         "laconian-request-config-v1",
         {
@@ -335,12 +347,28 @@ def request_config_sha256(manifest: ResolvedManifestV2) -> str:
             "generation": {
                 "max_output_tokens": manifest.generation.max_output_tokens,
                 "temperature": manifest.generation.temperature,
+                "reasoning_effort": manifest.generation.reasoning_effort,
+                "text_verbosity": manifest.generation.text_verbosity,
+                "reasoning_mode": manifest.generation.reasoning_mode,
+                "prompt_cache_mode": manifest.generation.prompt_cache_mode,
+                "prompt_cache_ttl": manifest.generation.prompt_cache_ttl,
+                "service_tier": manifest.generation.service_tier,
             },
             "retry": {
                 "max_transient_retries": manifest.retry.max_transient_retries,
                 "timeout_seconds": manifest.retry.timeout_seconds,
             },
             "instruction_placement": manifest.instruction_placement,
+            "prompt_cache_options": {
+                "mode": manifest.generation.prompt_cache_mode,
+                "ttl": manifest.generation.prompt_cache_ttl,
+            },
+            "service_tier": manifest.generation.service_tier,
+            "input_token_bound": {
+                "version": INPUT_TOKEN_BOUND_VERSION,
+                "envelope_allowance_tokens": envelope_allowance,
+                "standard_tier_max_input_tokens": OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS,
+            },
             "store": False,
             "tools": [],
         },

@@ -218,7 +218,7 @@ openai = [
 requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.17,<2" },
     { name = "numpy", specifier = ">=2,<3" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=3.3.1,<4" },
+    { name = "openai", marker = "extra == 'openai'", specifier = "==3.3.1" },
     { name = "packaging", specifier = ">=26,<27" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4,<9" },

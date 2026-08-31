@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import random
+import typing
 from collections.abc import Iterator
 from dataclasses import replace
 from itertools import product
@@ -13,7 +15,7 @@ from laconian_eval import __version__
 from laconian_eval import runner as legacy_runner
 from laconian_eval.arms import Arm, arm_from_captured_bytes
 from laconian_eval.capsule import planning
-from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
+from laconian_eval.capsule.canonical import canonical_json, sha256_bytes, stable_digest
 from laconian_eval.capsule.capture import (
     CapturedCaseFile,
     CapturedInputFile,
@@ -42,6 +44,81 @@ from laconian_eval.capsule.planning import (
 from laconian_eval.capsule.record_models import CaseIndexRowV1, InputFileRecordV1, PlanRowV1
 from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import ResponseCase
+from laconian_eval.providers.base import PublicBenchmarkRequestV1, conservative_input_token_bound
+
+
+def test_request_config_hash_binds_reasoning_cache_and_tier_policy() -> None:
+    manifest = _resolved_manifest()
+    expected = {
+        "provider_kind": "fake",
+        "requested_model": "fixture-v1",
+        "generation": {
+            "max_output_tokens": 128,
+            "temperature": 0.25,
+            "reasoning_effort": "medium",
+            "text_verbosity": "medium",
+            "reasoning_mode": "omitted",
+            "prompt_cache_mode": "explicit",
+            "prompt_cache_ttl": "30m",
+            "service_tier": "default",
+        },
+        "retry": {"max_transient_retries": 2, "timeout_seconds": 60.0},
+        "instruction_placement": "system_suffix",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "service_tier": "default",
+        "input_token_bound": {
+            "version": "openai-utf8-envelope-v1",
+            "envelope_allowance_tokens": 65536,
+            "standard_tier_max_input_tokens": 272000,
+        },
+        "store": False,
+        "tools": [],
+    }
+    assert request_config_sha256(manifest) == stable_digest("laconian-request-config-v1", expected)
+    baseline = request_config_sha256(manifest)
+    for field, value in (
+        ("reasoning_effort", None),
+        ("reasoning_effort", "low"),
+        ("text_verbosity", None),
+        ("text_verbosity", "low"),
+    ):
+        payload = manifest.model_dump(mode="json")
+        payload["generation"][field] = value
+        assert request_config_sha256(ResolvedManifestV2.model_validate(payload)) != baseline
+    encoded = canonical_json(expected)
+    for forbidden in (b"prompt_cache_key", b"prompt_cache_retention", b"breakpoint"):
+        assert forbidden not in encoded
+
+
+@pytest.mark.parametrize("field", ["instruction_utf8_bytes", "prompt_utf8_bytes"])
+@pytest.mark.parametrize("value", [True, -1, 1.0])
+def test_conservative_input_token_bound_rejects_invalid_counts(field: str, value: object) -> None:
+    kwargs = {"instruction_utf8_bytes": 0, "prompt_utf8_bytes": 0}
+    kwargs[field] = value
+    with pytest.raises(ValueError):
+        conservative_input_token_bound(**kwargs)  # type: ignore[arg-type]
+
+
+def test_conservative_input_token_bound_contract_is_exact() -> None:
+    assert conservative_input_token_bound(instruction_utf8_bytes=0, prompt_utf8_bytes=0) == 65_536
+    assert (
+        conservative_input_token_bound(instruction_utf8_bytes=100_000, prompt_utf8_bytes=106_464)
+        == 272_000
+    )
+    assert conservative_input_token_bound.__doc__ == (
+        "Return one-token-per-byte plus the frozen Responses-envelope allowance."
+    )
+    assert tuple(inspect.signature(conservative_input_token_bound).parameters) == (
+        "instruction_utf8_bytes",
+        "prompt_utf8_bytes",
+    )
+    hints = typing.get_type_hints(PublicBenchmarkRequestV1)
+    assert hints["arm"] is str
+    assert hints["instructions"] == str | None
+    with pytest.raises(ValueError) as caught:
+        conservative_input_token_bound(instruction_utf8_bytes=-1, prompt_utf8_bytes=0)
+    assert caught.value.args == ("input byte counts must be nonnegative integers",)
+
 
 RUN_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -210,6 +287,12 @@ def _resolved_manifest(
             "generation": {
                 "max_output_tokens": max_output_tokens,
                 "temperature": 0.25,
+                "reasoning_effort": "medium",
+                "text_verbosity": "medium",
+                "reasoning_mode": "omitted",
+                "prompt_cache_mode": "explicit",
+                "prompt_cache_ttl": "30m",
+                "service_tier": "default",
             },
             "retry": {"max_transient_retries": 2, "timeout_seconds": 60.0},
             "price_snapshot": None,
@@ -337,17 +420,22 @@ def test_section_9_identity_preimages_and_digests_are_literal_goldens() -> None:
         b'"repetition":0,"run_id":"123e4567-e89b-42d3-a456-426614174000"}'
     )
     expected_request_preimage = (
-        b'{"generation":{"max_output_tokens":128,"temperature":0.25},'
-        b'"instruction_placement":"system_suffix","provider_kind":"fake",'
+        b'{"generation":{"max_output_tokens":128,"prompt_cache_mode":"explicit",'
+        b'"prompt_cache_ttl":"30m","reasoning_effort":"medium",'
+        b'"reasoning_mode":"omitted","service_tier":"default","temperature":0.25,'
+        b'"text_verbosity":"medium"},"input_token_bound":'
+        b'{"envelope_allowance_tokens":65536,"standard_tier_max_input_tokens":272000,'
+        b'"version":"openai-utf8-envelope-v1"},"instruction_placement":"system_suffix",'
+        b'"prompt_cache_options":{"mode":"explicit","ttl":"30m"},"provider_kind":"fake",'
         b'"requested_model":"fixture-v1","retry":{"max_transient_retries":2,'
-        b'"timeout_seconds":60.0},"store":false,"tools":[]}'
+        b'"timeout_seconds":60.0},"service_tier":"default","store":false,"tools":[]}'
     )
-    expected_request_sha256 = "9eeb930660f92d5b2b83589c4f664c1a3538472adfc797e4cdecad1adaa3f89b"
+    expected_request_sha256 = "63a99d3945a095b3a1b31e556eebcbde36571ac1d6212d64ef2a0f5543f6d923"
     expected_plan_preimage = (
         b'{"arm":"if","case_uid":"70d24b0bc44419392753b3d008c0c7c6f57f34ea05e3715221b826196346d1bf",'
         b'"instruction_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",'
         b'"repetition":0,"request_config_sha256":'
-        b'"9eeb930660f92d5b2b83589c4f664c1a3538472adfc797e4cdecad1adaa3f89b",'
+        b'"63a99d3945a095b3a1b31e556eebcbde36571ac1d6212d64ef2a0f5543f6d923",'
         b'"run_id":"123e4567-e89b-42d3-a456-426614174000"}'
     )
 
@@ -402,9 +490,25 @@ def test_section_9_identity_preimages_and_digests_are_literal_goldens() -> None:
             {
                 "provider_kind": "fake",
                 "requested_model": "fixture-v1",
-                "generation": {"max_output_tokens": 128, "temperature": 0.25},
+                "generation": {
+                    "max_output_tokens": 128,
+                    "temperature": 0.25,
+                    "reasoning_effort": "medium",
+                    "text_verbosity": "medium",
+                    "reasoning_mode": "omitted",
+                    "prompt_cache_mode": "explicit",
+                    "prompt_cache_ttl": "30m",
+                    "service_tier": "default",
+                },
                 "retry": {"max_transient_retries": 2, "timeout_seconds": 60.0},
                 "instruction_placement": "system_suffix",
+                "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+                "service_tier": "default",
+                "input_token_bound": {
+                    "version": "openai-utf8-envelope-v1",
+                    "envelope_allowance_tokens": 65536,
+                    "standard_tier_max_input_tokens": 272000,
+                },
                 "store": False,
                 "tools": [],
             }
@@ -449,7 +553,7 @@ def test_section_9_identity_preimages_and_digests_are_literal_goldens() -> None:
             instruction,
             expected_request_sha256,
         )
-        == "5493f8e98326fb89eb2da6cc456c7c5ba408a25b9756159041ae88060fee25fe"
+        == "8d37341b8a319f82150585a166b2f7bd852ec00ad4bae5c850d035653dd95a27"
     )
 
 
@@ -472,13 +576,13 @@ def test_case_index_materializes_exact_source_record_order_and_hashes() -> None:
         "source_ordinal": 0,
         "record_ordinal": 0,
         "case_id": "alpha-en",
-        "case_uid": "5b08a7d6892c5aa5b9e43e3d392739cdae87bfe5639bdc8150b761d45a22fdd6",
+        "case_uid": "8495358afca41f6b2296a2de2ff24fe40bd7b35b798540f5efddc18c5202db23",
         "scenario_id": "shared",
         "scenario_uid": "67d5a948d6b023d61109f0657532dbe79d60e675c2b0a0f40606db168075f3bc",
         "locale": "en",
         "category": "direct",
         "case_definition_sha256": (
-            "55a936268dfe28caaf253599d65c39805fd807695ee0f5acd50ee9d184d3c8cb"
+            "04fc29aa501e7506a7867d781a399c41b9c5da2d3dc18d035580b22f4b04705e"
         ),
         "prompt_sha256": "d31758a1bb0af554138c9a0bcf1022df0b203bf0d2845f32d8e3a8830aa821bf",
     }
@@ -791,13 +895,13 @@ def test_plan_materializes_exact_cartesian_order_positions_and_hashes() -> None:
     assert {row.block_id for row in rows}.isdisjoint({row.pairing_unit_id for row in rows})
     expected_blocks = [
         ("alpha-en", 0, ["concise", "baseline", "if"]),
-        ("alpha-en", 1, ["baseline", "if", "concise"]),
+        ("alpha-en", 1, ["if", "concise", "baseline"]),
         ("alpha-ru", 0, ["baseline", "if", "concise"]),
-        ("alpha-ru", 1, ["concise", "if", "baseline"]),
-        ("beta-en", 0, ["if", "concise", "baseline"]),
-        ("beta-en", 1, ["if", "concise", "baseline"]),
+        ("alpha-ru", 1, ["if", "baseline", "concise"]),
+        ("beta-en", 0, ["baseline", "concise", "if"]),
+        ("beta-en", 1, ["if", "baseline", "concise"]),
         ("beta-ru", 0, ["baseline", "if", "concise"]),
-        ("beta-ru", 1, ["concise", "if", "baseline"]),
+        ("beta-ru", 1, ["baseline", "concise", "if"]),
     ]
     assert [
         (rows[start].case_id, rows[start].repetition, [row.arm for row in rows[start : start + 3]])

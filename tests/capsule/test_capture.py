@@ -22,7 +22,8 @@ from laconian_eval.capsule.capture import (
     upgrade_v1_manifest,
 )
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
-from laconian_eval.capsule.manifest_models import V1UpgradeProjection
+from laconian_eval.capsule.manifest_models import V1UpgradeProjection, project_v1_manifest
+from laconian_eval.models import RunManifest
 
 ROOT = Path(__file__).parents[2]
 _CAVEMAN_SKILL_SHA256 = "1eddf7055618153869975678d9ff36635602a3aa333f8b4cc0787f12de75b6f8"
@@ -91,7 +92,16 @@ def _source_v2(
         "repetitions": 1,
         "arm_order_seed": 17,
         "instruction_placement": "system_suffix",
-        "generation": {"max_output_tokens": 1024, "temperature": None},
+        "generation": {
+            "max_output_tokens": 1024,
+            "temperature": None,
+            "reasoning_effort": None,
+            "text_verbosity": None,
+            "reasoning_mode": "omitted",
+            "prompt_cache_mode": "explicit",
+            "prompt_cache_ttl": "30m",
+            "service_tier": "default",
+        },
         "retry": {"max_transient_retries": 0, "timeout_seconds": 5},
         "price_snapshot": None,
         "capsule": {
@@ -185,16 +195,28 @@ def test_v1_capture_uses_invocation_cwd_and_explicit_absolute_paths(tmp_path: Pa
     captured = capture_authored_inputs(source, source_root=ROOT)
 
     assert isinstance(source.source_manifest, V1UpgradeProjection)
+    assert source.source_manifest.price_snapshot is None
     assert source.source_bytes == source_bytes
     assert source.source_manifest_commitment_sha256 == sha256(source_bytes).hexdigest()
     assert captured.source_manifest_commitment_sha256 == sha256(source_bytes).hexdigest()
     assert captured.resolved_manifest.source_manifest_schema_version == "1"
+    assert captured.resolved_manifest.price_snapshot is None
     assert captured.resolved_manifest.case_files == (
         "inputs/cases/000.yaml",
         "inputs/cases/001.yaml",
     )
     assert captured.resolved_manifest.provider.api_key_env is None
     assert captured.resolved_manifest.provider.replay_file is None
+    assert captured.resolved_manifest.generation.model_dump(mode="json") == {
+        "max_output_tokens": 2048,
+        "temperature": 0.0,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "reasoning_mode": "omitted",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+        "service_tier": "default",
+    }
     assert not any(record.role == "replay" for record in captured.records)
     assert captured.resolved_manifest.capsule.run_purpose == "integration_smoke"
     assert captured.resolved_manifest.capsule.claim_intent == "none"
@@ -1156,3 +1178,164 @@ def test_protocol_ordinals_prevent_collisions_when_hash_prefixes_match(
         "inputs/protocols/000-0000000000000000.bin",
         "inputs/protocols/001-0000000000000000.bin",
     ]
+
+
+def test_project_v1_manifest_preserves_legacy_three_rate_price_privately() -> None:
+    import laconian_eval.capsule.manifest_models as manifest_models
+
+    payload = {
+        "schema_version": "1",
+        "runner_version": __version__,
+        "run_name": "legacy-priced",
+        "provider": {"kind": "fake", "model": "fixture-v1"},
+        "case_files": ["cases/en.yaml"],
+        "arms": ["baseline"],
+        "price_snapshot": {
+            "currency": "USD",
+            "effective_date": "2026-08-27",
+            "source_url": "HTTP://EXAMPLE.test:80/prices/%7Ecurrent?b=2&a=1",
+            "input_per_million": "1",
+            "cached_input_per_million": "0.125",
+            "output_per_million": "2",
+        },
+    }
+    RunManifest.model_validate(payload)
+    legacy = project_v1_manifest(payload)
+    assert legacy.price_snapshot is not None
+    assert type(legacy.price_snapshot) is manifest_models._V1LegacyPriceSnapshotProjection
+    assert legacy.price_snapshot.model_dump(mode="json") == {
+        "currency": "USD",
+        "effective_date": "2026-08-27",
+        "source_url": "HTTP://EXAMPLE.test:80/prices/%7Ecurrent?b=2&a=1",
+        "input_per_million": 1.0,
+        "cached_input_per_million": 0.125,
+        "output_per_million": 2.0,
+    }
+    assert tuple(type(legacy.price_snapshot).model_fields) == (
+        "currency",
+        "effective_date",
+        "source_url",
+        "input_per_million",
+        "cached_input_per_million",
+        "output_per_million",
+    )
+
+
+def test_priced_v1_upgrade_requires_explicit_native_v2_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import laconian_eval.capsule.capture as capture_module
+
+    legacy = project_v1_manifest(
+        {
+            "schema_version": "1",
+            "runner_version": __version__,
+            "run_name": "legacy-priced",
+            "provider": {"kind": "fake", "model": "fixture-v1"},
+            "case_files": ["cases/en.yaml"],
+            "arms": ["baseline"],
+            "price_snapshot": {
+                "currency": "USD",
+                "effective_date": "2026-08-27",
+                "source_url": "HTTP://EXAMPLE.test:80/prices/%7Ecurrent?b=2&a=1",
+                "input_per_million": 1,
+                "cached_input_per_million": 0.125,
+                "output_per_million": 2,
+            },
+        }
+    )
+
+    expected_message = (
+        "v1 price snapshots require explicit migration to a native-v2 five-rate "
+        "source-evidence manifest"
+    )
+    with pytest.raises(CaptureError) as direct_error:
+        upgrade_v1_manifest(legacy, dataset_content_sha256="a" * 64)
+    assert direct_error.value.code == "v1_price_snapshot_requires_native_v2"
+    assert direct_error.value.args == (expected_message,)
+    assert direct_error.value.__cause__ is None
+    assert direct_error.value.__context__ is None
+
+    manifest_path = tmp_path / "priced-v1.yaml"
+    manifest_path.write_text(
+        """schema_version: '1'
+runner_version: 0.1.0a1
+run_name: legacy-priced
+provider: {kind: fake, model: fixture-v1}
+case_files: [cases/en.yaml]
+arms: [baseline]
+price_snapshot:
+  currency: USD
+  effective_date: '2026-08-27'
+  source_url: https://example.test/prices
+  input_per_million: 1
+  cached_input_per_million: 0.125
+  output_per_million: 2
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        capture_module,
+        "_verify_input_root",
+        lambda _root: (_ for _ in ()).throw(AssertionError("input root accessed")),
+    )
+    with pytest.raises(CaptureError) as load_error:
+        load_source_manifest_capture(manifest_path, input_root=None, invocation_cwd=tmp_path)
+    assert load_error.value.code == "v1_price_snapshot_requires_native_v2"
+    assert load_error.value.args == (expected_message,)
+    assert load_error.value.__cause__ is None
+    assert load_error.value.__context__ is None
+
+    accesses = {
+        "case": 0,
+        "arm": 0,
+        "replay": 0,
+        "protocol": 0,
+        "root_resolve": 0,
+        "root_open": 0,
+        "provider": 0,
+        "credential": 0,
+        "client": 0,
+    }
+
+    def reject_access(name: str) -> Any:
+        def rejected(*args: object, **kwargs: object) -> Any:
+            accesses[name] += 1
+            raise AssertionError(f"priced v1 guard must precede {name} access")
+
+        return rejected
+
+    for attribute, name in (
+        ("_capture_cases", "case"),
+        ("_capture_arms", "arm"),
+        ("_capture_replay", "replay"),
+        ("_capture_protocols", "protocol"),
+        ("_lexical_absolute", "root_resolve"),
+        ("_open_verified_directory", "root_open"),
+    ):
+        monkeypatch.setattr(capture_module, attribute, reject_access(name))
+
+    from laconian_eval.providers.openai import OpenAIProvider
+
+    monkeypatch.setattr(OpenAIProvider, "__init__", reject_access("client"))
+    monkeypatch.setattr(OpenAIProvider, "generate", reject_access("provider"))
+    monkeypatch.setattr(type(os.environ), "get", reject_access("credential"))
+
+    source_bytes = b"priced-v1-source"
+    captured_source = CapturedSourceManifest(
+        source_bytes=source_bytes,
+        source_manifest_commitment_sha256=sha256(source_bytes).hexdigest(),
+        source_manifest=legacy,
+        _input_root=Path("/must-not-resolve-or-open"),
+    )
+    with pytest.raises(CaptureError) as capture_error:
+        capture_authored_inputs(
+            captured_source,
+            source_root=Path("/must-not-resolve-or-open-source-root"),
+        )
+    assert capture_error.value.code == "v1_price_snapshot_requires_native_v2"
+    assert capture_error.value.args == (expected_message,)
+    assert capture_error.value.__cause__ is None
+    assert capture_error.value.__context__ is None
+    assert accesses == dict.fromkeys(accesses, 0)
