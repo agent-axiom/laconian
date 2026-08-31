@@ -2,11 +2,9 @@
 
 **Date:** 2026-08-30
 
-**Status:** Proposed legacy-v1 price-migration and Foundations preflight-closure amendment; the
-approved `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` baseline remains the implementation authority, and
-the amendment-dependent implementation portions of Foundations Tasks 2–5 may not be committed or
-merged as complete until the exact commit containing these amended bytes receives separate
-maintainer/user approval and that approval is recorded by a governance-only successor
+**Status:** Legacy-v1 price-migration and Foundations preflight-closure amendment approved;
+amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a handoff that
+records this governance-only successor as `PLAN_BASE_SHA`
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -16,16 +14,22 @@ the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with t
 design; it did not approve the later attestation-transport amendment whose separate approval is
 recorded below.
 
-**Latest approved normative baseline:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+**Prior approved normative baseline:** On 2026-08-31, the maintainer/user in this Codex task explicitly
 approved the normative design at commit `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` with the exact
-message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. This governance-only
-successor records that approval without changing normative behavior. Approval of
+message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Governance-only successor
+`d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` records that approval. Approval of
 `55b90582ae461cf7a3dc072d53d8b03e79fb3614` remains historical evidence for the prior approved
-design. Baseline-authorized implementation may proceed from plans synchronized to that approved
-commit; the amendment-dependent behavior in the pending scope below follows its separate approval
-gate.
+design. That approval remains historical authority for the `05e3d7ba` baseline only.
 
-**Approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
+**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+approved the normative design at commit `e67ad191623316f69523b051fba48ec2e7492493` with the exact
+message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. This governance-only
+successor records that approval without changing normative behavior and synchronizes the
+Foundations plan. Amendment-dependent implementation may proceed only from a handoff that records
+this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment re-blocks every affected
+task until separately approved and governance-recorded.
+
+**Prior approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
 exact-wire gaps without changing the benchmark estimand, workload, model set, statistical gates,
 public replay surface, workflow inventory, or three-App inventory. It (1) gives every in-flight
 publication PR one phase-aware terminal disposition, including every merge-before-close race, (2)
@@ -37,7 +41,7 @@ publication and four initial-release receipt appends through two closed, state-b
 authority mutation families rather than undefined generic write channels. Fixed jobs acquire more
 precise caller/endpoint policies, but no workflow file or App role is added.
 
-**Pending amendment scope:** This proposed revision closes one legacy-v1 price-migration gap and the
+**Approved amendment scope:** This revision closes one legacy-v1 price-migration gap and the
 corresponding Foundations Tasks 3–5 preflight ambiguities. It preserves raw legacy-v1 manifest
 acceptance but refuses to upgrade a legacy three-rate price snapshot into native-v2 campaign
 authority; freezes the sole request projection, evidence ownership/digest semantics, malformed
@@ -10090,24 +10094,19 @@ rather than weakening the protocol.
 
 ### 14.3 Confirmatory sequence
 
-The constructive-liveness, credential-finality, and exact-wire gate was satisfied by the 2026-08-31
+The legacy-v1 price-migration and Foundations preflight-closure gate was satisfied by the 2026-08-31
 exact maintainer/user approval of normative commit
-`05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, recorded by this governance-only successor with the
-exact message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Approvals of
-`55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
+`e67ad191623316f69523b051fba48ec2e7492493`, recorded by this governance-only successor with the
+exact message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Approvals of
+`05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
+`55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
 `46147ef62b5bb009421d58928e879d92247d84b5` remain historical evidence for their earlier normative
-designs. That approval remains authority only for the `05e3d7ba` baseline. The proposed
-legacy-v1-price and Foundations preflight-closure amendment in these bytes is not yet approved:
-the amendment-dependent implementation portions of Tasks 2–5 may be developed and tested from the
-approved baseline, but that implementation may not be committed or merged as complete until the
-maintainer/user approves the exact normative commit containing these bytes with an exact
-commit-identifying message and a governance-only successor records that approval without normative
-behavior changes. Unaffected baseline-authorized work remains permitted. No approval of an ancestor
-or plan-sync commit can be inferred as approval of this amendment.
+designs. Amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a
+handoff that records this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment
+repeats the same exact-commit approval and governance-recording process.
 
-After approval and governance recording of the exact normative commit containing the currently
-pending bytes, synchronized implementation plans, and the still-required implementation, the
-release sequence is:
+After that exact approval, governance recording, `PLAN_BASE_SHA` handoff, and the still-required
+implementation, the release sequence is:
 
 1. the full provider-offline synthetic campaign, including complete serial tag-pair construction
    and offline object-closure replay, is green;
@@ -10255,13 +10254,15 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- the `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` baseline remains approved by the recorded exact
-  message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`; approvals
-  `55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
-  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; and the pending legacy-v1-price and
-  Foundations preflight-closure amendment is separately approved at the exact commit containing
-  these bytes, recorded by a governance-only successor, and synchronized into the implementation
-  plans before amendment-dependent Task 2–5 implementation is committed or merged as complete;
+- the governance prerequisite is satisfied by this governance-only successor recording the
+  2026-08-31 exact approval of normative commit
+  `e67ad191623316f69523b051fba48ec2e7492493` with message
+  `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`; approvals
+  `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
+  `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
+  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; the synchronized Foundations plan
+  in this successor must be recorded at handoff as `PLAN_BASE_SHA` before amendment-dependent Tasks
+  2–5 implementation proceeds, and any later normative amendment requires another exact approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
