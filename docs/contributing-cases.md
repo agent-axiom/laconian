@@ -34,8 +34,11 @@ unique. A nonempty JSON or YAML key declaration requires the entire output to pa
 top-level mapping whose key set exactly equals the declaration; extra or missing keys, prose,
 fences, lists, and scalars fail the hard gate. YAML parsing also rejects duplicate and merge keys.
 
-`semantic_rubric` supports `required_facts` and nullable `material_warning`. These fields describe
-meaning for a blind semantic judge; rubric sentences are not treated as exact literal matches.
+`semantic_rubric` supports `required_facts`, nullable `material_warning`, and
+`material_warning_severity`. A warning and its severity must appear together. Severity is exactly
+`material` for a consequential risk that must be preserved or `critical` for an urgent safety risk
+whose omission could cause severe harm. These fields describe meaning for a blind semantic judge;
+rubric sentences are not treated as exact literal matches.
 
 This complete, valid example contains one pair and every response-schema option:
 
@@ -60,6 +63,7 @@ cases:
       required_facts:
         - A retry can duplicate an operation when the first attempt already took effect.
       material_warning: POST is not inherently idempotent.
+      material_warning_severity: material
   - id: retry-safety-ru
     scenario_id: retry-safety
     locale: ru
@@ -77,6 +81,7 @@ cases:
       required_facts:
         - Повтор может продублировать операцию, если первая попытка уже сработала.
       material_warning: POST сам по себе не является идемпотентным.
+      material_warning_severity: material
 ```
 
 ### Activation file

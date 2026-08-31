@@ -18,6 +18,15 @@ and proxy routing data cannot establish compatibility with a named agent host.
 See [the case contribution guide](../docs/contributing-cases.md) for the exact schemas and
 neutrality rules.
 
+### Evaluation neutrality
+
+Deterministic gates must be grounded in the user prompt. Only `user-decline-en` and
+`user-decline-ru` are sentence-gated because those prompts explicitly require exactly two
+sentences. Warning severities are frozen before evaluation: `material` marks a consequential risk
+that must be preserved, while `critical` marks an urgent safety risk whose omission could cause
+severe harm. These preregistered labels define evaluation handling; they do not make benchmark
+claims.
+
 ## Manifests
 
 `evals/manifests/` fixes the exact `runner_version`, provider configuration, case paths, arm

@@ -152,6 +152,7 @@ def test_semantic_rubric_text_is_never_used_as_a_literal_check() -> None:
         rubric=SemanticRubric(
             required_facts=("a fact absent from the response",),
             material_warning="a warning absent from the response",
+            material_warning_severity="material",
         )
     )
 

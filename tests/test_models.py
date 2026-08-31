@@ -10,6 +10,7 @@ from laconian_eval.models import (
     ResponseCase,
     ResponseCaseFile,
     RunManifest,
+    SemanticRubric,
 )
 
 
@@ -164,6 +165,27 @@ def test_activation_case_rejects_whitespace_only_rationale() -> None:
 def test_hard_constraints_rejects_inverted_sentence_bounds() -> None:
     with pytest.raises(ValidationError, match="min_sentences"):
         HardConstraints.model_validate({"min_sentences": 3, "max_sentences": 2})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"material_warning": "seek help"},
+        {"material_warning_severity": "critical"},
+        {"material_warning": "seek help", "material_warning_severity": "advisory"},
+    ],
+)
+def test_material_warning_requires_frozen_severity(payload: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        SemanticRubric.model_validate(payload)
+
+
+@pytest.mark.parametrize("severity", ["material", "critical"])
+def test_material_warning_accepts_exact_severity(severity: str) -> None:
+    rubric = SemanticRubric.model_validate(
+        {"material_warning": "seek help", "material_warning_severity": severity}
+    )
+    assert rubric.material_warning_severity == severity
 
 
 def test_hard_constraints_accepts_declared_yaml_keys() -> None:

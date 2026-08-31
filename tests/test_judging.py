@@ -40,6 +40,7 @@ def case() -> ResponseCase:
         semantic_rubric=SemanticRubric(
             required_facts=("fact one", "fact two"),
             material_warning="state the caveat",
+            material_warning_severity="material",
         ),
     )
 

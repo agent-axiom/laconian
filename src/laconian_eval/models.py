@@ -45,9 +45,19 @@ class HardConstraints(StrictModel):
         return self
 
 
+WarningSeverity = Literal["material", "critical"]
+
+
 class SemanticRubric(StrictModel):
     required_facts: tuple[str, ...] = ()
     material_warning: str | None = None
+    material_warning_severity: WarningSeverity | None = None
+
+    @model_validator(mode="after")
+    def validate_warning_severity(self) -> Self:
+        if (self.material_warning is None) != (self.material_warning_severity is None):
+            raise ValueError("material warning and severity must be present together")
+        return self
 
 
 class ResponseCase(StrictModel):

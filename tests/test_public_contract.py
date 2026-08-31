@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from laconian_eval.models import ActivationCaseFile, ResponseCaseFile
+from laconian_eval.models import ActivationCaseFile, ResponseCaseFile, SemanticRubric
 from laconian_eval.yaml_io import safe_load_unique
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -535,6 +535,7 @@ def test_case_contribution_guide_documents_valid_exact_schemas() -> None:
         "max_sentences",
         "required_facts",
         "material_warning",
+        "material_warning_severity",
         "expected_activation",
         "rationale",
         "evidence-backed",
@@ -545,6 +546,14 @@ def test_case_contribution_guide_documents_valid_exact_schemas() -> None:
     )
     for phrase in required_schema_terms:
         assert phrase in text
+
+
+def test_semantic_rubric_has_only_the_frozen_public_fields() -> None:
+    assert set(SemanticRubric.model_fields) == {
+        "required_facts",
+        "material_warning",
+        "material_warning_severity",
+    }
 
 
 def test_design_and_philosophy_preserve_the_project_boundary() -> None:

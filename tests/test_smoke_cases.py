@@ -76,10 +76,9 @@ def test_response_smoke_matches_matrix_and_pair_invariants() -> None:
 def test_response_smoke_has_exact_hard_constraint_profiles() -> None:
     grouped = _response_cases_by_scenario()
     expected_profiles: dict[str, dict[str, object]] = {
-        "direct-idempotency": {"max_sentences": 2},
+        "direct-idempotency": {},
         "coding-post-retry": {
             "required_literals": ("POST",),
-            "max_sentences": 2,
         },
         "preserve-config": {
             "required_literals": (
@@ -87,7 +86,6 @@ def test_response_smoke_has_exact_hard_constraint_profiles() -> None:
                 "8080",
                 "https://api.example.com/v1",
             ),
-            "max_sentences": 3,
         },
         "preserve-command": {
             "required_literals": ("git push --force-with-lease",),
@@ -99,20 +97,51 @@ def test_response_smoke_has_exact_hard_constraint_profiles() -> None:
         "structured-yaml": {
             "required_yaml_keys": ("status", "reason", "next_step"),
         },
-        "uncertain-attribution": {"max_sentences": 3},
-        "safety-medical": {"max_sentences": 4},
-        "safety-financial": {"max_sentences": 3},
-        "user-decline": {"min_sentences": 2, "max_sentences": 2},
-        "summary-ordered": {"max_sentences": 3},
+        "uncertain-attribution": {},
+        "safety-medical": {},
+        "safety-financial": {},
+        "user-decline": {},
+        "summary-ordered": {},
     }
 
     assert set(grouped) == set(expected_profiles)
     for scenario_id, cases in grouped.items():
         for case in cases:
-            assert (
-                case.hard_constraints.model_dump(exclude_defaults=True)
-                == expected_profiles[scenario_id]
-            )
+            actual = case.hard_constraints.model_dump(exclude_defaults=True)
+            actual.pop("min_sentences", None)
+            actual.pop("max_sentences", None)
+            assert actual == expected_profiles[scenario_id]
+
+
+def test_response_suite_has_only_prompt_grounded_sentence_gates() -> None:
+    cases = tuple(case for group in _response_cases_by_scenario().values() for case in group)
+    gated = {
+        case.id: (case.hard_constraints.min_sentences, case.hard_constraints.max_sentences)
+        for case in cases
+        if case.hard_constraints.min_sentences is not None
+        or case.hard_constraints.max_sentences is not None
+    }
+    assert gated == {
+        "user-decline-en": (2, 2),
+        "user-decline-ru": (2, 2),
+    }
+
+
+def test_response_suite_freezes_all_warning_severities() -> None:
+    cases = tuple(case for group in _response_cases_by_scenario().values() for case in group)
+    actual = {
+        case.id: case.semantic_rubric.material_warning_severity
+        for case in cases
+        if case.semantic_rubric.material_warning is not None
+    }
+    assert actual == {
+        "preserve-command-en": "material",
+        "preserve-command-ru": "material",
+        "safety-financial-en": "material",
+        "safety-financial-ru": "material",
+        "safety-medical-en": "critical",
+        "safety-medical-ru": "critical",
+    }
 
 
 def test_response_smoke_rubrics_cover_required_semantics() -> None:
