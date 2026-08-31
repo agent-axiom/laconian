@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-30
 
-**Status:** Constructive-liveness, credential-finality, and exact-wire amendment pending exact
-maintainer approval; implementation remains blocked
+**Status:** Constructive-liveness, credential-finality, and exact-wire amendment approved;
+implementation may proceed only after the implementation plans are synchronized to this approved
+normative commit
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -13,15 +14,15 @@ the normative design at commit `46147ef62b5bb009421d58928e879d92247d84b5` with t
 design; it did not approve the later attestation-transport amendment whose separate approval is
 recorded below.
 
-**Last approved amendment:** On 2026-08-31, the maintainer/user in this Codex task explicitly
-approved the normative design at commit `55b90582ae461cf7a3dc072d53d8b03e79fb3614` with the exact
-message `Одобряю amendment 55b90582ae461cf7a3dc072d53d8b03e79fb3614`. This governance-only
-successor records that approval without changing normative behavior. That approval remains valid
-historical evidence for the last approved design, but it does not approve this later normative
-amendment. This amendment requires a new exact-commit approval and a governance-only successor
-recording it before plan synchronization or implementation may proceed.
+**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+approved the normative design at commit `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` with the exact
+message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. This governance-only
+successor records that approval without changing normative behavior. Approval of
+`55b90582ae461cf7a3dc072d53d8b03e79fb3614` remains historical evidence for the prior approved
+design. Implementation may proceed only after the implementation plans are synchronized to the
+newly approved normative commit.
 
-**Pending amendment scope:** This revision closes constructive-liveness, credential-finality, and
+**Approved amendment scope:** This revision closes constructive-liveness, credential-finality, and
 exact-wire gaps without changing the benchmark estimand, workload, model set, statistical gates,
 public replay surface, workflow inventory, or three-App inventory. It (1) gives every in-flight
 publication PR one phase-aware terminal disposition, including every merge-before-close race, (2)
@@ -9892,14 +9893,14 @@ rather than weakening the protocol.
 
 ### 14.3 Confirmatory sequence
 
-The attestation-transport gate was satisfied by the 2026-08-31 exact maintainer/user approval of
-normative commit `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, recorded by its governance-only
-successor with the exact message
-`Одобряю amendment 55b90582ae461cf7a3dc072d53d8b03e79fb3614`; approval of
-`46147ef62b5bb009421d58928e879d92247d84b5` remains earlier historical evidence. This later
-post-merge-containment and initial-receipt-CAS amendment reopens the governance gate. It requires
-exact approval of this normative commit and a governance-only successor recording that approval
-before plan synchronization or implementation may proceed.
+The constructive-liveness, credential-finality, and exact-wire gate was satisfied by the 2026-08-31
+exact maintainer/user approval of normative commit
+`05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, recorded by this governance-only successor with the
+exact message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Approvals of
+`55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
+`46147ef62b5bb009421d58928e879d92247d84b5` remain historical evidence for their earlier normative
+designs. Implementation may proceed only after plan synchronization; any later normative amendment
+repeats the same approval process.
 
 After that exact approval, plan synchronization, and the still-required implementation, the release sequence is:
 
@@ -10049,11 +10050,13 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- the governance prerequisite is satisfied only after exact maintainer approval of this pending
-  post-merge-containment and initial-receipt-CAS normative commit is recorded by a governance-only
-  successor; approvals `55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
-  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical, the implementation plan must then
-  be synchronized to the newly approved commit, and any later normative amendment requires another
+- the governance prerequisite is satisfied by this governance-only successor recording the
+  2026-08-31 exact approval of normative commit
+  `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` with message
+  `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`; approvals
+  `55b90582ae461cf7a3dc072d53d8b03e79fb3614` and
+  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical, the implementation plans must be
+  synchronized before implementation proceeds, and any later normative amendment requires another
   exact approval;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
