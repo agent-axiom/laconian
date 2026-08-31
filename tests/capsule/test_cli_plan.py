@@ -870,17 +870,38 @@ def test_ci_preserves_ubuntu_matrix_and_adds_focused_credential_free_macos_job()
         "fail-fast": False,
         "matrix": {"python-version": ["3.11", "3.14"]},
     }
+    assert quality["env"] == {
+        "UV_PYTHON": "${{ matrix.python-version }}",
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
+    verify_python_command = (
+        "uv run python -c 'import os, sys; expected = tuple(map(int, "
+        'os.environ["UV_PYTHON"].split("."))); assert sys.version_info[:2] == expected, '
+        "(sys.version, expected)'"
+    )
+    sync_index = next(
+        index
+        for index, step in enumerate(quality["steps"])
+        if step.get("run") == "uv sync --all-extras --locked"
+    )
+    assert quality["steps"][sync_index + 1] == {
+        "name": "Verify Python selection",
+        "run": verify_python_command,
+    }
     quality_commands = [step["run"] for step in quality["steps"] if "run" in step]
     assert quality_commands == [
         "uv sync --all-extras --locked",
+        verify_python_command,
         "uv run ruff format --check .",
         "uv run ruff check .",
         "uv run mypy src",
+        "uv run pytest tests/test_skill_contract.py tests/test_plugin_contract.py -q",
         "uv run pytest -q",
     ]
 
     macos = jobs["macos-capsule"]
     assert macos["runs-on"] == "macos-latest"
+    assert macos["env"] == {"UV_PYTHON": "3.14", "UV_PYTHON_DOWNLOADS": "never"}
     quality_actions = [step["uses"] for step in quality["steps"] if "uses" in step]
     macos_actions = [step["uses"] for step in macos["steps"] if "uses" in step]
     assert quality_actions == expected_actions
@@ -902,17 +923,36 @@ def test_ci_preserves_ubuntu_matrix_and_adds_focused_credential_free_macos_job()
         "cache-dependency-glob": "uv.lock",
     }
     macos_commands = [step["run"] for step in macos["steps"] if "run" in step]
+    sync_index = next(
+        index
+        for index, step in enumerate(macos["steps"])
+        if step.get("run") == "uv sync --all-extras --locked"
+    )
+    assert macos["steps"][sync_index + 1] == {
+        "name": "Verify Python selection",
+        "run": verify_python_command,
+    }
     assert macos_commands == [
         "uv sync --all-extras --locked",
+        verify_python_command,
         (
             "uv run pytest tests/capsule/test_posix.py tests/capsule/test_filesystem.py "
             "tests/capsule/test_prepare.py tests/capsule/test_verify_prepared.py "
             "tests/capsule/test_cli_plan.py tests/test_cli.py -q"
         ),
     ]
+    workflow_without_allowed_env = {
+        **workflow,
+        "jobs": {
+            name: {key: value for key, value in job.items() if key != "env"}
+            if name in {"quality", "macos-capsule"}
+            else job
+            for name, job in jobs.items()
+        },
+    }
     forbidden_keys = {
         key
-        for key in nested_keys(workflow)
+        for key in nested_keys(workflow_without_allowed_env)
         if key in {"env", "environment", "secrets", "secret"} or "secret" in key
     }
     assert forbidden_keys == set()

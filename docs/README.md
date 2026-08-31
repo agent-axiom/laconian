@@ -20,6 +20,11 @@ kept separately as historical records.
 - [Evaluation data](../evals/README.md)
 - [Contributing benchmark cases](contributing-cases.md)
 
+## Releases
+
+- [v0.1.0-alpha.1 release notes](releases/v0.1.0-alpha.1.md)
+- [Alpha launch copy and assets](social/alpha-launch.md)
+
 ## Project
 
 - [Contributing](../CONTRIBUTING.md)

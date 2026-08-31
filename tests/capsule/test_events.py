@@ -253,7 +253,7 @@ def test_seal_request_prior_sequence_matches_envelope() -> None:
 
 def test_execution_started_has_hard_coded_event_identity() -> None:
     event = _event("execution_started")
-    assert event.event_id == "c8282ee16df2bc4f4d52f1d6d5585a0b5ef615fe2bdf4b854a36d64230ce77bd"
+    assert event.event_id == "d9d06660301ee78f4f0e27b3c6b9a39abed0fd5c1845af2aec734bf27e88d8a8"
 
     logical = event.model_dump(mode="json")
     del logical["event_id"]

@@ -9,7 +9,7 @@ Laconian asks for the shortest complete answer—not the shortest answer.
 Laconian is a public philosophy project built around one portable Markdown skill and an open
 benchmark for testing whether brevity preserves a complete answer.
 
-The entire installable artifact is [`skills/if/SKILL.md`](https://github.com/agent-axiom/laconian/blob/main/skills/if/SKILL.md).
+The portable skill itself is one file: [`skills/if/SKILL.md`](https://github.com/agent-axiom/laconian/blob/main/skills/if/SKILL.md).
 
 ## Status
 
@@ -22,7 +22,7 @@ pipeline; they do not show that `if` wins, saves cost, or outperforms another co
 ## Start here
 
 - [Read the skill](https://github.com/agent-axiom/laconian/blob/main/skills/if/SKILL.md)
-- [Install and use it](https://github.com/agent-axiom/laconian/blob/main/docs/using-the-skill.md)
+- [Install the pinned plugin or standalone skill](https://github.com/agent-axiom/laconian/blob/main/docs/using-the-skill.md)
 - [Run the benchmark](https://github.com/agent-axiom/laconian/blob/main/benchmarks/README.md)
 
 ## Documentation

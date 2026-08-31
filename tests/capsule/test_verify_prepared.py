@@ -3917,8 +3917,10 @@ def test_tree_walker_sorts_bounded_names_before_stat_and_error_selection(
                 ]
             )
 
-    def ordered_scandir(descriptor: int) -> Any:
-        if _descriptor_path(descriptor) == root.resolve():
+    def ordered_scandir(
+        descriptor: int | str | bytes | os.PathLike[str],
+    ) -> Any:
+        if type(descriptor) is int and _descriptor_path(descriptor) == root.resolve():
             return FakeScandir()
         return real_scandir(descriptor)
 
