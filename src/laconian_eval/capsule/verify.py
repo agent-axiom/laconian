@@ -71,7 +71,7 @@ from laconian_eval.capsule.planning import (
     PlanningError,
     recompute_dataset_content_sha256,
     validate_case_index,
-    validate_plan,
+    validate_parent_plan,
 )
 from laconian_eval.capsule.posix import PosixOps
 from laconian_eval.capsule.record_models import (
@@ -676,7 +676,13 @@ class _VerifiedCapsuleContext:
                 input_index=input_index,
             )
             validate_case_index(case_index, captured, manifest)  # type: ignore[arg-type]
-            validate_plan(plan, capsule.run_id, manifest, case_index, arms)
+            validate_parent_plan(
+                plan,
+                parent_manifest_sha256=capsule.manifest_sha256,
+                resolved_manifest=manifest,
+                case_index=case_index,
+                captured_arms=arms,
+            )
             history = _strict_history_copy(self.history, plan)
             if _strict_sha256(self._history_sha256) != _history_commitment(history):
                 raise TypeError
@@ -2629,7 +2635,13 @@ def _verify_capsule_context_descriptors_with_journal_policy(
     if plan_sha256 != capsule.plan_sha256:
         raise _Failure("hash_mismatch", "plan.jsonl")
     try:
-        validate_plan(plan, capsule.run_id, manifest, case_index, arms)
+        validate_parent_plan(
+            plan,
+            parent_manifest_sha256=capsule.manifest_sha256,
+            resolved_manifest=manifest,
+            case_index=case_index,
+            captured_arms=arms,
+        )
     except ResourceLimitError:
         raise _Failure("resource_limit", "plan.jsonl") from None
     except (PlanningError, TypeError, ValueError):

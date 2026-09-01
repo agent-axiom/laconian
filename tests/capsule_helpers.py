@@ -231,6 +231,7 @@ def case_index_row_v1_payload() -> dict[str, Any]:
         "category": "direct",
         "case_definition_sha256": SHA_C,
         "prompt_sha256": SHA_D,
+        "prompt_utf8_bytes": 42,
     }
 
 
@@ -251,6 +252,7 @@ def plan_row_v1_payload() -> dict[str, Any]:
         "case_definition_sha256": "0" * 64,
         "instruction_sha256": "1" * 64,
         "request_config_sha256": "2" * 64,
+        "input_token_bound": 65_578,
     }
 
 

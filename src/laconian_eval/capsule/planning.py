@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
+import re
 from collections.abc import Sequence
 from typing import TypeVar, cast
-from uuid import RFC_4122, UUID
 
 from pydantic import ValidationError
 
@@ -43,6 +42,7 @@ from laconian_eval.providers.base import (
 
 _SCHEDULE_VERSION = "laconian-schedule-v1"
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _RowT = TypeVar("_RowT")
 
 
@@ -54,9 +54,9 @@ class PlanningError(ValueError):
         super().__init__("capsule planning rejected")
 
 
-def _require_capsule_identity(value: object) -> UUID:
-    if not isinstance(value, UUID) or value.version != 4 or value.variant != RFC_4122:
-        raise PlanningError("invalid_capsule_identity")
+def _require_parent_manifest_sha256(value: object) -> str:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        raise PlanningError("invalid_parent_manifest_sha256")
     return value
 
 
@@ -196,6 +196,16 @@ def _revalidate_case_index_row(value: object) -> CaseIndexRowV1:
         raise PlanningError("case_index_mismatch") from None
 
 
+def _revalidate_plan_row(value: object) -> PlanRowV1:
+    if not isinstance(value, PlanRowV1):
+        raise PlanningError("plan_mismatch")
+    try:
+        payload = value.model_dump(mode="python", round_trip=True, warnings=False)
+        return PlanRowV1.model_validate(payload)
+    except (AttributeError, TypeError, ValueError):
+        raise PlanningError("plan_mismatch") from None
+
+
 def _bound_case_identifiers(case: ResponseCase) -> None:
     bounded_utf8_length(
         case.id,
@@ -303,27 +313,27 @@ def schedule_digest_bytes(
     )
 
 
-def block_id(capsule_identity: UUID, case_identity: str, repetition: int) -> str:
-    """Return a case/repetition block identity."""
+def block_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int) -> str:
+    """Return a stable parent case/repetition block identity."""
 
     return stable_digest(
-        "laconian-block-v1",
+        "laconian-parent-block-v1",
         {
-            "run_id": _require_capsule_identity(capsule_identity),
-            "case_uid": case_identity,
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
             "repetition": repetition,
         },
     )
 
 
-def pairing_unit_id(capsule_identity: UUID, case_identity: str, repetition: int) -> str:
-    """Return the independently domain-separated pairing-unit identity."""
+def pairing_unit_id(*, parent_manifest_sha256: str, case_uid: str, repetition: int) -> str:
+    """Return the stable independently domain-separated pairing-unit identity."""
 
     return stable_digest(
-        "laconian-pairing-unit-v1",
+        "laconian-parent-pairing-unit-v1",
         {
-            "run_id": _require_capsule_identity(capsule_identity),
-            "case_uid": case_identity,
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
             "repetition": repetition,
         },
     )
@@ -376,24 +386,27 @@ def request_config_sha256(manifest: ResolvedManifestV2) -> str:
 
 
 def plan_item_id(
-    capsule_identity: UUID,
-    case_identity: str,
+    *,
+    parent_manifest_sha256: str,
+    case_uid: str,
     repetition: int,
     arm: ArmName,
     instruction_sha256: str,
-    request_config_digest: str,
+    request_config_sha256: str,
+    input_token_bound: int,
 ) -> str:
-    """Return one immutable provider-call intent identity."""
+    """Return one stable immutable parent provider-call intent identity."""
 
     return stable_digest(
-        "laconian-plan-item-v1",
+        "laconian-parent-plan-item-v1",
         {
-            "run_id": _require_capsule_identity(capsule_identity),
-            "case_uid": case_identity,
+            "parent_manifest_sha256": parent_manifest_sha256,
+            "case_uid": case_uid,
             "repetition": repetition,
             "arm": arm,
             "instruction_sha256": instruction_sha256,
-            "request_config_sha256": request_config_digest,
+            "request_config_sha256": request_config_sha256,
+            "input_token_bound": input_token_bound,
         },
     )
 
@@ -470,16 +483,17 @@ def _validate_capture_agreement(
     return ownership
 
 
-def _hash_case(case: ResponseCase) -> tuple[str, str]:
+def _hash_case(case: ResponseCase) -> tuple[str, str, int]:
     try:
         definition = response_case_sha256(case)
         prompt = case.prompt
         if type(prompt) is not str:
             raise PlanningError("invalid_case_record")
-        prompt_digest = hashlib.sha256(prompt.encode("utf-8", errors="strict")).hexdigest()
+        prompt_bytes = prompt.encode("utf-8", errors="strict")
+        prompt_digest = sha256_bytes(prompt_bytes)
     except UnicodeEncodeError:
         raise PlanningError("invalid_utf8") from None
-    return definition, prompt_digest
+    return definition, prompt_digest, len(prompt_bytes)
 
 
 def _validate_case_locale(case_id_value: str, locale: Locale) -> None:
@@ -522,7 +536,7 @@ def materialize_case_index(
             if case.locale in locales:
                 raise PlanningError("dataset_locale_ownership")
             locales.add(case.locale)
-            definition_digest, prompt_digest = _hash_case(case)
+            definition_digest, prompt_digest, prompt_utf8_bytes = _hash_case(case)
             try:
                 scenario_identity = scenario_uid(
                     dataset.dataset_id,
@@ -558,6 +572,7 @@ def materialize_case_index(
                     category=case.category,
                     case_definition_sha256=definition_digest,
                     prompt_sha256=prompt_digest,
+                    prompt_utf8_bytes=prompt_utf8_bytes,
                 )
             )
     if any(locales != {"en", "ru"} for locales in locales_by_scenario.values()):
@@ -706,15 +721,42 @@ def _validated_arms(
     return arms
 
 
-def materialize_plan(
-    capsule_identity: UUID,
+def _preflight_input_token_bounds(
+    cases: Sequence[CaseIndexRowV1],
+    *,
+    repetitions: int,
+    arms: Sequence[Arm],
+) -> dict[tuple[str, int, str], int]:
+    instruction_bytes_by_arm = {
+        arm.name: (
+            b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+        )
+        for arm in arms
+    }
+    bounds: dict[tuple[str, int, str], int] = {}
+    for case in cases:
+        for repetition in range(repetitions):
+            for arm in arms:
+                bound = conservative_input_token_bound(
+                    instruction_utf8_bytes=len(instruction_bytes_by_arm[arm.name]),
+                    prompt_utf8_bytes=case.prompt_utf8_bytes,
+                )
+                if bound > OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS:
+                    raise PlanningError("public_benchmark_input_bound_exceeded")
+                bounds[(case.case_uid, repetition, arm.name)] = bound
+    return bounds
+
+
+def materialize_parent_plan(
+    *,
+    parent_manifest_sha256: str,
     resolved_manifest: ResolvedManifestV2,
     case_index: Sequence[CaseIndexRowV1],
     captured_arms: Sequence[Arm],
 ) -> tuple[PlanRowV1, ...]:
-    """Materialize the bounded deterministic case x repetition x arm plan."""
+    """Materialize one stable full parent plan."""
 
-    run_id = _require_capsule_identity(capsule_identity)
+    parent_manifest_sha256 = _require_parent_manifest_sha256(parent_manifest_sha256)
     resolved_manifest = _revalidate_resolved_manifest(resolved_manifest)
     case_count = _checked_sequence_count(
         case_index,
@@ -738,6 +780,11 @@ def materialize_plan(
         reported_count=case_count,
     )
     arms = _validated_arms(resolved_manifest, captured_arms)
+    input_token_bounds = _preflight_input_token_bounds(
+        cases,
+        repetitions=resolved_manifest.repetitions,
+        arms=arms,
+    )
 
     config_digest = request_config_sha256(resolved_manifest)
     rows: list[PlanRowV1] = []
@@ -758,8 +805,16 @@ def materialize_plan(
                     arm.name,
                 ),
             )
-            block_identity = block_id(run_id, case.case_uid, repetition)
-            pairing_identity = pairing_unit_id(run_id, case.case_uid, repetition)
+            block_identity = block_id(
+                parent_manifest_sha256=parent_manifest_sha256,
+                case_uid=case.case_uid,
+                repetition=repetition,
+            )
+            pairing_identity = pairing_unit_id(
+                parent_manifest_sha256=parent_manifest_sha256,
+                case_uid=case.case_uid,
+                repetition=repetition,
+            )
             if (
                 block_identity == pairing_identity
                 or block_identity in block_ids
@@ -772,13 +827,15 @@ def materialize_plan(
             pairing_ids.add(pairing_identity)
             for arm_position, arm in enumerate(ordered_arms):
                 arm_name = cast(ArmName, arm.name)
+                input_token_bound = input_token_bounds[(case.case_uid, repetition, arm.name)]
                 item_identity = plan_item_id(
-                    run_id,
-                    case.case_uid,
-                    repetition,
-                    arm_name,
-                    arm.sha256,
-                    config_digest,
+                    parent_manifest_sha256=parent_manifest_sha256,
+                    case_uid=case.case_uid,
+                    repetition=repetition,
+                    arm=arm_name,
+                    instruction_sha256=arm.sha256,
+                    request_config_sha256=config_digest,
+                    input_token_bound=input_token_bound,
                 )
                 if item_identity in plan_ids:
                     raise PlanningError("duplicate_plan_item_id")
@@ -800,6 +857,7 @@ def materialize_plan(
                         case_definition_sha256=case.case_definition_sha256,
                         instruction_sha256=arm.sha256,
                         request_config_sha256=config_digest,
+                        input_token_bound=input_token_bound,
                     )
                 )
     if len(rows) != cardinality:
@@ -807,15 +865,17 @@ def materialize_plan(
     return tuple(rows)
 
 
-def validate_plan(
+def validate_parent_plan(
     rows: Sequence[PlanRowV1],
-    capsule_identity: UUID,
+    *,
+    parent_manifest_sha256: str,
     resolved_manifest: ResolvedManifestV2,
     case_index: Sequence[CaseIndexRowV1],
     captured_arms: Sequence[Arm],
 ) -> None:
-    """Recompute and require exact Cartesian coverage and row equality."""
+    """Require exact stable Cartesian coverage."""
 
+    parent_manifest_sha256 = _require_parent_manifest_sha256(parent_manifest_sha256)
     resolved_manifest = _revalidate_resolved_manifest(resolved_manifest)
     reported_count = _checked_sequence_count(
         rows,
@@ -827,18 +887,19 @@ def validate_plan(
         reported_count,
         limits=RESOURCE_LIMITS_V1,
     )
-    candidate = _bounded_sequence_tuple(
+    unvalidated_candidate = _bounded_sequence_tuple(
         rows,
         reported_count=reported_count,
         limit=RESOURCE_LIMITS_V1.plan_rows,
         limit_code="plan_rows_limit",
         mismatch_code="plan_mismatch",
     )
-    expected = materialize_plan(
-        capsule_identity,
-        resolved_manifest,
-        case_index,
-        captured_arms,
+    expected = materialize_parent_plan(
+        parent_manifest_sha256=parent_manifest_sha256,
+        resolved_manifest=resolved_manifest,
+        case_index=case_index,
+        captured_arms=captured_arms,
     )
+    candidate = tuple(_revalidate_plan_row(row) for row in unvalidated_candidate)
     if candidate != expected:
         raise PlanningError("plan_mismatch")

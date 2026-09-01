@@ -45,8 +45,10 @@ from laconian_eval.capsule.filesystem import (
     UnsupportedFilesystemError,
 )
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
+from laconian_eval.capsule.manifest_models import ResolvedManifestV2
 from laconian_eval.capsule.record_models import (
     CapsuleV1,
+    CaseIndexRowV1,
     EnvironmentV1,
     PlanRowV1,
     PreparedEventV1,
@@ -609,6 +611,20 @@ def test_coherent_same_or_future_version_runner_source_drift_remains_read_compat
     provider["adapter_source_sha256"] = _adapter_root(runner_index, "fake")
     runtime["runtime_fingerprint_sha256"] = _runtime_fingerprint(environment)
     _write_json(root / "environment.json", environment)
+    assert fixture.harness.captured_inputs is not None
+    case_index = tuple(
+        CaseIndexRowV1.model_validate(row) for row in _jsonl_objects(root / "case-index.jsonl")
+    )
+    parent_plan = prepare_module.materialize_parent_plan(
+        parent_manifest_sha256=sha256_bytes((root / "manifest.json").read_bytes()),
+        resolved_manifest=ResolvedManifestV2.model_validate(manifest),
+        case_index=case_index,
+        captured_arms=fixture.harness.captured_inputs.arms,
+    )
+    _write_jsonl(
+        root / "plan.jsonl",
+        [row.model_dump(mode="json") for row in parent_plan],
+    )
     _refresh_capsule_and_event(root)
 
     removed_source = source_manifest.parent.with_name("producer-checkout-removed")
@@ -2092,7 +2108,14 @@ def test_dataset_content_commitment_is_recomputed_from_exact_case_records(
 
 @pytest.mark.parametrize(
     "target",
-    ["prompt", "category", "source-ordinal", "case-uid", "coverage"],
+    [
+        "prompt",
+        "prompt-utf8-bytes",
+        "category",
+        "source-ordinal",
+        "case-uid",
+        "coverage",
+    ],
 )
 def test_case_index_recomputes_every_semantic_field_and_exact_row_coverage(
     tmp_path: Path,
@@ -2103,6 +2126,8 @@ def test_case_index_recomputes_every_semantic_field_and_exact_row_coverage(
     rows = _jsonl_objects(root / "case-index.jsonl")
     if target == "prompt":
         rows[0]["prompt_sha256"] = _OTHER_DIGEST
+    elif target == "prompt-utf8-bytes":
+        rows[0]["prompt_utf8_bytes"] += 1
     elif target == "category":
         rows[0]["category"] = "coding"
     elif target == "source-ordinal":
@@ -2121,7 +2146,7 @@ def test_case_index_recomputes_every_semantic_field_and_exact_row_coverage(
 
 @pytest.mark.parametrize(
     "target",
-    ["arm-position", "pairing-unit", "request-config", "coverage"],
+    ["arm-position", "pairing-unit", "request-config", "input-token-bound", "coverage"],
 )
 def test_plan_is_recomputed_for_order_pairing_request_and_exact_coverage(
     tmp_path: Path,
@@ -2136,6 +2161,8 @@ def test_plan_is_recomputed_for_order_pairing_request_and_exact_coverage(
         rows[0]["pairing_unit_id"] = _OTHER_DIGEST
     elif target == "request-config":
         rows[0]["request_config_sha256"] = _OTHER_DIGEST
+    elif target == "input-token-bound":
+        rows[0]["input_token_bound"] += 1
     else:
         rows.pop()
     _write_jsonl(root / "plan.jsonl", rows)
@@ -2740,6 +2767,53 @@ def test_descriptor_context_entry_never_acquires_shared_lock_and_is_exact(
     assert context.lifecycle.state == "PREPARED"
     with pytest.raises(FrozenInstanceError):
         context.lifecycle = context.lifecycle  # type: ignore[misc]
+
+
+def test_verifier_threads_capsule_manifest_digest_into_parent_plan_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    expected_plan = tuple(
+        PlanRowV1.model_validate_json(line)
+        for line in (root / "plan.jsonl").read_bytes().splitlines()
+    )
+    calls: list[tuple[Any, str, Any, Any, Any]] = []
+    validator = verify_module.validate_parent_plan
+
+    def validate_parent_plan_spy(
+        rows: Any,
+        *,
+        parent_manifest_sha256: str,
+        resolved_manifest: Any,
+        case_index: Any,
+        captured_arms: Any,
+    ) -> None:
+        calls.append(
+            (
+                rows,
+                parent_manifest_sha256,
+                resolved_manifest,
+                case_index,
+                captured_arms,
+            )
+        )
+        validator(
+            rows,
+            parent_manifest_sha256=parent_manifest_sha256,
+            resolved_manifest=resolved_manifest,
+            case_index=case_index,
+            captured_arms=captured_arms,
+        )
+
+    monkeypatch.setattr(verify_module, "validate_parent_plan", validate_parent_plan_spy)
+
+    result = verify_capsule(root, mode=VerificationMode.PREPARED)
+
+    assert result.status == "valid"
+    assert len(calls) == 2
+    assert all(call[0] == expected_plan for call in calls)
+    assert all(call[1] == fixture.prepared.capsule.manifest_sha256 for call in calls)
 
 
 def test_descriptor_context_rejects_hostile_inventory_before_artifact_reads(

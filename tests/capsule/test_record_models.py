@@ -122,7 +122,9 @@ def test_capsule_rejects_noncanonical_hashes(digest: str) -> None:
 def test_static_index_rows_are_strict() -> None:
     input_payload = input_index_v1_payload()
     case_payload = case_index_row_v1_payload()
+    case_payload["prompt_utf8_bytes"] = 17
     plan_payload = plan_row_v1_payload()
+    plan_payload["input_token_bound"] = 65_553
 
     assert InputIndexV1.model_validate(input_payload).model_dump(mode="json") == input_payload
     assert CaseIndexRowV1.model_validate(case_payload).model_dump(mode="json") == case_payload
@@ -141,6 +143,7 @@ def test_static_index_rows_are_strict() -> None:
         "category",
         "case_definition_sha256",
         "prompt_sha256",
+        "prompt_utf8_bytes",
     ]
     assert list(PlanRowV1.model_validate(plan_payload).model_dump().keys()) == [
         "ordinal",
@@ -158,7 +161,35 @@ def test_static_index_rows_are_strict() -> None:
         "case_definition_sha256",
         "instruction_sha256",
         "request_config_sha256",
+        "input_token_bound",
     ]
+
+
+@pytest.mark.parametrize(
+    ("model", "factory", "field", "valid_value"),
+    [
+        (CaseIndexRowV1, case_index_row_v1_payload, "prompt_utf8_bytes", 17),
+        (PlanRowV1, plan_row_v1_payload, "input_token_bound", 65_553),
+    ],
+)
+def test_input_exposure_fields_are_required_strict_positive_integers(
+    model: type[BaseModel],
+    factory: Any,
+    field: str,
+    valid_value: int,
+) -> None:
+    payload = factory()
+    payload[field] = valid_value
+    assert model.model_validate(payload).model_dump(mode="json")[field] == valid_value
+
+    del payload[field]
+    with pytest.raises(ValidationError, match="Field required"):
+        model.model_validate(payload)
+
+    for invalid in (True, 0, -1, 1.0, "1"):
+        payload[field] = invalid
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
 
 
 @pytest.mark.parametrize(

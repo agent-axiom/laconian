@@ -19,6 +19,8 @@ import yaml
 from pydantic import BaseModel
 
 import laconian_eval.capsule.execution as execution_module
+import laconian_eval.capsule.verify as verify_module
+from laconian_eval.capsule.bounded_io import open_directory_no_follow
 from laconian_eval.capsule.execution import (
     CredentialUnavailable,
     ProviderBinding,
@@ -29,8 +31,10 @@ from laconian_eval.capsule.execution import (
     resume_capsule,
 )
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
+from laconian_eval.capsule.planning import plan_item_id as parent_plan_item_id
 from laconian_eval.capsule.prepare import prepare_capsule
 from laconian_eval.capsule.record_models import SessionEnvironmentV1
+from laconian_eval.cases import response_case_sha256
 from laconian_eval.providers import (
     FakeProvider,
     GenerationRequest,
@@ -40,8 +44,10 @@ from laconian_eval.providers import (
     TokenUsage,
 )
 from laconian_eval.providers.base import (
+    OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS,
     PublicBenchmarkRequestPolicyV1,
     PublicBenchmarkRequestV1,
+    conservative_input_token_bound,
 )
 from laconian_eval.providers.openai import OpenAIProvider
 
@@ -127,6 +133,7 @@ def _single_plan_capsule(
     provider_model: str = "fixture-v1",
     api_key_env: str | None = None,
     benchmark_generation: bool = False,
+    arms: list[str] | None = None,
 ) -> Path:
     source = tmp_path / "execution-source"
     cases = source / "cases"
@@ -158,7 +165,7 @@ def _single_plan_capsule(
         ).encode("utf-8")
     )
     payload = _manifest_payload(
-        arms=["baseline"],
+        arms=["baseline"] if arms is None else arms,
         provider_kind=provider_kind,
         api_key_env=api_key_env,
     )
@@ -424,6 +431,61 @@ def _install_fast_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         "_runtime_checkpoint",
         lambda *_args, **_kwargs: None,
     )
+
+
+def _mutate_verified_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[Any], None],
+) -> None:
+    verified_context = execution_module._verified_context
+
+    def mutated_context(session: Any) -> Any:
+        context = verified_context(session)
+        mutate(context)
+        return context
+
+    monkeypatch.setattr(execution_module, "_verified_context", mutated_context)
+
+
+def _verified_capsule_context(path: Path) -> Any:
+    root_fd = open_directory_no_follow(path)
+    try:
+        inventory = verify_module._scan_inventory(root_fd)
+        return verify_module._verify_capsule_context_descriptors(root_fd, inventory)
+    finally:
+        os.close(root_fd)
+
+
+def _install_execution_binding_spies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[dict[str, int]], list[dict[str, object]]]:
+    bound_calls: list[dict[str, int]] = []
+    plan_item_calls: list[dict[str, object]] = []
+
+    def observed_bound(*, instruction_utf8_bytes: int, prompt_utf8_bytes: int) -> int:
+        bound_calls.append(
+            {
+                "instruction_utf8_bytes": instruction_utf8_bytes,
+                "prompt_utf8_bytes": prompt_utf8_bytes,
+            }
+        )
+        return conservative_input_token_bound(
+            instruction_utf8_bytes=instruction_utf8_bytes,
+            prompt_utf8_bytes=prompt_utf8_bytes,
+        )
+
+    def observed_plan_item_id(**fields: object) -> str:
+        plan_item_calls.append(dict(fields))
+        return parent_plan_item_id(**fields)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        execution_module,
+        "conservative_input_token_bound",
+        observed_bound,
+        raising=False,
+    )
+    monkeypatch.setattr(execution_module, "plan_item_id", observed_plan_item_id)
+    return bound_calls, plan_item_calls
 
 
 def _journal_rows(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1016,6 +1078,7 @@ def test_public_benchmark_execution_reconstructs_exact_captured_policy_before_ca
         benchmark_generation=True,
     )
     _install_fast_runtime(monkeypatch)
+    bound_calls, plan_item_calls = _install_execution_binding_spies(monkeypatch)
     provider = _BenchmarkProbeProvider()
 
     outcome = execution_module._resume_capsule(
@@ -1037,6 +1100,402 @@ def test_public_benchmark_execution_reconstructs_exact_captured_policy_before_ca
     assert request.policy.prompt_cache_mode == "explicit"
     assert request.policy.prompt_cache_ttl == "30m"
     assert request.policy.service_tier == "default"
+    capsule_record = json.loads((capsule / "capsule.json").read_bytes())
+    plan_rows = [json.loads(line) for line in (capsule / "plan.jsonl").read_bytes().splitlines()]
+    case_rows = [
+        json.loads(line) for line in (capsule / "case-index.jsonl").read_bytes().splitlines()
+    ]
+    cases_by_uid = {row["case_uid"]: row for row in case_rows}
+    expected_bound_calls = [
+        {
+            "instruction_utf8_bytes": 0,
+            "prompt_utf8_bytes": cases_by_uid[row["case_uid"]]["prompt_utf8_bytes"],
+        }
+        for row in plan_rows
+    ]
+    expected_plan_item_calls = [
+        {
+            "parent_manifest_sha256": capsule_record["manifest_sha256"],
+            "case_uid": row["case_uid"],
+            "repetition": row["repetition"],
+            "arm": row["arm"],
+            "instruction_sha256": row["instruction_sha256"],
+            "request_config_sha256": row["request_config_sha256"],
+            "input_token_bound": row["input_token_bound"],
+        }
+        for row in plan_rows
+    ]
+    assert bound_calls == [*expected_bound_calls, expected_bound_calls[0]]
+    assert plan_item_calls == [*expected_plan_item_calls, expected_plan_item_calls[0]]
+
+
+def test_public_benchmark_execution_counts_multibyte_prompt_and_instruction_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+        arms=["concise"],
+    )
+    context = _verified_capsule_context(capsule)
+    bound_calls, _plan_item_calls = _install_execution_binding_spies(monkeypatch)
+    row = context.plan[-1]
+    index = next(item for item in context.case_index if item.case_uid == row.case_uid)
+    case = context.captured.case_files[index.source_ordinal].cases[index.record_ordinal]
+    arm = next(item for item in context.captured.arms if item.name == row.arm)
+    assert arm.instruction is not None
+    assert len(case.prompt) != len(case.prompt.encode("utf-8", errors="strict"))
+
+    captured = execution_module._derive_captured_request(context, len(context.plan) - 1)
+
+    assert captured.request.prompt == case.prompt
+    assert captured.request.instructions == arm.instruction
+    assert bound_calls == [
+        {
+            "instruction_utf8_bytes": len(arm.instruction.encode("utf-8", errors="strict")),
+            "prompt_utf8_bytes": len(case.prompt.encode("utf-8", errors="strict")),
+        }
+    ]
+
+
+@pytest.mark.parametrize("service_tier", (None, "priority"))
+def test_public_benchmark_execution_rejects_nondefault_resolved_tier_before_provider_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    service_tier: object,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    context = _verified_capsule_context(capsule)
+    bound_calls, plan_item_calls = _install_execution_binding_spies(monkeypatch)
+    config_calls: list[object] = []
+
+    def observed_config(manifest: object) -> str:
+        config_calls.append(manifest)
+        return _DIGEST
+
+    monkeypatch.setattr(execution_module, "request_config_sha256", observed_config)
+
+    object.__setattr__(context.manifest.generation, "service_tier", service_tier)
+    provider = _BenchmarkScriptedProvider([])
+
+    with pytest.raises(ResumeError) as caught:
+        captured = execution_module._derive_captured_request(context, 0)
+        provider.generate_benchmark(captured.request)  # type: ignore[arg-type]
+
+    assert caught.value.code == "captured_request_mismatch"
+    assert config_calls == []
+    assert bound_calls == []
+    assert plan_item_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
+
+
+def test_public_benchmark_execution_rejects_forged_row_input_bound_before_provider_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    bound_calls, plan_item_calls = _install_execution_binding_spies(monkeypatch)
+    expected_bound_calls: list[dict[str, int]] = []
+
+    def mutate(context: Any) -> None:
+        row = context.plan[0]
+        index = next(item for item in context.case_index if item.case_uid == row.case_uid)
+        case = context.captured.case_files[index.source_ordinal].cases[index.record_ordinal]
+        arm = next(item for item in context.captured.arms if item.name == row.arm)
+        instruction_bytes = (
+            b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+        )
+        expected_bound_calls.append(
+            {
+                "instruction_utf8_bytes": len(instruction_bytes),
+                "prompt_utf8_bytes": len(case.prompt.encode("utf-8", errors="strict")),
+            }
+        )
+        forged = row.model_copy(update={"input_token_bound": row.input_token_bound + 1})
+        object.__setattr__(context, "plan", (forged, *context.plan[1:]))
+
+    _mutate_verified_execution_context(monkeypatch, mutate)
+    provider = _BenchmarkScriptedProvider([])
+    factory_calls: list[ProviderFactoryRequest] = []
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, factory_calls=factory_calls),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.result.status == "invalid"
+    assert bound_calls == expected_bound_calls
+    assert plan_item_calls == []
+    assert factory_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
+
+
+def test_public_benchmark_execution_rejects_stale_index_prompt_byte_count_before_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+
+    def mutate(context: Any) -> None:
+        row = context.plan[0]
+        position = next(
+            position
+            for position, item in enumerate(context.case_index)
+            if item.case_uid == row.case_uid
+        )
+        stale = context.case_index[position].model_copy(
+            update={
+                "prompt_utf8_bytes": context.case_index[position].prompt_utf8_bytes + 1,
+            }
+        )
+        index = list(context.case_index)
+        index[position] = stale
+        object.__setattr__(context, "case_index", tuple(index))
+
+    _mutate_verified_execution_context(monkeypatch, mutate)
+    provider = _BenchmarkScriptedProvider([])
+    factory_calls: list[ProviderFactoryRequest] = []
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, factory_calls=factory_calls),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.result.status == "invalid"
+    assert factory_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field_name", "forged_value"),
+    (
+        ("plan_item_id", "0" * 64),
+        ("instruction_sha256", "1" * 64),
+        ("request_config_sha256", "2" * 64),
+    ),
+)
+def test_public_benchmark_execution_rejects_forged_row_identity_before_provider_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    forged_value: str,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    bound_calls, plan_item_calls = _install_execution_binding_spies(monkeypatch)
+    expected_bound_calls: list[dict[str, int]] = []
+
+    def mutate(context: Any) -> None:
+        row = context.plan[0]
+        index = next(item for item in context.case_index if item.case_uid == row.case_uid)
+        case = context.captured.case_files[index.source_ordinal].cases[index.record_ordinal]
+        arm = next(item for item in context.captured.arms if item.name == row.arm)
+        instruction_bytes = (
+            b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+        )
+        expected_bound_calls.append(
+            {
+                "instruction_utf8_bytes": len(instruction_bytes),
+                "prompt_utf8_bytes": len(case.prompt.encode("utf-8", errors="strict")),
+            }
+        )
+        forged = row.model_copy(update={field_name: forged_value})
+        object.__setattr__(context, "plan", (forged, *context.plan[1:]))
+
+    _mutate_verified_execution_context(monkeypatch, mutate)
+    provider = _BenchmarkScriptedProvider([])
+    factory_calls: list[ProviderFactoryRequest] = []
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, factory_calls=factory_calls),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.result.status == "invalid"
+    assert bound_calls == expected_bound_calls
+    assert len(plan_item_calls) == 1
+    assert factory_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
+
+
+def test_public_benchmark_execution_rejects_oversized_captured_request_before_provider_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    bound_calls, plan_item_calls = _install_execution_binding_spies(monkeypatch)
+    expected_bound_calls: list[dict[str, int]] = []
+
+    def mutate(context: Any) -> None:
+        row = context.plan[0]
+        index_position = next(
+            position
+            for position, item in enumerate(context.case_index)
+            if item.case_uid == row.case_uid
+        )
+        index = context.case_index[index_position]
+        captured_file = context.captured.case_files[index.source_ordinal]
+        cases = list(captured_file.cases)
+        case = cases[index.record_ordinal]
+        arm = next(item for item in context.captured.arms if item.name == row.arm)
+        instruction_bytes = (
+            b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+        )
+        allowance = conservative_input_token_bound(
+            instruction_utf8_bytes=0,
+            prompt_utf8_bytes=0,
+        )
+        oversized_prompt = "x" * (
+            OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS - allowance - len(instruction_bytes) + 1
+        )
+        prompt_bytes = oversized_prompt.encode("utf-8", errors="strict")
+        input_token_bound = conservative_input_token_bound(
+            instruction_utf8_bytes=len(instruction_bytes),
+            prompt_utf8_bytes=len(prompt_bytes),
+        )
+        assert input_token_bound == OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS + 1
+        expected_bound_calls.append(
+            {
+                "instruction_utf8_bytes": len(instruction_bytes),
+                "prompt_utf8_bytes": len(prompt_bytes),
+            }
+        )
+        forged_case = case.model_copy(update={"prompt": oversized_prompt})
+        cases[index.record_ordinal] = forged_case
+        object.__setattr__(captured_file, "cases", tuple(cases))
+        prompt_sha256 = hashlib.sha256(prompt_bytes).hexdigest()
+        definition_sha256 = response_case_sha256(forged_case)
+        forged_index = index.model_copy(
+            update={
+                "prompt_sha256": prompt_sha256,
+                "case_definition_sha256": definition_sha256,
+                "prompt_utf8_bytes": len(prompt_bytes),
+            }
+        )
+        case_index = list(context.case_index)
+        case_index[index_position] = forged_index
+        object.__setattr__(context, "case_index", tuple(case_index))
+        forged_plan_item_id = parent_plan_item_id(
+            parent_manifest_sha256=context.capsule.manifest_sha256,
+            case_uid=row.case_uid,
+            repetition=row.repetition,
+            arm=row.arm,
+            instruction_sha256=row.instruction_sha256,
+            request_config_sha256=row.request_config_sha256,
+            input_token_bound=input_token_bound,
+        )
+        forged_row = row.model_copy(
+            update={
+                "plan_item_id": forged_plan_item_id,
+                "prompt_sha256": prompt_sha256,
+                "case_definition_sha256": definition_sha256,
+                "input_token_bound": input_token_bound,
+            }
+        )
+        object.__setattr__(context, "plan", (forged_row, *context.plan[1:]))
+
+    _mutate_verified_execution_context(monkeypatch, mutate)
+    provider = _BenchmarkScriptedProvider([])
+    factory_calls: list[ProviderFactoryRequest] = []
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, factory_calls=factory_calls),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.result.status == "invalid"
+    assert bound_calls == expected_bound_calls
+    assert plan_item_calls == []
+    assert factory_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
+
+
+def test_public_benchmark_execution_preflights_late_row_before_any_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+
+    def mutate(context: Any) -> None:
+        assert len(context.plan) > 1
+        forged = context.plan[-1].model_copy(
+            update={"input_token_bound": context.plan[-1].input_token_bound + 1}
+        )
+        object.__setattr__(context, "plan", (*context.plan[:-1], forged))
+
+    _mutate_verified_execution_context(monkeypatch, mutate)
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    provider = _BenchmarkScriptedProvider([evidence])
+    factory_calls: list[ProviderFactoryRequest] = []
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, factory_calls=factory_calls),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.result.status == "invalid"
+    assert factory_calls == []
+    assert provider.benchmark_calls == []
+    assert provider.legacy_calls == []
 
 
 @pytest.mark.parametrize(

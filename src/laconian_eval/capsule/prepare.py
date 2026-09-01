@@ -34,7 +34,7 @@ from laconian_eval.capsule.import_policy import (
     capture_runtime_import_state,
 )
 from laconian_eval.capsule.manifest_models import ResolvedManifestV2
-from laconian_eval.capsule.planning import materialize_case_index, materialize_plan
+from laconian_eval.capsule.planning import materialize_case_index, materialize_parent_plan
 from laconian_eval.capsule.posix import PosixOps
 from laconian_eval.capsule.provenance import (
     capture_installed_provenance,
@@ -605,7 +605,13 @@ def _build_artifacts(
         runner_source,
     )
     case_index = materialize_case_index(captured_inputs, manifest)
-    plan = materialize_plan(run_id, manifest, case_index, captured_inputs.arms)
+    manifest_sha256 = sha256_bytes(captured_inputs.resolved_manifest_bytes)
+    plan = materialize_parent_plan(
+        parent_manifest_sha256=manifest_sha256,
+        resolved_manifest=manifest,
+        case_index=case_index,
+        captured_arms=captured_inputs.arms,
+    )
     input_index_bytes = canonical_json(input_index.model_dump(mode="json"))
     case_index_bytes = canonical_jsonl(item.model_dump(mode="json") for item in case_index)
     plan_bytes = canonical_jsonl(item.model_dump(mode="json") for item in plan)
@@ -622,7 +628,6 @@ def _build_artifacts(
         raise PreparationError("invalid_environment")
 
     created_at = datetime.now(UTC)
-    manifest_sha256 = sha256_bytes(captured_inputs.resolved_manifest_bytes)
     input_index_sha256 = sha256_bytes(input_index_bytes)
     case_index_sha256 = sha256_bytes(case_index_bytes)
     plan_sha256 = sha256_bytes(plan_bytes)

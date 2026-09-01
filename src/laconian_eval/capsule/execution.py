@@ -123,12 +123,14 @@ from laconian_eval.capsule.verify import (
 from laconian_eval.cases import response_case_sha256
 from laconian_eval.models import ResponseCase
 from laconian_eval.providers.base import (
+    OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS,
     GenerationRequest,
     GenerationResult,
     Provider,
     ProviderError,
     PublicBenchmarkRequestPolicyV1,
     PublicBenchmarkRequestV1,
+    conservative_input_token_bound,
 )
 from laconian_eval.providers.fake import FakeProvider
 from laconian_eval.providers.openai import OpenAIProvider
@@ -2150,24 +2152,43 @@ def _captured_request(
         if len(arms) != 1:
             raise TypeError
         arm = arms[0]
-        prompt_sha = hashlib.sha256(case.prompt.encode("utf-8", errors="strict")).hexdigest()
+        manifest = context.manifest
+        service_tier = manifest.generation.service_tier
+        if type(service_tier) is not str or service_tier != "default":
+            raise TypeError
+        prompt_bytes = case.prompt.encode("utf-8", errors="strict")
+        prompt_sha = hashlib.sha256(prompt_bytes).hexdigest()
         definition_sha = response_case_sha256(case)
-        instruction_bytes = b"" if arm.instruction is None else arm.instruction.encode("utf-8")
+        instruction_bytes = (
+            b"" if arm.instruction is None else arm.instruction.encode("utf-8", errors="strict")
+        )
         instruction_sha = sha256_bytes(instruction_bytes)
-        config_sha = request_config_sha256(context.manifest)
+        input_token_bound = conservative_input_token_bound(
+            instruction_utf8_bytes=len(instruction_bytes),
+            prompt_utf8_bytes=len(prompt_bytes),
+        )
+        if (
+            type(row.input_token_bound) is not int
+            or row.input_token_bound != input_token_bound
+            or input_token_bound > OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS
+        ):
+            raise TypeError
+        config_sha = request_config_sha256(manifest)
         expected_item = plan_item_id(
-            context.capsule.run_id,
-            row.case_uid,
-            row.repetition,
-            row.arm,
-            instruction_sha,
-            config_sha,
+            parent_manifest_sha256=context.capsule.manifest_sha256,
+            case_uid=row.case_uid,
+            repetition=row.repetition,
+            arm=row.arm,
+            instruction_sha256=row.instruction_sha256,
+            request_config_sha256=row.request_config_sha256,
+            input_token_bound=input_token_bound,
         )
         if (
             case.id != row.case_id
             or case.locale != row.locale
             or index.prompt_sha256 != row.prompt_sha256
             or index.case_definition_sha256 != row.case_definition_sha256
+            or index.prompt_utf8_bytes != len(prompt_bytes)
             or prompt_sha != row.prompt_sha256
             or definition_sha != row.case_definition_sha256
             or instruction_sha != row.instruction_sha256
@@ -2175,7 +2196,6 @@ def _captured_request(
             or expected_item != row.plan_item_id
         ):
             raise TypeError
-        manifest = context.manifest
         if manifest.provider.model in {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
@@ -2186,7 +2206,7 @@ def _captured_request(
                 reasoning_mode=manifest.generation.reasoning_mode,
                 prompt_cache_mode=manifest.generation.prompt_cache_mode,
                 prompt_cache_ttl=manifest.generation.prompt_cache_ttl,
-                service_tier=manifest.generation.service_tier,
+                service_tier="default",
                 input_token_bound_version="openai-utf8-envelope-v1",
                 max_input_tokens=272_000,
             )
@@ -2667,8 +2687,8 @@ def _execute_provider_ready(
     ordinal = history.next_unresolved_plan_ordinal
     if ordinal is None or not 0 <= ordinal < len(context.plan):
         _fail("lifecycle_mismatch")
-    first_request = _captured_request(context, context.plan[ordinal])
-    del first_request
+    for pending_ordinal in range(ordinal, len(context.plan)):
+        _captured_request(context, context.plan[pending_ordinal])
     factory_request = _provider_request(context)
     budget = _CapacityBudget(
         session.transaction.total_capsule_bytes,

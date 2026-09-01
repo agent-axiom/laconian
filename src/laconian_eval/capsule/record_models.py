@@ -37,6 +37,7 @@ from laconian_eval.capsule.schema import (
     ScenarioId,
     Sha256,
     StrictNonNegativeInt,
+    StrictPositiveInt,
     StrictSigned64Int,
     TopLevelModuleName,
     VerificationErrorCode,
@@ -255,6 +256,7 @@ class CaseIndexRowV1(CapsuleModel):
     category: CaseCategory
     case_definition_sha256: Sha256
     prompt_sha256: Sha256
+    prompt_utf8_bytes: StrictPositiveInt
 
 
 class PlanRowV1(CapsuleModel):
@@ -273,6 +275,7 @@ class PlanRowV1(CapsuleModel):
     case_definition_sha256: Sha256
     instruction_sha256: Sha256
     request_config_sha256: Sha256
+    input_token_bound: StrictPositiveInt
 
 
 class RunnerSourceFileV1(CapsuleModel):

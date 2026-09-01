@@ -51,7 +51,7 @@ from laconian_eval.capsule.filesystem import (
     cleanup_owned_staging,
     create_owned_staging,
 )
-from laconian_eval.capsule.planning import materialize_case_index, materialize_plan
+from laconian_eval.capsule.planning import materialize_case_index, materialize_parent_plan
 from laconian_eval.capsule.prepare import (
     PostPublishVerificationError,
     PreparationError,
@@ -1295,11 +1295,11 @@ def test_prepared_plan_summary_builder_accepts_only_exact_in_memory_projections(
     assert harness.environment is not None
     manifest = harness.captured_inputs.resolved_manifest
     case_index = materialize_case_index(harness.captured_inputs, manifest)
-    plan = materialize_plan(
-        prepared.run_id,
-        manifest,
-        case_index,
-        harness.captured_inputs.arms,
+    plan = materialize_parent_plan(
+        parent_manifest_sha256=prepared.capsule.manifest_sha256,
+        resolved_manifest=manifest,
+        case_index=case_index,
+        captured_arms=harness.captured_inputs.arms,
     )
     verification = _valid_prepared_verification(
         str(prepared.run_id),
@@ -1561,7 +1561,7 @@ def test_prepared_plan_summary_uses_warnings_returned_by_the_single_held_lock_ve
     returned_summaries: list[object] = []
     summary_builder = prepare_module._make_prepared_plan_summary
     case_index_materializer = prepare_module.materialize_case_index
-    plan_materializer = prepare_module.materialize_plan
+    plan_materializer = prepare_module.materialize_parent_plan
     real_path_open = Path.open
     real_path_read_bytes = Path.read_bytes
     real_path_read_text = Path.read_text
@@ -1660,7 +1660,16 @@ def test_prepared_plan_summary_uses_warnings_returned_by_the_single_held_lock_ve
         materialized_case_indexes.append(case_index)
         return case_index
 
-    def materialize_plan_once(*args: object, **kwargs: object) -> object:
+    def materialize_parent_plan_once(*args: object, **kwargs: object) -> object:
+        assert args == ()
+        assert tuple(kwargs) == (
+            "parent_manifest_sha256",
+            "resolved_manifest",
+            "case_index",
+            "captured_arms",
+        )
+        assert harness.captured_inputs is not None
+        assert kwargs["parent_manifest_sha256"] == harness.captured_inputs.manifest_sha256
         plan = plan_materializer(*args, **kwargs)
         materialized_plans.append(plan)
         return plan
@@ -1688,11 +1697,11 @@ def test_prepared_plan_summary_uses_warnings_returned_by_the_single_held_lock_ve
             harness.captured_inputs.resolved_manifest,
         )
         assert case_index == expected_case_index
-        expected_plan = materialize_plan(
-            verification.run_id,
-            harness.captured_inputs.resolved_manifest,
-            expected_case_index,
-            harness.captured_inputs.arms,
+        expected_plan = materialize_parent_plan(
+            parent_manifest_sha256=harness.captured_inputs.manifest_sha256,
+            resolved_manifest=harness.captured_inputs.resolved_manifest,
+            case_index=expected_case_index,
+            captured_arms=harness.captured_inputs.arms,
         )
         assert plan == expected_plan
         summary_calls.append((manifest_projection, case_index, plan, environment, verification))
@@ -1707,7 +1716,11 @@ def test_prepared_plan_summary_uses_warnings_returned_by_the_single_held_lock_ve
         return summary
 
     monkeypatch.setattr(prepare_module, "materialize_case_index", materialize_case_index_once)
-    monkeypatch.setattr(prepare_module, "materialize_plan", materialize_plan_once)
+    monkeypatch.setattr(
+        prepare_module,
+        "materialize_parent_plan",
+        materialize_parent_plan_once,
+    )
     monkeypatch.setattr(prepare_module, "_post_publish_verify", verify_once)
     monkeypatch.setattr(prepare_module, "_make_prepared_plan_summary", build_summary_once)
     with pytest.MonkeyPatch.context() as read_barrier:
@@ -1997,11 +2010,11 @@ def test_prepare_materializes_exact_case_plan_environment_and_event_bytes(
     assert harness.environment is not None
     captured = harness.captured_inputs
     expected_cases = materialize_case_index(captured, captured.resolved_manifest)
-    expected_plan = materialize_plan(
-        prepared.run_id,
-        captured.resolved_manifest,
-        expected_cases,
-        captured.arms,
+    expected_plan = materialize_parent_plan(
+        parent_manifest_sha256=prepared.capsule.manifest_sha256,
+        resolved_manifest=captured.resolved_manifest,
+        case_index=expected_cases,
+        captured_arms=captured.arms,
     )
 
     assert prepared.path.joinpath("manifest.json").read_bytes() == captured.resolved_manifest_bytes
@@ -2028,6 +2041,30 @@ def test_prepare_materializes_exact_case_plan_environment_and_event_bytes(
     assert event.payload.plan_sha256 == prepared.capsule.plan_sha256
     assert event.payload.environment_sha256 == prepared.capsule.environment_sha256
     assert event.payload.runner_source_sha256 == prepared.capsule.runner_source_sha256
+
+
+def test_two_preparations_have_distinct_runs_but_identical_parent_plans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = _write_manifest(source)
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+    request = _request(manifest, results_root)
+
+    first = prepare_capsule(request)
+    second = prepare_capsule(request)
+
+    assert first.run_id != second.run_id
+    assert first.capsule.manifest_sha256 == second.capsule.manifest_sha256
+    assert (
+        first.path.joinpath("plan.jsonl").read_bytes()
+        == second.path.joinpath("plan.jsonl").read_bytes()
+    )
+    _assert_safety_barrier_untouched(harness)
 
 
 def test_prepare_wires_every_optional_request_and_opened_filesystem_fact_exactly(
