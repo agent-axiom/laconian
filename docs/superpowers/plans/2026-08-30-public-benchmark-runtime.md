@@ -17,6 +17,14 @@
 - Maintainer approval record: governance-only commit
   `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad`, recording the exact user message
   `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` on 2026-08-31.
+- Foundations' approved preflight amendment at
+  `e67ad191623316f69523b051fba48ec2e7492493`, recorded by governance-only successor
+  `6930b6e18b11d50a4df5b5fd18d37207e891a28c`, remains historical authority for its approved scope.
+  The shard-checkpoint authority and bounded-directory contract synchronized below is a proposed,
+  unapproved amendment. Runtime Task 6 checkpoint inventory authority, Task 7 checkpoint creation,
+  Task 9 checkpoint recovery, and Task 10 rehearsal may not be committed or merged as complete until
+  the exact amendment commit receives separate maintainer/user approval, a governance-only
+  successor records it, and that successor is recorded at handoff as `PLAN_BASE_SHA`.
 - Milestone 0 is approved. Runtime implementation is unblocked only after this synchronized plan is
   reviewed and committed; pilot and publication gates remain closed until their named tests and
   reviews pass.
@@ -2400,8 +2408,13 @@ git commit -m "feat: enforce closed live retry policy"
   every `BatchPlanV1` and `CampaignStateV1.active_phase_plan_sha256`.
 - [ ] Assert an empty remaining suffix cannot produce a provider batch.
 - [ ] Define strict frozen `CheckpointInventoryEntryV1` with phase, verified phase-plan ordinal,
-  exact plan-item/request ID, nullable checkpoint `ArtifactIdentityV1`, capsule/checkpoint/provenance
-  hashes, terminal-attempt hash, and next-plan index. Define `CheckpointInventoryV1` with campaign,
+  exact plan-item/request ID, nullable checkpoint `ArtifactIdentityV1`,
+  `archive_sha256: Sha256 | None`, capsule/checkpoint/provenance hashes, terminal-attempt hash, and
+  next-plan index. Require the exact invariant
+  `(checkpoint is None) == (archive_sha256 is None)` and reject both mismatched-nullability
+  directions. The archive digest is authority data committed by a nonnull checkpoint inventory
+  entry, not a value later learned from the downloaded sidecar or archive. Define
+  `CheckpointInventoryV1` with campaign,
   phase, verified phase-plan hash, all entries in ordinal order, predecessor inventory root, and
   class-bound inventory root. Missing work is represented by a null checkpoint in its fixed slot,
   never by deleting/reordering a slot.
@@ -2591,7 +2604,13 @@ Expected RED: controller APIs are absent.
 #### Step 3: RED-test deadline and checkpoint behavior
 
 - [ ] Use a fake monotonic clock. Start a request only when remaining time covers request timeout, maximum possible next backoff, journal allowance, and 900-second checkpoint margin.
-- [ ] At every logical shard boundary, finalize the shard, pack the strict uncompressed tar checkpoint, verify its sidecar and restored capsule, and append inventory evidence.
+- [ ] At every logical shard boundary, finalize the shard and pack the strict uncompressed tar
+  checkpoint. Use that exact `CheckpointArtifactV1.sha256` as the candidate trusted input for the
+  immediate local four-way restore verification; after the restore and final archive-identity proof
+  succeed, upload those exact bytes and carry the same SHA with their exact artifact identity and
+  service digest into the checkpoint-inventory authority candidate. Only a winning authority CAS
+  makes that digest resume authority. A later resume reconstructs the SHA only from that winning
+  inventory entry, never from the downloaded archive, its sidecar, or the earlier local candidate.
 - [ ] On voluntary exit, checkpoint the verified partial shard and emit `VERIFIED_PARTIAL` only after upload provenance is available.
 - [ ] A forced loss before verified upload can use `NO_DISPATCH_PROVED` only when every reservation is durably `never_started`; otherwise emit `PERMANENT_STOP`.
 - [ ] An `AMBIGUOUS_INFLIGHT` item is never resumed.
@@ -3011,7 +3030,15 @@ Expected RED: workflow files are missing.
   parentless authority commit through the all-zero-old-OID receive-pack command. `benchmark-batch`
   cannot prepare work
   until reconstruction from that canonical ref yields `PREFLIGHTED`.
-- [ ] In `prepare`, retrieve authority/checkpoint artifacts by exact numeric ID and exact workflow-run provenance, reconstruct state, create reservations, and upload only the safe prepared batch.
+- [ ] In `prepare`, retrieve authority/checkpoint artifacts by exact numeric ID and exact
+  workflow-run provenance, reconstruct state, and construct Foundation-owned
+  `CheckpointExpectedBindingsV1.archive_sha256` only from the exact winning authority-bound
+  `CheckpointInventoryEntryV1`. Require the downloaded sidecar digest, pre-parse archive digest,
+  parse-pass archive digest, and this authority digest to be equal and preserve exact final archive
+  identity before restored bytes can affect reservations. Restore only mandatory-scenario shard
+  checkpoints; a full-parent capsule or missing parent-plan/shard-plan/scenario binding fails before
+  any provider credential is available. Then create reservations and upload only the safe prepared
+  batch.
 - [ ] Give `prepare` one closed recovery branch for an already canonical `GENERATION_ACTIVE` or
   `JUDGE_ACTIVE` receipt. It loads the prior provider run/job only from that receipt, exhaustively
   re-fetches the exact job-step timeline and controller/artifact inventory, and may emit

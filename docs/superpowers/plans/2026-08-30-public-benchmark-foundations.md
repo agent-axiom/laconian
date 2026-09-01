@@ -12,12 +12,12 @@
 
 ## Execution contract
 
-- Approved normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `e67ad191623316f69523b051fba48ec2e7492493`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16. This plan is synchronized to the approved legacy-v1 price-migration and Foundations Tasks 3–5 preflight-closure amendment. Amendment-dependent implementation in Tasks 2–5 may proceed only from a handoff that records this governance-only successor as `PLAN_BASE_SHA`.
-- Approval metadata: this governance-only successor records the maintainer/user's exact 2026-08-31 approval message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493` without changing normative behavior. Governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` and its approval of `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` remain historical authority for the prior baseline. Before amendment-dependent Task 2 is committed, the handoff records this already-created successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment re-blocks every affected task until separately approved and governance-recorded.
+- Approved normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `e67ad191623316f69523b051fba48ec2e7492493`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16. This plan is synchronized to the approved legacy-v1 price-migration and Foundations Tasks 3–5 preflight-closure amendment. The shard-checkpoint authority and bounded-directory changes below are a proposed, unapproved amendment: Tasks 10–12 may be developed for review but may not be committed or merged as complete until the exact amendment commit is separately approved, governance-recorded, and its successor recorded as `PLAN_BASE_SHA`.
+- Approval metadata: governance-only successor `6930b6e18b11d50a4df5b5fd18d37207e891a28c` records the maintainer/user's exact 2026-08-31 approval message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493` without changing normative behavior. Governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` and its approval of `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126` remain historical authority for the prior baseline. The pending checkpoint amendment requires its own exact approval and governance-only successor before Tasks 10–12 proceed as complete.
 - Seal grammar: [Laconian v0.1 Generation Capsule Design](../specs/2026-08-24-v0.1-generation-capsule-design.md), especially Sections 14–17.
 - Provider cache/usage contract: [OpenAI Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create), [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching), and [GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model), frozen into the reviewed manifest rather than fetched during execution.
 - Worktree: `/Users/if/PycharmProjects/agent-axiom/laconian/.worktrees/public-benchmark-design`.
-- Starting point for amendment-dependent Tasks 2–5: this governance-only successor, which synchronizes the approved normative amendment and this Foundations plan without changing normative behavior. Task 1 remains already-committed baseline-authorized history. Before amendment-dependent Task 2 is committed, the handoff records this successor's already-created full commit as `PLAN_BASE_SHA`; the plan source does not embed its own future commit SHA. Keep remaining implementation on an isolated `codex/` branch or worktree based on that exact commit.
+- Starting point for amendment-dependent Tasks 2–5: governance-only successor `6930b6e18b11d50a4df5b5fd18d37207e891a28c`, which synchronizes the approved normative amendment and the then-current approved Tasks 2–5 Foundations plan without changing normative behavior. Task 1 remains already-committed baseline-authorized history. Tasks 10–12 instead start only from the future governance-only successor that records approval of the exact pending checkpoint amendment commit; the plan source does not embed that future commit SHA. Keep remaining implementation on an isolated `codex/` branch or worktree based on the applicable exact commit.
 - This slice ends when exact capsule bytes can be prepared as a scenario projection, executed with the approved wire fields, finalized, verified without a lock on transport storage, packed as uncompressed USTAR, restored into a new directory, and fully reverified.
 - Protocol-review attestations, paired-tag construction, campaign authority/state, downstream orchestration, analysis, judging, human review, and repository release mechanics remain owned by the other slice plans. Slice 1 implements none of those authorities. It does bind every downstream C0 input it owns: exact code and `uv.lock`, provider/request policy, price evidence, corpus and parent/shard plans, capsule/seal/checkpoint schemas, and their canonical digests.
 - No test reads a real credential, opens a network connection, depends on wall-clock sleeps, invokes `tar -xf`, or calls `tarfile.extractall`.
@@ -1061,12 +1061,13 @@ class CheckpointProtocolBindingV1(CapsuleModel):
 
 @dataclass(frozen=True, slots=True)
 class CheckpointExpectedBindingsV1:
+    archive_sha256: str
     manifest_sha256: str
     plan_sha256: str
-    parent_plan_sha256: str | None
-    shard_plan_sha256: str | None
+    parent_plan_sha256: str
+    shard_plan_sha256: str
     requested_model: PublicBenchmarkModelId
-    scenario_uid: str | None
+    scenario_uid: str
     protocol_bindings: tuple[CheckpointProtocolBindingV1, ...]
     provenance: CheckpointProvenanceV1
 
@@ -1108,7 +1109,19 @@ def restore_checkpoint(
     """Safely restore, verify, binding-check, and atomically publish one capsule."""
 ```
 
-`CheckpointProvenanceV1` additionally validates `model_id` against `^[a-z0-9][a-z0-9.-]{0,127}$`. `archive_path.name` must equal `checkpoint_archive_name(provenance)`, making the name bind campaign, model, scenario, batch-attempt, and run-attempt identity. The sidecar bytes are exactly `<lowercase-sha256><two spaces><archive-basename><LF>`. The archive uses USTAR headers only, canonical UTF-8 member order, `uid=gid=mtime=0`, empty owner/group names, preserved permission bits, file data padded to 512-byte blocks, and exactly two terminal zero blocks.
+`CheckpointProvenanceV1` additionally validates `model_id` against `^[a-z0-9][a-z0-9.-]{0,127}$`.
+Checkpoint transport is shard-only: packing and restoration require both captured planning inputs and
+one validated `ShardPlanV1`; a full-parent capsule is rejected. `archive_path.name` must equal
+`checkpoint_archive_name(provenance)`, making the name bind campaign, model, scenario,
+batch-attempt, and run-attempt identity. The provenance campaign/model/scenario must equal the
+captured shard and resolved manifest, and every parent-plan, shard-plan, and scenario expected
+binding is mandatory. `CheckpointExpectedBindingsV1.archive_sha256` is trusted caller authority
+reconstructed from the exact authority-bound checkpoint inventory entry; it is never derived from
+the archive or sidecar being checked. The sidecar bytes are exactly
+`<lowercase-sha256><two spaces><archive-basename><LF>`. The archive uses USTAR headers only,
+canonical UTF-8 member order, exact ASCII `0` regular-file and ASCII `5` directory typeflags,
+`uid=gid=mtime=0`, empty owner/group names, preserved permission bits, file data padded to 512-byte
+blocks, and exactly two terminal zero blocks.
 
 ---
 
@@ -3542,13 +3555,15 @@ Extend `ResourceLimitsV1` with these positive integer fields and exact defaults:
 ```python
 checkpoint_archive_bytes: int = 9 * _GIB
 checkpoint_members: int = 120_064
+checkpoint_directories: int = 64
 checkpoint_file_bytes: int = 8 * _GIB
 checkpoint_aggregate_file_bytes: int = 8 * _GIB
 checkpoint_path_depth: int = 64
 checkpoint_restore_seconds: int = 300
 ```
 
-In `tests/capsule/test_limits.py`, include all six in the complete field/default assertion, bool/nonpositive rejection matrix, and frozen/slotted checks.
+In `tests/capsule/test_limits.py`, include all seven in the complete field/default assertion,
+bool/nonpositive rejection matrix, and frozen/slotted checks.
 
 Run:
 
@@ -3556,13 +3571,15 @@ Run:
 uv run pytest tests/capsule/test_limits.py -q
 ```
 
-Expected: FAIL because the six dataclass fields are absent.
+Expected: FAIL because the seven dataclass fields are absent.
 
 - [ ] **Step 2: RED-test canonical USTAR bytes and sidecar**
 
-Create `tests/capsule/test_checkpoint.py`. Prepare a deterministic small capsule, set distinct allowed
-file modes, and include a nested directory archived as `0o555` with a regular child to prove packing
-does not require owner-write mode. Construct this exact provenance, derive its required name, and call:
+Create `tests/capsule/test_checkpoint.py`. Prepare a deterministic small captured-shard capsule with
+both validated planning inputs, set distinct allowed file modes, and include a nested directory
+archived as `0o555` with a regular child to prove packing does not require owner-write mode.
+Construct this exact provenance using the captured shard's campaign, model, and scenario, derive its
+required name, and call:
 
 ```python
 provenance = CheckpointProvenanceV1(
@@ -3589,7 +3606,11 @@ assert artifact.sidecar_path.read_bytes() == (
 )
 ```
 
-Parse raw 512-byte headers in the test without production helpers. Assert USTAR magic/version, canonical UTF-8 ordering, directory-before-child order, `uid=gid=mtime=0`, empty owner/group names, exact preserved modes, regular/directory types only, zero data padding, and exactly two terminal zero blocks. Call pack twice at different destination names and assert archive bytes are identical.
+Parse raw 512-byte headers in the test without production helpers. Assert USTAR magic/version,
+canonical UTF-8 ordering, directory-before-child order, `uid=gid=mtime=0`, empty owner/group names,
+exact preserved modes, exact ASCII `0` regular-file and ASCII `5` directory typeflags, zero data
+padding, and exactly two terminal zero blocks. Call pack twice under different output parents using
+the same exact derived basename and assert archive bytes are identical.
 
 - [ ] **Step 3: Run the packer RED gate**
 
@@ -3611,19 +3632,31 @@ def verified_checkpoint_source(path: Path) -> Iterator[VerifiedCheckpointSourceV
     """Yield a stable verified root descriptor and exact inventory while retaining a shared lock."""
 ```
 
-`VerifiedCheckpointSourceV1` is frozen/slotted and contains the borrowed root descriptor, strict `VerifyResultV1`, and an immutable UTF-8-sorted tuple of `(path, kind, mode, byte_length)` records. The context owns and closes the parent/root/lock descriptors exactly once. It requires `.laconian.lock` even for sealed source packing because the archive contract includes that file; transport-lock omission is accepted only when reading an already transported sealed capsule.
+`VerifiedCheckpointSourceV1` is frozen/slotted and contains the borrowed root descriptor, strict
+`VerifyResultV1`, validated captured parent/shard planning records, and an immutable UTF-8-sorted
+tuple of `(path, kind, mode, byte_length)` records. The context owns and closes the parent/root/lock
+descriptors exactly once. It requires both planning inputs and rejects a full-parent capsule. It
+requires `.laconian.lock` even for sealed source packing because the archive contract includes that
+file; transport-lock omission is accepted only when reading an already transported sealed capsule.
 
 Recheck every descriptor/path identity immediately before and after streaming each member and recheck root/parent/lock identities before yielding completion.
 
 - [ ] **Step 5: Implement a deterministic streaming USTAR writer**
 
-Implement `CheckpointError(code)` with literal message `capsule checkpoint rejected`, strict `CheckpointProvenanceV1`, `checkpoint_archive_name`, `CheckpointArtifactV1`, and `pack_checkpoint`. Class-bound revalidate provenance, require its safe model component, and reject an archive path whose basename is not the exact derived provenance name before opening the capsule.
+Implement `CheckpointError(code)` with literal message `capsule checkpoint rejected`, strict
+`CheckpointProvenanceV1`, `checkpoint_archive_name`, `CheckpointArtifactV1`, and `pack_checkpoint`.
+Class-bound revalidate provenance, require its safe model component, and reject an archive path whose
+basename is not the exact derived provenance name before opening the capsule. After opening the
+verified source, require a captured shard and cross-bind provenance campaign/model/scenario to the
+validated shard and manifest before writing any output. Reject more than
+`RESOURCE_LIMITS_V1.checkpoint_directories` directory members.
 
 For each sorted verified member:
 
 1. encode the relative UTF-8 path and split it at the latest slash fitting USTAR's 155-byte prefix and 100-byte name fields;
 2. reject paths not representable in USTAR rather than creating PAX or GNU records;
-3. write a 512-byte header with type `5` for a directory or `0` for a regular file;
+3. write a 512-byte header with exact type byte ASCII `5` (`0x35`) for a directory or ASCII `0`
+   (`0x30`) for a regular file;
 4. encode mode, uid, gid, size, and mtime as fixed-width ASCII octal with canonical NUL/space terminators;
 5. calculate the checksum with the checksum field treated as eight spaces;
 6. stream regular content from its no-follow descriptor while hashing and enforcing the exact verified size;
@@ -3634,7 +3667,11 @@ Write to one operation-owned same-directory temporary using exclusive creation, 
 
 - [ ] **Step 6: Test mutation, special-file, and output-collision failures**
 
-Inject a source mutation after header creation, a short read, appended source byte, inode replacement, lock loss, FIFO/symlink/device member, USTAR-unrepresentable path, archive write failure, fsync failure, archive collision, sidecar collision, and parent identity change. Assert no accepted artifact, no overwrite, and cleanup only of the operation-owned temporary after identity validation.
+Inject a full-parent source, wrong campaign/model/scenario provenance, a 65th directory, a source
+mutation after header creation, a short read, appended source byte, inode replacement, lock loss,
+FIFO/symlink/device member, USTAR-unrepresentable path, archive write failure, fsync failure,
+archive collision, sidecar collision, and parent identity change. Assert no accepted artifact, no
+overwrite, and cleanup only of the operation-owned temporary after identity validation.
 
 Run:
 
@@ -3665,7 +3702,8 @@ git commit -m "feat: pack deterministic capsule checkpoints"
 Pack one unsealed partial shard capsule and one sealed complete shard capsule. Give each a nested
 `0o555` directory containing at least one regular file, then restore each into a fresh parent with
 `CheckpointExpectedBindingsV1` populated from the preflight parent/shard files, exact ordered
-`(binding_id, sha256)` protocol bindings, and the archive-name provenance. Assert:
+`(binding_id, sha256)` protocol bindings, the archive-name provenance, and
+`archive_sha256=artifact.sha256` as the test's trusted authority input. Assert:
 
 ```python
 restored = restore_checkpoint(
@@ -3683,7 +3721,10 @@ assert verify_capsule(restored, mode=VerificationMode.PREPARED).status == "valid
 The tree snapshot compares every relative path, kind, permission mode, and regular-file byte string,
 including the read-only directory and its child, `.laconian.lock`, and `seal.json` when present.
 
-For each expected field, mutate only that expected value and assert `CheckpointError.code == "checkpoint_binding_mismatch"` with no published destination.
+For each expected field, mutate only that expected value and assert
+`CheckpointError.code == "checkpoint_binding_mismatch"` with no published destination. Also assert
+that a full-parent capsule cannot be packed or restored and that the parent-plan, shard-plan, and
+scenario expected bindings are never nullable.
 
 - [ ] **Step 2: Run the restore RED gate**
 
@@ -3702,12 +3743,14 @@ Add a test-only raw 512-byte header builder and parameterize rejection of:
 ```text
 archive over checkpoint_archive_bytes
 member count over checkpoint_members
+directory count over checkpoint_directories
 one file over checkpoint_file_bytes
 aggregate regular bytes over checkpoint_aggregate_file_bytes
 path depth over checkpoint_path_depth
 expired monotonic deadline
 invalid header checksum
 non-USTAR magic or version
+NUL regular-file typeflag
 PAX local header x
 PAX global header g
 GNU long name L
@@ -3736,8 +3779,16 @@ declared size with short data
 nonzero padding
 missing second terminal zero block
 nonzero data after terminal blocks
-sidecar wrong hash
+trusted archive hash differs from sidecar
+trusted archive hash differs from pre-parse digest
+trusted archive hash differs from parse-pass digest
+archive identity changes after parse
+substituted valid archive and matching substituted sidecar
 sidecar wrong basename
+full-parent capsule
+missing parent-plan, shard-plan, or scenario binding
+65 sibling directories under a reduced `RLIMIT_NOFILE`
+`EMFILE` while retaining a directory descriptor
 existing destination
 destination parent identity change
 ```
@@ -3756,13 +3807,28 @@ Expected: FAIL because no bounded raw USTAR parser or restore staging exists.
 
 - [ ] **Step 5: Implement sidecar-first bounded archive validation**
 
-Open sidecar and archive through parent descriptors with `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`; require both stable regular files. Parse the sidecar as one ASCII LF-terminated line with exactly two spaces, lowercase 64-hex digest, and exact archive basename. Hash the archive through its retained descriptor, enforce `checkpoint_archive_bytes`, compare the digest, rewind, and recheck identity before parsing.
+Class-bound revalidate `CheckpointExpectedBindingsV1` before opening either input. Its
+`archive_sha256` is mandatory trusted authority supplied by the caller from the exact
+authority-bound checkpoint inventory; never derive it from either input path. Open sidecar and
+archive through parent descriptors with `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`; require both stable
+regular files. Parse the sidecar as one ASCII LF-terminated line with exactly two spaces, lowercase
+64-hex digest, and exact archive basename, and require that digest to equal
+`expected.archive_sha256`. Hash the archive through its retained descriptor, enforce
+`checkpoint_archive_bytes`, require the pre-parse digest to equal the same expected digest, rewind,
+and recheck identity before parsing. Recompute SHA-256 over every header, content, padding, and
+terminal block consumed by the parser, require that parse-pass digest to equal the same expected
+digest, and recheck exact retained and visible archive identities after parsing. Acceptance therefore
+requires four-way digest equality among authority, sidecar, pre-parse, and parse-pass values plus a
+stable final archive identity.
 
 Use `time.monotonic()` to establish one deadline at entry and recheck it before every header read, content chunk, fsync, verification stage, and publish. A test seam may supply a monotonic callable; production always uses the real monotonic clock.
 
 - [ ] **Step 6: Implement the one-pass USTAR parser and extractor**
 
-Parse raw 512-byte headers directly. Accept only USTAR magic `ustar\0`, version `00`, canonical ASCII-octal numeric fields, type `0`/NUL regular files, and type `5` directories. Reject every extension and link type before applying any name extension semantics.
+Parse raw 512-byte headers directly. Accept only USTAR magic `ustar\0`, version `00`, canonical
+ASCII-octal numeric fields, exact ASCII `0` (`0x30`) regular-file typeflags, and exact ASCII `5`
+(`0x35`) directory typeflags. A NUL regular-file typeflag is noncanonical and rejected. Reject every
+extension and link type before applying any name extension semantics.
 
 For each member, before creation:
 
@@ -3773,14 +3839,25 @@ For each member, before creation:
 5. require `capsule_path_kind(path)` to equal the header kind;
 6. require no duplicate normalized path;
 7. require every nonroot parent directory to have appeared earlier; and
-8. reserve member/per-file/aggregate capacity before reading data.
+8. reserve member/directory/per-file/aggregate capacity before reading data.
 
 Create one operation-owned `0700` staging directory under the already-open destination parent. Open
 child directories one component at a time with no-follow descriptors. Create every directory as
 `0700` regardless of its archived mode, retain its descriptor plus archived mode/depth, and keep it
-owner-readable/writable/searchable while any descendant may still be created. Create regular files
+owner-readable/writable/searchable while any descendant may still be created. Retain no more than
+`checkpoint_directories == 64` directory descriptors. A 65th directory or `EMFILE` fails closed,
+closes every owned descriptor exactly once, and removes only the identity-bound staging tree; the
+120,064 total-member bound never authorizes additional retained directory descriptors. Create regular files
 with `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC` and mode `0600`; write exactly declared bytes,
 require zero block padding, fsync, then `fchmod` the regular file to its archived permission bits.
+
+The identity-owned cleanup primitive must accept an explicit strict-positive entry ceiling. Existing
+non-checkpoint callers retain their current bound; checkpoint restore passes exactly
+`RESOURCE_LIMITS_V1.checkpoint_members`, so every tree the parser can finish creating is within its
+cleanup budget. The expired restore deadline never suppresses mandatory cleanup. Add a reduced-bound
+filesystem regression that proves cleanup succeeds through the accepted bound and rejects the next
+entry, plus a restore regression that records the exact `120_064` ceiling passed after a late
+prepublication failure. A fixed cleanup ceiling below `checkpoint_members` is forbidden.
 
 Only after every member, padding block, and both terminal zero blocks have been parsed successfully,
 recheck every retained directory identity and apply archived directory modes with descriptor-relative
@@ -3795,14 +3872,15 @@ While staging is still hidden:
 
 1. require `.laconian.lock` as a regular member;
 2. acquire a fresh lock on the restored `.laconian.lock` descriptor and run descriptor-based full capsule verification while holding it; archived lock bytes never count as an inherited lock state;
-3. load `capsule.json`, `manifest.json`, `plan.jsonl`, and optional captured parent/shard planning inputs from verified descriptors;
-4. compare every `CheckpointExpectedBindingsV1` field exactly, with null parent/shard/scenario fields required only for a full-parent capsule and protocol bindings required in manifest declaration order;
+3. load `capsule.json`, `manifest.json`, `plan.jsonl`, and both mandatory captured parent/shard planning inputs from verified descriptors, reject a full-parent capsule, and validate the captured `ShardPlanV1`;
+4. compare every `CheckpointExpectedBindingsV1` field exactly: `parent_plan_sha256` is SHA-256 of the exact canonical captured parent-plan JSONL bytes, `shard_plan_sha256` is the class-bound `ShardPlanV1.shard_plan_sha256` self-digest, `scenario_uid` is the shard scenario, provenance campaign/model/scenario equals the captured shard and manifest, `archive_sha256` already passed the four-way transport check, and protocol bindings occur in manifest declaration order; none of the shard bindings is nullable;
 5. fsync the root and destination parent;
 6. publish with `rename_noreplace`; and
 7. fsync the destination parent again.
 
 On every prepublication failure, recursively remove only the operation-owned staging tree using
-retained identity checks and bounded descriptor-relative cleanup. If archived directory modes were
+retained identity checks and descriptor-relative cleanup bounded by the same
+`checkpoint_members` value used for extraction. If archived directory modes were
 already applied, cleanup first uses the retained descriptors to restore owner `rwx` bits without
 widening group/other bits, deepest-first, and then removes children descriptor-relatively. Add a
 fault-injection test after directory-mode application that proves the hidden read-only tree is fully
@@ -3957,7 +4035,9 @@ PublicBenchmarkProviderOutcomeV1` through the existing capsule execution path,
 `write_scored_sidecar`, `load_verified_scored_capsule`, `pack_checkpoint`, `restore_checkpoint`,
 `verify_capsule` again, and `load_verified_scored_capsule` against the restored capsule.
 Use `checkpoint_archive_name` for the archive name and construct the already-defined
-`CheckpointProvenanceV1` and `CheckpointExpectedBindingsV1` directly. Compute complete tree hashes
+`CheckpointProvenanceV1` and `CheckpointExpectedBindingsV1` directly, setting the expected trusted
+`archive_sha256` from the `CheckpointArtifactV1` returned by the immediately preceding pack call.
+Compute complete tree hashes
 by byte-sorted descriptor reads in this test helper only; do not add a production tree-hash API.
 Populate every `FoundationRoundTripEvidence` field directly from the local request list, committed
 attempt evidence, `FinalizeResultV1`, both public verification results, and both

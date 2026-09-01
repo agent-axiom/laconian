@@ -3,8 +3,11 @@
 **Date:** 2026-08-30
 
 **Status:** Legacy-v1 price-migration and Foundations preflight-closure amendment approved;
-amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a handoff that
-records this governance-only successor as `PLAN_BASE_SHA`
+proposed shard-checkpoint authority and bounded-directory amendment is not approved. Foundations
+Tasks 10–12 and the affected Runtime checkpoint work may not be committed or merged as complete
+until the exact commit containing the proposed amendment receives separate maintainer/user approval,
+that approval is recorded by a governance-only successor, and the successor is recorded at handoff
+as `PLAN_BASE_SHA`.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -23,11 +26,12 @@ design. That approval remains historical authority for the `05e3d7ba` baseline o
 
 **Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
 approved the normative design at commit `e67ad191623316f69523b051fba48ec2e7492493` with the exact
-message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. This governance-only
-successor records that approval without changing normative behavior and synchronizes the
-Foundations plan. Amendment-dependent implementation may proceed only from a handoff that records
-this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment re-blocks every affected
-task until separately approved and governance-recorded.
+message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Governance-only successor
+`6930b6e18b11d50a4df5b5fd18d37207e891a28c` records that approval without changing normative
+behavior and synchronizes the Foundations plan. Amendment-dependent implementation in that approved
+scope may proceed only from a handoff that records that successor's full SHA as `PLAN_BASE_SHA`;
+the pending checkpoint amendment separately re-blocks its affected tasks until approved and
+governance-recorded.
 
 **Prior approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
 exact-wire gaps without changing the benchmark estimand, workload, model set, statistical gates,
@@ -49,6 +53,15 @@ usage-detail preservation, and separate strict benchmark replay fixture; and fix
 identity signatures plus complete prehash input-bound preflight. It does not change the estimand,
 workload, model set, wire keys, five-rate native-v2 price contract, replay command inventory,
 workflow inventory, or App inventory.
+
+**Pending checkpoint amendment scope:** The proposed revision narrows checkpoint transport to
+captured scenario shards, makes the authority-bound archive SHA-256 an explicit restore input,
+requires one canonical regular-file USTAR typeflag, and bounds retained directory descriptors
+independently of the total member limit. It does not change the estimand, workload, model set,
+provider wire, retry policy, spend caps, workflow inventory, App inventory, or publication rules.
+The approved `e67ad191623316f69523b051fba48ec2e7492493` behavior remains the implementation authority
+outside the affected checkpoint work; no approval of that ancestor is approval of these pending
+bytes.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -1266,24 +1279,37 @@ instead of implying that GitHub offers a workflow-wide approval.
 
 ### 7.3 Checkpoints and resume
 
-Each shard checkpoint is an uncompressed tar archive rather than a direct directory upload. The
-archive retains `.laconian.lock`, file modes, exact relative paths, and the complete append-only
-capsule. It has a SHA-256 sidecar and a unique name containing campaign, model, scenario, batch,
-and run-attempt identity.
+Checkpoint transport accepts only a capsule containing both validated captured-planning inputs and
+one valid scenario `ShardPlanV1`; a full-parent capsule is never a checkpoint subject. Each shard
+checkpoint is an uncompressed tar archive rather than a direct directory upload. The archive
+retains `.laconian.lock`, file modes, exact relative paths, and the complete append-only capsule. It
+has a SHA-256 sidecar and a unique name containing campaign, model, scenario, batch, and run-attempt
+identity. The sidecar is transport metadata, not authority: the trusted archive digest comes from
+the exact authority-bound checkpoint inventory entry selected for resume.
 
 Before credentials become available on resume, the job:
 
-1. selects the exact artifact ID from the exact workflow-run ID, run attempt, both tag-object
+1. selects the exact artifact ID and `archive_sha256` from the exact authority-bound checkpoint
+   inventory entry, workflow-run ID, run attempt, both tag-object
    bindings, peeled C0/B0 bindings, `campaign_registry_sha256`, workflow-file hash, environment
    deployment, batch-attempt ID, and upload service digest; latest-by-name lookup is forbidden;
-2. enforces archive byte size, member count, per-file, aggregate, path-depth, and time bounds;
-3. rejects PAX/GNU sparse records, absolute paths, backslashes, NUL, non-NFC or empty components,
-   `.`/`..`, links, devices, FIFOs, duplicate normalized paths, and unexpected members;
-4. extracts in one fd-relative pass into a new `0700` directory with no-follow/exclusive-create
-   semantics, fsyncs it, and atomically publishes it; generic `tar -xf` and `extractall` are
+2. requires four-way equality among that trusted digest, the exact sidecar digest, a pre-parse
+   digest of the retained archive, and the digest recomputed while parsing; it then rechecks the
+   retained and visible archive identities before accepting the bytes;
+3. enforces archive byte size, total-member, 64-directory, per-file, aggregate, path-depth, and time
+   bounds; retaining a 65th directory descriptor or encountering `EMFILE` fails closed;
+4. accepts only exact ASCII `0` (`0x30`) regular-file and ASCII `5` (`0x35`) directory USTAR
+   typeflags, and rejects NUL regular typeflags, PAX/GNU sparse records, absolute paths,
+   backslashes, NUL in names, non-NFC or empty components, `.`/`..`, links, devices, FIFOs,
+   duplicate normalized paths, and unexpected members;
+5. extracts in one fd-relative pass into a new `0700` directory with no-follow/exclusive-create
+   semantics, retains at most 64 directory descriptors, fsyncs it, and atomically publishes it;
+   its identity-owned cleanup traversal uses the same total-member ceiling as extraction, so no
+   accepted hidden tree can exceed the cleanup budget; generic `tar -xf` and `extractall` are
    forbidden;
-5. runs full capsule verification; and
-6. compares the manifest, plan, protocol, model, and shard hashes with the preflight registry.
+6. runs full capsule verification; and
+7. compares the manifest, plan, protocol, model, mandatory parent-plan, shard-plan, and scenario
+   hashes with the preflight registry and the checkpoint provenance.
 
 Resume never changes existing plan identities or releases uncertain exposure. It creates a new
 bounded `BatchPlanV1` only for the exact remaining suffix. `AMBIGUOUS_INFLIGHT` is not automatically
@@ -10096,14 +10122,16 @@ rather than weakening the protocol.
 
 The legacy-v1 price-migration and Foundations preflight-closure gate was satisfied by the 2026-08-31
 exact maintainer/user approval of normative commit
-`e67ad191623316f69523b051fba48ec2e7492493`, recorded by this governance-only successor with the
+`e67ad191623316f69523b051fba48ec2e7492493`, recorded by governance-only successor
+`6930b6e18b11d50a4df5b5fd18d37207e891a28c` with the
 exact message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Approvals of
 `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
 `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
 `46147ef62b5bb009421d58928e879d92247d84b5` remain historical evidence for their earlier normative
 designs. Amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a
-handoff that records this successor's full SHA as `PLAN_BASE_SHA`; any later normative amendment
-repeats the same exact-commit approval and governance-recording process.
+handoff that records `6930b6e18b11d50a4df5b5fd18d37207e891a28c` as `PLAN_BASE_SHA`; the pending
+checkpoint amendment repeats the same exact-commit approval and governance-recording process for
+its affected work.
 
 After that exact approval, governance recording, `PLAN_BASE_SHA` handoff, and the still-required
 implementation, the release sequence is:
@@ -10254,15 +10282,18 @@ collection, or complete-publication stage.
 
 The system is ready for the full campaign only when:
 
-- the governance prerequisite is satisfied by this governance-only successor recording the
+- the approved preflight governance prerequisite is satisfied by governance-only successor
+  `6930b6e18b11d50a4df5b5fd18d37207e891a28c` recording the
   2026-08-31 exact approval of normative commit
   `e67ad191623316f69523b051fba48ec2e7492493` with message
   `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`; approvals
   `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`,
   `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
-  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; the synchronized Foundations plan
-  in this successor must be recorded at handoff as `PLAN_BASE_SHA` before amendment-dependent Tasks
-  2–5 implementation proceeds, and any later normative amendment requires another exact approval;
+  `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; that synchronized Foundations plan
+  must be recorded at handoff as `PLAN_BASE_SHA` before amendment-dependent Tasks 2–5 implementation
+  proceeds, and the pending checkpoint amendment must receive its own exact approval and
+  governance-only successor before Foundations Tasks 10–12 or affected Runtime work proceeds as
+  complete;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
