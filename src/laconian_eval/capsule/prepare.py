@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
 from uuid import RFC_4122, UUID, uuid4
 
-from laconian_eval.capsule.bounded_io import open_directory_no_follow
+from laconian_eval.capsule.bounded_io import (
+    BoundedIOError,
+    open_directory_no_follow,
+    read_regular_file_once,
+)
 from laconian_eval.capsule.canonical import canonical_json, canonical_jsonl, sha256_bytes
 from laconian_eval.capsule.capture import (
     CapturedInputFile,
@@ -33,6 +37,7 @@ from laconian_eval.capsule.import_policy import (
     build_import_policy,
     capture_runtime_import_state,
 )
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
 from laconian_eval.capsule.manifest_models import ResolvedManifestV2
 from laconian_eval.capsule.planning import materialize_case_index, materialize_parent_plan
 from laconian_eval.capsule.posix import PosixOps
@@ -56,6 +61,11 @@ from laconian_eval.capsule.schema import (
     ProviderKind,
     Sha256,
     VerificationWarning,
+)
+from laconian_eval.capsule.sharding import (
+    ShardPlanError,
+    materialize_shard_projection,
+    parse_shard_plan_file_bytes,
 )
 from laconian_eval.capsule.verify import _verify_prepared_capsule_descriptors
 
@@ -96,6 +106,13 @@ class PrepareRequest:
     input_root: Path | None
     source_root: Path | None
     container_image_digest: Sha256 | None
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareShardRequest:
+    prepare: PrepareRequest
+    parent_plan_path: Path
+    shard_plan_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,9 +551,128 @@ def _strict_model(model_type: type[Any], value: object, code: str) -> Any:
         raise PreparationError(code) from None
 
 
+@dataclass(frozen=True, slots=True)
+class _PlanSelection:
+    case_index: tuple[CaseIndexRowV1, ...]
+    plan: tuple[PlanRowV1, ...]
+    planning_inputs: tuple[CapturedInputFile, ...] = ()
+
+
+def _read_planning_input(
+    path: Path,
+    *,
+    invocation_cwd: Path,
+    limit: int,
+    limit_code: str,
+) -> bytes:
+    descriptor: int | None = None
+    try:
+        raw_path = os.fspath(path)
+        if type(raw_path) is not str or not raw_path:
+            raise BoundedIOError("unsafe_source_path", "unsafe source path")
+        if path.is_absolute():
+            root = Path(path.anchor)
+            relative = "/".join(path.parts[1:])
+        else:
+            root = invocation_cwd
+            relative = raw_path
+        descriptor = open_directory_no_follow(root)
+        return read_regular_file_once(
+            descriptor,
+            relative,
+            limit=limit,
+            code=limit_code,
+        )
+    except ResourceLimitError as error:
+        if error.code == limit_code:
+            raise PreparationError(limit_code) from None
+        raise PreparationError("planning_input_read_failed") from None
+    except (BoundedIOError, OSError, RuntimeError, TypeError, ValueError, UnicodeError):
+        raise PreparationError("planning_input_read_failed") from None
+    finally:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+
+
+def _planning_input_file(
+    *,
+    role: Literal["parent_plan", "shard_plan"],
+    data: bytes,
+) -> CapturedInputFile:
+    locator, capsule_path = {
+        "parent_plan": ("preflight.parent_plan", "inputs/planning/parent-plan.jsonl"),
+        "shard_plan": ("preflight.shard_plan", "inputs/planning/shard-plan.json"),
+    }[role]
+    try:
+        record = InputFileRecordV1(
+            role=role,
+            role_ordinal=0,
+            logical_locator=locator,
+            capsule_path=capsule_path,
+            byte_length=len(data),
+            sha256=sha256_bytes(data),
+            dataset_id=None,
+            binding_id=None,
+        )
+    except (TypeError, ValueError):
+        raise PreparationError("plan_mismatch") from None
+    return CapturedInputFile(record=record, data=data)
+
+
+def _materialize_shard_plan_selection(
+    captured_inputs: CapturedInputs,
+    request: PrepareShardRequest,
+) -> _PlanSelection:
+    manifest = captured_inputs.resolved_manifest
+    case_index = materialize_case_index(captured_inputs, manifest)
+    parent_plan = materialize_parent_plan(
+        parent_manifest_sha256=captured_inputs.manifest_sha256,
+        resolved_manifest=manifest,
+        case_index=case_index,
+        captured_arms=captured_inputs.arms,
+    )
+    expected_parent_bytes = canonical_jsonl(
+        row.model_dump(mode="json", round_trip=True) for row in parent_plan
+    )
+    parent_bytes = _read_planning_input(
+        request.parent_plan_path,
+        invocation_cwd=request.prepare.invocation_cwd,
+        limit=RESOURCE_LIMITS_V1.captured_input_total_bytes,
+        limit_code="parent_plan_limit",
+    )
+    shard_bytes = _read_planning_input(
+        request.shard_plan_path,
+        invocation_cwd=request.prepare.invocation_cwd,
+        limit=RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes,
+        limit_code="shard_plan_limit",
+    )
+    if parent_bytes != expected_parent_bytes:
+        raise PreparationError("plan_mismatch")
+    try:
+        shard = parse_shard_plan_file_bytes(shard_bytes)
+        if (
+            shard.model_id != manifest.provider.model
+            or shard.parent_manifest_sha256 != captured_inputs.manifest_sha256
+        ):
+            raise ShardPlanError("plan_mismatch")
+        plan = materialize_shard_projection(shard, parent_plan)
+    except (ShardPlanError, TypeError, ValueError):
+        raise PreparationError("plan_mismatch") from None
+    return _PlanSelection(
+        case_index=case_index,
+        plan=plan,
+        planning_inputs=(
+            _planning_input_file(role="parent_plan", data=parent_bytes),
+            _planning_input_file(role="shard_plan", data=shard_bytes),
+        ),
+    )
+
+
 def _captured_artifacts(
     captured_inputs: CapturedInputs,
     runner_source: object,
+    planning_inputs: Sequence[CapturedInputFile] = (),
 ) -> tuple[InputIndexV1, dict[str, bytes], RunnerSourceIndexV1, bytes]:
     try:
         runner_index = _strict_model(
@@ -547,7 +683,13 @@ def _captured_artifacts(
         runner_index_bytes = canonical_json(runner_index.model_dump(mode="json"))
         if runner_source.index_bytes != runner_index_bytes:  # type: ignore[attr-defined]
             raise PreparationError("invalid_runner_source")
-        input_files = tuple(captured_inputs.files) + tuple(runner_source.files)  # type: ignore[attr-defined]
+        input_files = (
+            tuple(captured_inputs.files)
+            + tuple(planning_inputs)
+            + tuple(
+                runner_source.files  # type: ignore[attr-defined]
+            )
+        )
     except PreparationError:
         raise
     except (AttributeError, TypeError, ValueError):
@@ -590,6 +732,7 @@ def _build_artifacts(
     environment: EnvironmentV1,
     run_id: UUID,
     operation_id: UUID,
+    plan_selection: _PlanSelection | None = None,
 ) -> tuple[
     CapsuleV1,
     dict[str, bytes],
@@ -603,15 +746,20 @@ def _build_artifacts(
     input_index, captured_artifacts, runner_index, runner_index_bytes = _captured_artifacts(
         captured_inputs,
         runner_source,
+        () if plan_selection is None else plan_selection.planning_inputs,
     )
-    case_index = materialize_case_index(captured_inputs, manifest)
     manifest_sha256 = sha256_bytes(captured_inputs.resolved_manifest_bytes)
-    plan = materialize_parent_plan(
-        parent_manifest_sha256=manifest_sha256,
-        resolved_manifest=manifest,
-        case_index=case_index,
-        captured_arms=captured_inputs.arms,
-    )
+    if plan_selection is None:
+        case_index = materialize_case_index(captured_inputs, manifest)
+        plan = materialize_parent_plan(
+            parent_manifest_sha256=manifest_sha256,
+            resolved_manifest=manifest,
+            case_index=case_index,
+            captured_arms=captured_inputs.arms,
+        )
+    else:
+        case_index = plan_selection.case_index
+        plan = plan_selection.plan
     input_index_bytes = canonical_json(input_index.model_dump(mode="json"))
     case_index_bytes = canonical_jsonl(item.model_dump(mode="json") for item in case_index)
     plan_bytes = canonical_jsonl(item.model_dump(mode="json") for item in plan)
@@ -835,9 +983,11 @@ def _generated_identities() -> tuple[UUID, UUID]:
     return run_id, operation_id
 
 
-def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
-    """Prepare and durably publish one provider-free generation capsule."""
-
+def _prepare_capsule_common(
+    request: PrepareRequest,
+    *,
+    shard_request: PrepareShardRequest | None,
+) -> PreparedCapsule:
     if type(request) is not PrepareRequest:
         raise PreparationError("invalid_request")
     captured_source = load_source_manifest_capture(
@@ -851,6 +1001,11 @@ def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
     )
     if captured_inputs.resolved_manifest.provider.api_key_env in _RESERVED_API_KEY_ENVIRONMENTS:
         raise PreparationError("reserved_api_key_environment")
+    plan_selection = (
+        None
+        if shard_request is None
+        else _materialize_shard_plan_selection(captured_inputs, shard_request)
+    )
 
     provenance = capture_installed_provenance(
         captured_inputs,
@@ -882,6 +1037,7 @@ def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
                 environment,
                 run_id,
                 operation_id,
+                plan_selection,
             )
             return _write_and_publish(
                 workspace,
@@ -920,3 +1076,22 @@ def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
     finally:
         with suppress(OSError):
             os.close(results_root_fd)
+
+
+def prepare_capsule(request: PrepareRequest) -> PreparedCapsule:
+    """Prepare and durably publish one provider-free generation capsule."""
+
+    return _prepare_capsule_common(request, shard_request=None)
+
+
+def prepare_shard_capsule(request: PrepareShardRequest) -> PreparedCapsule:
+    """Prepare one capsule only after recomputing and validating its captured parent projection."""
+
+    if (
+        type(request) is not PrepareShardRequest
+        or type(request.prepare) is not PrepareRequest
+        or not isinstance(request.parent_plan_path, Path)
+        or not isinstance(request.shard_plan_path, Path)
+    ):
+        raise PreparationError("invalid_request")
+    return _prepare_capsule_common(request.prepare, shard_request=request)

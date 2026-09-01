@@ -66,6 +66,7 @@ from .test_prepare import (
     _generation,
     _HarnessPosix,
     _install_harness,
+    _load_shard_success,
     _load_success,
     _manifest_payload,
     _request,
@@ -195,6 +196,18 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_bytes(canonical_jsonl(rows))
+
+
+def _recommit_indexed_input(root: Path, relative: str, data: bytes) -> None:
+    (root / relative).write_bytes(data)
+    index = _json_object(root / "inputs/index.json")
+    records = index["files"]
+    assert isinstance(records, list)
+    record = next(item for item in records if item["capsule_path"] == relative)
+    record["byte_length"] = len(data)
+    record["sha256"] = sha256_bytes(data)
+    _write_json(root / "inputs/index.json", index)
+    _refresh_capsule_and_event(root)
 
 
 def _runtime_fingerprint(environment: dict[str, Any]) -> str:
@@ -4040,6 +4053,307 @@ def test_dynamic_tree_compares_missing_and_unexpected_paths_globally(
     result = verify_capsule(root, mode=VerificationMode.PREPARED)
 
     _assert_invalid(result, code="missing_path", path=missing)
+
+
+def test_verify_prepared_accepts_exact_captured_shard_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, harness, _manifest, _parent_plan, shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    assert result.status == "valid"
+    assert result.state == "PREPARED"
+    assert result.missing_plan_item_ids == tuple(
+        sorted(shard.ordered_plan_item_ids, key=lambda value: value.encode("utf-8"))
+    )
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "inputs/planning/parent-plan.jsonl",
+        "inputs/planning/shard-plan.json",
+    ],
+)
+def test_verify_prepared_requires_both_planning_inputs_or_neither(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    (prepared.path / relative).unlink()
+    index = _json_object(prepared.path / "inputs/index.json")
+    records = index["files"]
+    assert isinstance(records, list)
+    index["files"] = [record for record in records if record["capsule_path"] != relative]
+    _write_json(prepared.path / "inputs/index.json", index)
+    _refresh_capsule_and_event(prepared.path)
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="missing_path", path=relative)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "inputs/planning/parent-plan.jsonl",
+        "inputs/planning/shard-plan.json",
+    ],
+)
+def test_verify_prepared_maps_planning_file_hash_failure_to_plan_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    path = prepared.path / relative
+    path.write_bytes(path.read_bytes() + b"x")
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="plan_mismatch", path=relative)
+
+
+@pytest.mark.parametrize("member", ["parent", "shard"])
+def test_verify_prepared_rejects_recommitted_planning_content_mutation_as_plan_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    relative = (
+        "inputs/planning/parent-plan.jsonl"
+        if member == "parent"
+        else "inputs/planning/shard-plan.json"
+    )
+    original = prepared.path.joinpath(relative).read_bytes()
+    _recommit_indexed_input(prepared.path, relative, original + b" ")
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="plan_mismatch", path=relative)
+
+
+def test_verify_prepared_maps_excessive_shard_json_depth_to_plan_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    relative = "inputs/planning/shard-plan.json"
+    hostile = b"[" * 2_000 + b"]" * 2_000 + b"\n"
+    _recommit_indexed_input(prepared.path, relative, hostile)
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="plan_mismatch", path=relative)
+
+
+def test_verify_prepared_bounds_same_inode_shard_growth_before_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    relative = "inputs/planning/shard-plan.json"
+    shard_path = prepared.path / relative
+    original_size = shard_path.stat().st_size
+    monkeypatch.setattr(
+        verify_module,
+        "RESOURCE_LIMITS_V1",
+        replace(
+            RESOURCE_LIMITS_V1,
+            plan_event_jsonl_row_bytes=original_size + 1,
+        ),
+    )
+    real_read_file = verify_module._read_file
+    real_read = os.read
+    grew: list[bool] = []
+    shard_reads: list[int] = []
+
+    def grow_before_read(
+        root_fd: int,
+        path: str,
+        expected: Any,
+        inventory: Any,
+        teardown_errors: list[Any],
+        *,
+        limit: int,
+        static_policy: Any = None,
+    ) -> bytes:
+        if path == relative and not grew:
+            with shard_path.open("ab") as stream:
+                stream.write(b"xx")
+            grew.append(True)
+        return real_read_file(
+            root_fd,
+            path,
+            expected,
+            inventory,
+            teardown_errors,
+            limit=limit,
+            static_policy=static_policy,
+        )
+
+    def reject_shard_read(descriptor: int, size: int) -> bytes:
+        if _descriptor_path(descriptor) == shard_path.resolve():
+            shard_reads.append(size)
+            raise AssertionError("oversized grown shard was read before rejection")
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(verify_module, "_read_file", grow_before_read)
+    monkeypatch.setattr(verify_module.os, "read", reject_shard_read)
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    assert grew == [True]
+    assert shard_reads == []
+    _assert_invalid(result, code="resource_limit", path=relative)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code", "path"),
+    [
+        ("grow-planning-leaf", "unstable_snapshot", None),
+        (
+            "add-nested-member",
+            "unexpected_path",
+            "inputs/planning/unexpected-plan.json",
+        ),
+    ],
+)
+def test_verify_prepared_rescans_exact_tree_after_semantic_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    code: str,
+    path: str | None,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    real_verify_context = verify_module._verify_capsule_context_descriptors
+    mutated: list[bool] = []
+
+    def verify_then_mutate(root_fd: int, inventory: Any) -> Any:
+        context = real_verify_context(root_fd, inventory)
+        if mutation == "grow-planning-leaf":
+            with prepared.path.joinpath("inputs/planning/shard-plan.json").open("ab") as stream:
+                stream.write(b"x")
+        else:
+            prepared.path.joinpath(path or "").write_bytes(b"{}\n")
+        mutated.append(True)
+        return context
+
+    monkeypatch.setattr(
+        verify_module,
+        "_verify_capsule_context_descriptors",
+        verify_then_mutate,
+    )
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    assert mutated == [True]
+    _assert_invalid(result, code=code, path=path)
+
+
+def test_verify_prepared_sanitizes_hostile_planning_index_path_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    index = _json_object(prepared.path / "inputs/index.json")
+    records = index["files"]
+    assert isinstance(records, list)
+    parent = next(record for record in records if record["role"] == "parent_plan")
+    parent["capsule_path"] = "../../escape"
+    _write_json(prepared.path / "inputs/index.json", index)
+    _refresh_capsule_and_event(prepared.path)
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="unexpected_path", path="inputs/index.json")
+
+
+def test_verify_prepared_rejects_a_local_projection_mutation_as_plan_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    rows = _jsonl_objects(prepared.path / "plan.jsonl")
+    rows[0]["arm_position"] = 1 - rows[0]["arm_position"]
+    _write_jsonl(prepared.path / "plan.jsonl", rows)
+    _refresh_capsule_and_event(prepared.path)
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="plan_mismatch", path="plan.jsonl")
+
+
+def test_verify_prepared_rejects_unexpected_planning_path_and_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    index = _json_object(prepared.path / "inputs/index.json")
+    records = index["files"]
+    assert isinstance(records, list)
+    parent = next(record for record in records if record["role"] == "parent_plan")
+    parent["role"] = "shard_plan"
+    _write_json(prepared.path / "inputs/index.json", index)
+    _refresh_capsule_and_event(prepared.path)
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(
+        result,
+        code="unexpected_path",
+        path="inputs/planning/parent-plan.jsonl",
+    )
+
+
+def test_verify_prepared_rejects_an_unindexed_planning_member_as_unexpected_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _harness, _manifest, _parent_plan, _shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    unexpected = "inputs/planning/unexpected-plan.json"
+    prepared.path.joinpath(unexpected).write_bytes(b"{}\n")
+
+    result = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+
+    _assert_invalid(result, code="unexpected_path", path=unexpected)
 
 
 def test_declared_dynamic_regular_file_replaced_by_directory_is_unsafe_type(

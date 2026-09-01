@@ -8,6 +8,7 @@ import fcntl
 import importlib
 import inspect
 import io
+import json
 import multiprocessing
 import os
 import platform
@@ -18,7 +19,7 @@ import sys
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import FrozenInstanceError, dataclass, field
+from dataclasses import FrozenInstanceError, dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
@@ -29,7 +30,7 @@ from uuid import RFC_4122, UUID
 
 import pytest
 import yaml
-from capsule_helpers import environment_v1_payload
+from capsule_helpers import environment_v1_payload, planning_input_records_v1_payload
 
 import laconian_eval.capsule.prepare as prepare_module
 from laconian_eval import __version__
@@ -64,6 +65,7 @@ from laconian_eval.capsule.record_models import (
     EnvironmentV1,
     InputFileRecordV1,
     InputIndexV1,
+    PlanRowV1,
     PreparedEventV1,
     PreparedPayloadV1,
     RunnerSourceFileV1,
@@ -261,6 +263,7 @@ def _environment(
     *,
     filesystem_class: str,
     provider_kind: str,
+    requested_model: str = "fixture-v1",
 ) -> EnvironmentV1:
     runner_source_sha256 = runner_source.index.runner_source_sha256
     payload = copy.deepcopy(environment_v1_payload())
@@ -289,6 +292,7 @@ def _environment(
     import_environment["audit_hook_source_sha256"] = import_policy_sha256
     provider = payload["provider"]
     assert isinstance(provider, dict)
+    provider["requested_model"] = requested_model
     if provider_kind == "replay":
         provider.update(
             {
@@ -895,6 +899,7 @@ def _install_harness(
             harness.runner_source,
             filesystem_class=filesystem_class,
             provider_kind=provider_kind,
+            requested_model=harness.captured_inputs.resolved_manifest.provider.model,
         )
         if provenance.container_image_digest is not None:
             environment_payload = harness.environment.model_dump(mode="python")
@@ -995,6 +1000,515 @@ def _load_success(
     )
     prepared = prepare_capsule(_request(manifest, results_root))
     return prepared, harness, manifest
+
+
+def _write_shard_source_and_plans(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, tuple[object, ...], object, bytes, bytes]:
+    """Write one deterministic 40-row scenario shard outside its authored source root."""
+
+    from laconian_eval.capsule.sharding import project_shard_plans, shard_plan_file_bytes
+
+    source = tmp_path / "shard-source"
+    source.mkdir()
+    cases = [
+        _case(
+            f"prepare-{scenario:03d}-{locale}",
+            f"prepare-{scenario:03d}",
+            locale,
+            f"Answer scenario {scenario} in {locale}.",
+        )
+        for scenario in range(12)
+        for locale in ("en", "ru")
+    ]
+    case_path = source / "cases/response.yaml"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_bytes(
+        yaml.safe_dump(
+            {"schema_version": "1", "kind": "response", "cases": cases},
+            allow_unicode=True,
+            sort_keys=False,
+        ).encode("utf-8")
+    )
+    payload = _manifest_payload(
+        provider_kind="openai",
+        api_key_env="LIVE_TEST_API_KEY",
+        repetitions=10,
+    )
+    provider = payload["provider"]
+    assert isinstance(provider, dict)
+    provider["model"] = "gpt-5.6-sol"
+    manifest = source / "manifest.yaml"
+    manifest.write_bytes(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).encode("utf-8")
+    )
+
+    captured_source = prepare_module.load_source_manifest_capture(
+        manifest,
+        input_root=None,
+        invocation_cwd=source,
+    )
+    captured = prepare_module.capture_authored_inputs(captured_source, source_root=None)
+    case_index = materialize_case_index(captured, captured.resolved_manifest)
+    parent_plan = materialize_parent_plan(
+        parent_manifest_sha256=captured.manifest_sha256,
+        resolved_manifest=captured.resolved_manifest,
+        case_index=case_index,
+        captured_arms=captured.arms,
+    )
+    shards = project_shard_plans(
+        campaign_id="public-foundations-v1",
+        resolved_manifest=captured.resolved_manifest,
+        parent_manifest_sha256=captured.manifest_sha256,
+        parent_plan=parent_plan,
+        case_index=case_index,
+        captured_arms=captured.arms,
+    )
+    assert len(parent_plan) == 480
+    assert len(shards) == 12
+    shard = shards[0]
+    parent_bytes = canonical_jsonl(row.model_dump(mode="json") for row in parent_plan)
+    shard_bytes = shard_plan_file_bytes(shard)
+    planning = tmp_path / "planning"
+    planning.mkdir()
+    parent_path = planning / "parent-plan.jsonl"
+    shard_path = planning / "shard-plan.json"
+    parent_path.write_bytes(parent_bytes)
+    shard_path.write_bytes(shard_bytes)
+    return manifest, parent_path, shard_path, parent_plan, shard, parent_bytes, shard_bytes
+
+
+def _load_shard_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[PreparedCapsule, _PreparationHarness, Path, tuple[object, ...], object]:
+    manifest, _parent_path, _shard_path, parent_plan, shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    results_root = tmp_path / "shard-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+    request_type = prepare_module.PrepareShardRequest
+    prepared = prepare_module.prepare_shard_capsule(
+        request_type(
+            prepare=_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+            ),
+            parent_plan_path=Path("planning/parent-plan.jsonl"),
+            shard_plan_path=Path("planning/shard-plan.json"),
+        )
+    )
+    return prepared, harness, manifest, parent_plan, shard
+
+
+def _shard_request(
+    manifest: Path,
+    results_root: Path,
+    *,
+    invocation_cwd: Path,
+    parent_plan_path: Path,
+    shard_plan_path: Path,
+    input_root: Path | None = None,
+) -> object:
+    return prepare_module.PrepareShardRequest(
+        prepare=_request(
+            manifest,
+            results_root,
+            invocation_cwd=invocation_cwd,
+            input_root=input_root,
+        ),
+        parent_plan_path=parent_plan_path,
+        shard_plan_path=shard_plan_path,
+    )
+
+
+def _rewrite_shard_plan_payload(path: Path, mutation: str) -> None:
+    payload = json.loads(path.read_bytes())
+    assert isinstance(payload, dict)
+    ids = payload["ordered_plan_item_ids"]
+    assert isinstance(ids, list)
+    if mutation == "wrong_model":
+        payload["model_id"] = "gpt-5.6-terra"
+    elif mutation == "wrong_manifest_hash":
+        payload["parent_manifest_sha256"] = "0" * 64
+    elif mutation == "wrong_parent_hash":
+        payload["parent_plan_sha256"] = "1" * 64
+    elif mutation == "nonmember_id":
+        ids[0] = "2" * 64
+    elif mutation == "reordered_id":
+        ids.reverse()
+    elif mutation == "39_rows":
+        del ids[-1]
+        payload["row_count"] = 39
+    elif mutation == "41_rows":
+        ids.append("3" * 64)
+        payload["row_count"] = 41
+    elif mutation == "scenario_mismatch":
+        payload["scenario_uid"] = "4" * 64
+    else:  # pragma: no cover - test helper exhaustiveness
+        raise AssertionError(mutation)
+    preimage = {
+        "shard_schema_version": payload["shard_schema_version"],
+        "campaign_id": payload["campaign_id"],
+        "model_id": payload["model_id"],
+        "scenario_uid": payload["scenario_uid"],
+        "parent_manifest_sha256": payload["parent_manifest_sha256"],
+        "parent_plan_sha256": payload["parent_plan_sha256"],
+        "derivation_version": payload["derivation_version"],
+        "ordered_plan_item_ids": tuple(ids),
+        "row_count": payload["row_count"],
+    }
+    payload["shard_plan_sha256"] = stable_digest("laconian-shard-plan-v1", preimage)
+    path.write_bytes(canonical_json(payload) + b"\n")
+
+
+def test_prepare_shard_request_and_public_signature_are_exact() -> None:
+    request_type = prepare_module.PrepareShardRequest
+
+    assert str(inspect.signature(request_type)) == (
+        "(prepare: 'PrepareRequest', parent_plan_path: 'Path', shard_plan_path: 'Path') -> None"
+    )
+    assert str(inspect.signature(prepare_module.prepare_shard_capsule)) == (
+        "(request: 'PrepareShardRequest') -> 'PreparedCapsule'"
+    )
+
+
+def test_prepare_shard_capsule_captures_parent_and_exact_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, harness, _manifest, parent_plan, shard = _load_shard_success(
+        tmp_path,
+        monkeypatch,
+    )
+    parent_bytes = prepared.path.joinpath("inputs/planning/parent-plan.jsonl").read_bytes()
+    shard_bytes = prepared.path.joinpath("inputs/planning/shard-plan.json").read_bytes()
+    index = InputIndexV1.model_validate_json(
+        prepared.path.joinpath("inputs/index.json").read_bytes()
+    )
+    planning_records = [
+        record.model_dump(mode="json")
+        for record in index.files
+        if record.role in {"parent_plan", "shard_plan"}
+    ]
+    plan = tuple(
+        PlanRowV1.model_validate_json(raw)
+        for raw in prepared.path.joinpath("plan.jsonl").read_bytes().splitlines()
+    )
+
+    assert planning_records == planning_input_records_v1_payload(parent_bytes, shard_bytes)
+    assert len(plan) == 40
+    assert tuple(row.ordinal for row in plan) == tuple(range(40))
+    assert tuple(row.plan_item_id for row in plan) == shard.ordered_plan_item_ids
+    assert len(parent_plan) == 480
+    assert len({row.plan_item_id for row in parent_plan} - set(shard.ordered_plan_item_ids)) == 440
+    assert prepared.summary.planned_request_count == 40
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize("member", ["parent", "shard"])
+def test_prepare_shard_capsule_rejects_noncanonical_planning_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    selected = parent_path if member == "parent" else shard_path
+    selected.write_bytes(selected.read_bytes() + b" ")
+    results_root = tmp_path / "shard-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            prepare_module.PrepareShardRequest(
+                prepare=_request(manifest, results_root, invocation_cwd=tmp_path),
+                parent_plan_path=parent_path,
+                shard_plan_path=shard_path,
+            )
+        )
+
+    assert caught.value.code == "plan_mismatch"
+    assert list(results_root.iterdir()) == []
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_prepare_shard_capsule_maps_excessive_shard_json_depth_to_plan_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    shard_path.write_bytes(b"[" * 2_000 + b"]" * 2_000 + b"\n")
+    results_root = tmp_path / "deep-shard-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+                parent_plan_path=parent_path,
+                shard_plan_path=shard_path,
+            )
+        )
+
+    assert caught.value.code == "plan_mismatch"
+    assert harness.provenance_calls == 0
+    assert list(results_root.iterdir()) == []
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize("path_style", ["absolute", "invocation_relative"])
+def test_planning_input_paths_use_invocation_cwd_and_no_follow_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_style: str,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, parent_bytes, shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    results_root = tmp_path / f"results-{path_style}"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+    if path_style == "absolute":
+        selected_parent = parent_path
+        selected_shard = shard_path
+    else:
+        selected_parent = Path("planning/parent-plan.jsonl")
+        selected_shard = Path("planning/shard-plan.json")
+
+    prepared = prepare_module.prepare_shard_capsule(
+        _shard_request(
+            manifest,
+            results_root,
+            invocation_cwd=tmp_path,
+            parent_plan_path=selected_parent,
+            shard_plan_path=selected_shard,
+        )
+    )
+
+    assert prepared.path.joinpath("inputs/planning/parent-plan.jsonl").read_bytes() == parent_bytes
+    assert prepared.path.joinpath("inputs/planning/shard-plan.json").read_bytes() == shard_bytes
+    _assert_safety_barrier_untouched(harness)
+
+
+def test_relative_planning_inputs_never_fall_back_to_input_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    input_root = tmp_path / "input-root"
+    input_root.mkdir()
+    _write_case_file(input_root / "cases/response.yaml")
+    input_planning = input_root / "planning"
+    input_planning.mkdir()
+    parent_path.replace(input_planning / parent_path.name)
+    shard_path.replace(input_planning / shard_path.name)
+    invocation_cwd = tmp_path / "invocation"
+    invocation_cwd.mkdir()
+    results_root = tmp_path / "no-fallback-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=invocation_cwd,
+                input_root=input_root,
+                parent_plan_path=Path("planning/parent-plan.jsonl"),
+                shard_plan_path=Path("planning/shard-plan.json"),
+            )
+        )
+
+    assert caught.value.code == "planning_input_read_failed"
+    assert harness.provenance_calls == 0
+    assert list(results_root.iterdir()) == []
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "fifo", "directory", "unsafe_component"])
+def test_planning_inputs_reject_unsafe_path_types_and_components(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_kind: str,
+) -> None:
+    manifest, parent_path, _shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    selected_parent = Path("planning/parent-plan.jsonl")
+    if unsafe_kind == "symlink":
+        target = parent_path.with_name("real-parent-plan.jsonl")
+        parent_path.replace(target)
+        parent_path.symlink_to(target)
+    elif unsafe_kind == "fifo":
+        parent_path.unlink()
+        os.mkfifo(parent_path)
+    elif unsafe_kind == "directory":
+        parent_path.unlink()
+        parent_path.mkdir()
+    else:
+        selected_parent = Path("planning/../planning/parent-plan.jsonl")
+    results_root = tmp_path / f"unsafe-{unsafe_kind}-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+                parent_plan_path=selected_parent,
+                shard_plan_path=Path("planning/shard-plan.json"),
+            )
+        )
+
+    assert caught.value.code == "planning_input_read_failed"
+    assert harness.provenance_calls == 0
+    assert list(results_root.iterdir()) == []
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize("failure_point", ["open", "read"])
+def test_planning_input_open_or_read_failure_is_content_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    results_root = tmp_path / "read-failure-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    def fail_io(*_args: object, **_kwargs: object) -> bytes:
+        raise OSError(errno.EIO, "TOP-SECRET /private/build")
+
+    monkeypatch.setattr(
+        prepare_module,
+        "open_directory_no_follow" if failure_point == "open" else "read_regular_file_once",
+        fail_io,
+    )
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+                parent_plan_path=parent_path,
+                shard_plan_path=shard_path,
+            )
+        )
+
+    assert caught.value.code == "planning_input_read_failed"
+    assert "TOP-SECRET" not in str(caught.value)
+    assert harness.provenance_calls == 0
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize(
+    ("member", "expected_code"),
+    [("parent", "parent_plan_limit"), ("shard", "shard_plan_limit")],
+)
+def test_planning_input_limits_have_exact_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+    expected_code: str,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, parent_bytes, shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    selected_size = len(parent_bytes) if member == "parent" else len(shard_bytes)
+    limits = prepare_module.RESOURCE_LIMITS_V1
+    monkeypatch.setattr(
+        prepare_module,
+        "RESOURCE_LIMITS_V1",
+        replace(
+            limits,
+            captured_input_total_bytes=(
+                selected_size - 1 if member == "parent" else limits.captured_input_total_bytes
+            ),
+            plan_event_jsonl_row_bytes=(
+                selected_size - 1 if member == "shard" else limits.plan_event_jsonl_row_bytes
+            ),
+        ),
+    )
+    results_root = tmp_path / f"limit-{member}-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+                parent_plan_path=parent_path,
+                shard_plan_path=shard_path,
+            )
+        )
+
+    assert caught.value.code == expected_code
+    assert harness.provenance_calls == 0
+    _assert_safety_barrier_untouched(harness)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_model",
+        "wrong_manifest_hash",
+        "wrong_parent_hash",
+        "nonmember_id",
+        "reordered_id",
+        "39_rows",
+        "41_rows",
+        "scenario_mismatch",
+    ],
+)
+def test_prepare_shard_capsule_rejects_context_valid_shard_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    manifest, parent_path, shard_path, _parent_plan, _shard, _parent_bytes, _shard_bytes = (
+        _write_shard_source_and_plans(tmp_path)
+    )
+    _rewrite_shard_plan_payload(shard_path, mutation)
+    results_root = tmp_path / f"mutation-{mutation}-results"
+    results_root.mkdir()
+    harness = _install_harness(monkeypatch, results_root)
+
+    with pytest.raises(PreparationError) as caught:
+        prepare_module.prepare_shard_capsule(
+            _shard_request(
+                manifest,
+                results_root,
+                invocation_cwd=tmp_path,
+                parent_plan_path=parent_path,
+                shard_plan_path=shard_path,
+            )
+        )
+
+    assert caught.value.code == "plan_mismatch"
+    assert harness.provenance_calls == 0
+    assert list(results_root.iterdir()) == []
+    _assert_safety_barrier_untouched(harness)
 
 
 def test_make_prepared_event_has_exact_canonical_identity_and_bytes() -> None:

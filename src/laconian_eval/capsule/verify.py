@@ -32,7 +32,12 @@ from laconian_eval.arms import (
     validate_caveman_snapshot,
 )
 from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
-from laconian_eval.capsule.canonical import canonical_json, sha256_bytes, stable_digest
+from laconian_eval.capsule.canonical import (
+    canonical_json,
+    canonical_jsonl,
+    sha256_bytes,
+    stable_digest,
+)
 from laconian_eval.capsule.events import (
     RequestStartedEventV1,
     SealRequestedEventV1,
@@ -69,6 +74,7 @@ from laconian_eval.capsule.limits import (
 from laconian_eval.capsule.manifest_models import ResolvedDatasetV2, ResolvedManifestV2
 from laconian_eval.capsule.planning import (
     PlanningError,
+    materialize_parent_plan,
     recompute_dataset_content_sha256,
     validate_case_index,
     validate_parent_plan,
@@ -84,6 +90,12 @@ from laconian_eval.capsule.record_models import (
     PreparedEventV1,
     RunnerSourceIndexV1,
     VerifyResultV1,
+)
+from laconian_eval.capsule.schema import validate_relative_posix_path
+from laconian_eval.capsule.sharding import (
+    ShardPlanError,
+    materialize_shard_projection,
+    parse_shard_plan_file_bytes,
 )
 from laconian_eval.cases import parse_response_case_bytes
 from laconian_eval.models import ResponseCase
@@ -644,6 +656,88 @@ def _strict_lifecycle_copy(value: object) -> LifecycleProjectionV1:
     return LifecycleProjectionV1(value.state, missing, blockers)
 
 
+def _planning_record_pair(
+    input_index: InputIndexV1,
+) -> tuple[InputFileRecordV1, InputFileRecordV1] | None:
+    parent = tuple(record for record in input_index.files if record.role == "parent_plan")
+    shard = tuple(record for record in input_index.files if record.role == "shard_plan")
+    if not parent and not shard:
+        return None
+    if not parent:
+        raise _Failure("missing_path", _PARENT_PLAN_PATH)
+    if not shard:
+        raise _Failure("missing_path", _SHARD_PLAN_PATH)
+    if len(parent) != 1:
+        raise _Failure("unexpected_path", _PARENT_PLAN_PATH)
+    if len(shard) != 1:
+        raise _Failure("unexpected_path", _SHARD_PLAN_PATH)
+    return parent[0], shard[0]
+
+
+def _validate_verified_plan(
+    *,
+    capsule: CapsuleV1,
+    manifest: ResolvedManifestV2,
+    input_index: InputIndexV1,
+    captured: _CapturedProjection,
+    case_index: tuple[CaseIndexRowV1, ...],
+    plan: tuple[PlanRowV1, ...],
+    arms: tuple[Arm, ...],
+) -> None:
+    planning = _planning_record_pair(input_index)
+    if planning is None:
+        try:
+            validate_parent_plan(
+                plan,
+                parent_manifest_sha256=capsule.manifest_sha256,
+                resolved_manifest=manifest,
+                case_index=case_index,
+                captured_arms=arms,
+            )
+        except ResourceLimitError:
+            raise _Failure("resource_limit", "plan.jsonl") from None
+        except (PlanningError, TypeError, ValueError):
+            raise _Failure("plan_mismatch", "plan.jsonl") from None
+        return
+
+    parent_record, shard_record = planning
+    by_path = {item.record.capsule_path: item.data for item in captured.files}
+    try:
+        parent_bytes = by_path[parent_record.capsule_path]
+        shard_bytes = by_path[shard_record.capsule_path]
+    except KeyError as error:
+        missing = cast(str, error.args[0])
+        raise _Failure("missing_path", missing) from None
+    try:
+        parent_plan = materialize_parent_plan(
+            parent_manifest_sha256=capsule.manifest_sha256,
+            resolved_manifest=manifest,
+            case_index=case_index,
+            captured_arms=arms,
+        )
+        expected_parent_bytes = canonical_jsonl(
+            row.model_dump(mode="json", round_trip=True) for row in parent_plan
+        )
+    except ResourceLimitError:
+        raise _Failure("resource_limit", _PARENT_PLAN_PATH) from None
+    except (PlanningError, TypeError, ValueError):
+        raise _Failure("plan_mismatch", _PARENT_PLAN_PATH) from None
+    if parent_bytes != expected_parent_bytes:
+        raise _Failure("plan_mismatch", _PARENT_PLAN_PATH)
+    try:
+        shard = parse_shard_plan_file_bytes(shard_bytes)
+        if (
+            shard.model_id != manifest.provider.model
+            or shard.parent_manifest_sha256 != capsule.manifest_sha256
+        ):
+            raise ShardPlanError("plan_mismatch")
+        projection = materialize_shard_projection(shard, parent_plan)
+    except (ShardPlanError, TypeError, ValueError):
+        raise _Failure("plan_mismatch", _SHARD_PLAN_PATH) from None
+    if projection != plan:
+        raise _Failure("plan_mismatch", "plan.jsonl")
+
+
 @dataclass(frozen=True, slots=True)
 class _VerifiedCapsuleContext:
     capsule: CapsuleV1
@@ -676,12 +770,14 @@ class _VerifiedCapsuleContext:
                 input_index=input_index,
             )
             validate_case_index(case_index, captured, manifest)  # type: ignore[arg-type]
-            validate_parent_plan(
-                plan,
-                parent_manifest_sha256=capsule.manifest_sha256,
-                resolved_manifest=manifest,
+            _validate_verified_plan(
+                capsule=capsule,
+                manifest=manifest,
+                input_index=input_index,
+                captured=captured,
                 case_index=case_index,
-                captured_arms=arms,
+                plan=plan,
+                arms=arms,
             )
             history = _strict_history_copy(self.history, plan)
             if _strict_sha256(self._history_sha256) != _history_commitment(history):
@@ -855,6 +951,10 @@ _FIXED_ARM_FILES = frozenset(
     }
 )
 _FIXED_ARM_DIRECTORIES = frozenset({"inputs/arms/caveman", "inputs/arms/if"})
+_PLANNING_DIRECTORY = "inputs/planning"
+_PARENT_PLAN_PATH = "inputs/planning/parent-plan.jsonl"
+_SHARD_PLAN_PATH = "inputs/planning/shard-plan.json"
+_PLANNING_FILES = frozenset({_PARENT_PLAN_PATH, _SHARD_PLAN_PATH})
 _ORDINAL = r"(?:[0-9]{3}|[1-9][0-9]{3,})"
 _CASE_PATH = re.compile(rf"inputs/cases/{_ORDINAL}\.yaml\Z")
 _PROTOCOL_PATH = re.compile(rf"inputs/protocols/{_ORDINAL}-[0-9a-f]{{16}}\.bin\Z")
@@ -884,6 +984,24 @@ _CAVEMAN_PINS = {
 }
 
 
+def _artifact_read_limit(path: str) -> int:
+    if _CASE_PATH.fullmatch(path) is not None:
+        return RESOURCE_LIMITS_V1.case_file_bytes
+    if path.startswith("inputs/arms/"):
+        return RESOURCE_LIMITS_V1.arm_member_bytes
+    if path == "inputs/provider/replay.yaml":
+        return RESOURCE_LIMITS_V1.replay_fixture_bytes
+    if _PROTOCOL_PATH.fullmatch(path) is not None:
+        return RESOURCE_LIMITS_V1.protocol_file_bytes
+    if path.startswith("inputs/software/runner/laconian_eval/"):
+        return RESOURCE_LIMITS_V1.runner_source_file_bytes
+    if path == _PARENT_PLAN_PATH:
+        return RESOURCE_LIMITS_V1.captured_input_total_bytes
+    if path == _SHARD_PLAN_PATH:
+        return RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes
+    return RESOURCE_LIMITS_V1.mutable_capsule_bytes
+
+
 @dataclass(frozen=True, slots=True)
 class _StaticJsonPolicy:
     byte_ceiling: int
@@ -909,7 +1027,7 @@ def _static_json_policy(path: str) -> _StaticJsonPolicy:
     ascii_string = bounded + 2
     cases = RESOURCE_LIMITS_V1.case_records
     dependency_files = RESOURCE_LIMITS_V1.dependency_files
-    input_files = dependency_files + 2 * cases + 7
+    input_files = dependency_files + 2 * cases + 9
     if path == "capsule.json":
         ceiling = (2 * len(CapsuleV1.model_fields) + 16) * json_string
         arrays: dict[str, int] = {}
@@ -1203,7 +1321,7 @@ def _safe_name(value: object) -> str:
 def _directory_allowed(path: str) -> bool:
     if path in _FIXED_DIRECTORIES or path in _FIXED_ARM_DIRECTORIES:
         return True
-    if path in {"inputs/provider", "inputs/protocols"}:
+    if path in {"inputs/provider", "inputs/protocols", _PLANNING_DIRECTORY}:
         return True
     prefix = "inputs/software/runner/laconian_eval/"
     if not path.startswith(prefix):
@@ -1212,7 +1330,7 @@ def _directory_allowed(path: str) -> bool:
 
 
 def _file_allowed(path: str) -> bool:
-    if path in _FIXED_FILES or path in _FIXED_ARM_FILES:
+    if path in _FIXED_FILES or path in _FIXED_ARM_FILES or path in _PLANNING_FILES:
         return True
     if _CASE_PATH.fullmatch(path) is not None or _PROTOCOL_PATH.fullmatch(path) is not None:
         return True
@@ -1690,6 +1808,8 @@ def _resource_checks(inventory: _Inventory) -> None:
         "replay": [],
         "protocol": [],
         "runner_source": [],
+        "parent_plan": [],
+        "shard_plan": [],
     }
     for path in evidence:
         if _CASE_PATH.fullmatch(path) is not None:
@@ -1702,6 +1822,10 @@ def _resource_checks(inventory: _Inventory) -> None:
             role_paths["protocol"].append(path)
         elif path.startswith("inputs/software/runner/laconian_eval/"):
             role_paths["runner_source"].append(path)
+        elif path == _PARENT_PLAN_PATH:
+            role_paths["parent_plan"].append(path)
+        elif path == _SHARD_PLAN_PATH:
+            role_paths["shard_plan"].append(path)
 
     per_file_limits = {
         "case": RESOURCE_LIMITS_V1.case_file_bytes,
@@ -1709,6 +1833,8 @@ def _resource_checks(inventory: _Inventory) -> None:
         "replay": RESOURCE_LIMITS_V1.replay_fixture_bytes,
         "protocol": RESOURCE_LIMITS_V1.protocol_file_bytes,
         "runner_source": RESOURCE_LIMITS_V1.runner_source_file_bytes,
+        "parent_plan": RESOURCE_LIMITS_V1.captured_input_total_bytes,
+        "shard_plan": RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes,
     }
     aggregate_limits = {
         "case": RESOURCE_LIMITS_V1.all_case_files_bytes,
@@ -1725,7 +1851,11 @@ def _resource_checks(inventory: _Inventory) -> None:
             and sum(evidence[path].size for path in paths) > aggregate_limits[role]
         ):
             raise _Failure("resource_limit", None)
-    captured_total = sum(evidence[path].size for paths in role_paths.values() for path in paths)
+    captured_total = sum(
+        evidence[path].size
+        for role in ("case", "arm", "replay", "protocol", "runner_source")
+        for path in role_paths[role]
+    )
     if captured_total > RESOURCE_LIMITS_V1.captured_input_total_bytes:
         raise _Failure("resource_limit", None)
 
@@ -1745,7 +1875,7 @@ def _load_artifacts(
             inventory.files[path],
             inventory,
             teardown_errors,
-            limit=RESOURCE_LIMITS_V1.mutable_capsule_bytes,
+            limit=_artifact_read_limit(path),
         )
     return loaded, teardown_errors
 
@@ -1780,9 +1910,42 @@ def _schema_field(model_type: type[BaseModel]) -> tuple[str, str] | None:
     return None
 
 
+def _check_planning_index_shape(value: object) -> None:
+    if not isinstance(value, dict):
+        return
+    records = value.get("files")
+    if not isinstance(records, list):
+        return
+    expected = {
+        "parent_plan": _PARENT_PLAN_PATH,
+        "shard_plan": _SHARD_PLAN_PATH,
+    }
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        role = record.get("role")
+        path = record.get("capsule_path")
+        role_is_planning = isinstance(role, str) and role in expected
+        touches_planning = role_is_planning or (
+            isinstance(path, str)
+            and (path == _PLANNING_DIRECTORY or path.startswith(f"{_PLANNING_DIRECTORY}/"))
+        )
+        if touches_planning and (not role_is_planning or path != expected[cast(str, role)]):
+            diagnostic_path = "inputs/index.json"
+            if type(path) is str:
+                with suppress(TypeError, ValueError):
+                    diagnostic_path = validate_relative_posix_path(path)
+            raise _Failure(
+                "unexpected_path",
+                diagnostic_path,
+            )
+
+
 def _model_from_value(model_type: type[BaseModel], value: object, path: str) -> Any:
     if not isinstance(value, dict):
         raise _Failure("invalid_model", path)
+    if model_type is InputIndexV1:
+        _check_planning_index_shape(value)
     schema = _schema_field(model_type)
     if schema is not None and value.get(schema[0]) != schema[1]:
         raise _Failure("unsupported_schema", path)
@@ -1818,7 +1981,7 @@ def _static_value_limits(value: object, path: str) -> None:
             if isinstance(imports, dict):
                 limited(imports.get("import_roots"), RESOURCE_LIMITS_V1.dependency_files)
     elif path == "inputs/index.json":
-        maximum = RESOURCE_LIMITS_V1.dependency_files + 2 * cases + 7
+        maximum = RESOURCE_LIMITS_V1.dependency_files + 2 * cases + 9
         records = limited(value.get("files"), maximum)
         if records is not None:
             role_limits = {
@@ -2451,7 +2614,7 @@ def _verify_capsule_context_descriptors_with_journal_policy(
             inventory.files[path],
             inventory,
             teardown_errors,
-            limit=RESOURCE_LIMITS_V1.mutable_capsule_bytes,
+            limit=_artifact_read_limit(path),
             static_policy=_static_json_policy(path) if path in _STATIC_JSON_FILES else None,
         )
         artifacts[path] = data
@@ -2571,7 +2734,12 @@ def _verify_capsule_context_descriptors_with_journal_policy(
         try:
             data = load(path)
             if record.byte_length != len(data) or record.sha256 != sha256_bytes(data):
-                raise _Failure("hash_mismatch", path)
+                code = (
+                    "plan_mismatch"
+                    if record.role in {"parent_plan", "shard_plan"}
+                    else "hash_mismatch"
+                )
+                raise _Failure(code, path)
             trusted_input_paths.add(path)
         except _Failure as failure:
             note_static(failure)
@@ -2634,18 +2802,15 @@ def _verify_capsule_context_descriptors_with_journal_policy(
     )
     if plan_sha256 != capsule.plan_sha256:
         raise _Failure("hash_mismatch", "plan.jsonl")
-    try:
-        validate_parent_plan(
-            plan,
-            parent_manifest_sha256=capsule.manifest_sha256,
-            resolved_manifest=manifest,
-            case_index=case_index,
-            captured_arms=arms,
-        )
-    except ResourceLimitError:
-        raise _Failure("resource_limit", "plan.jsonl") from None
-    except (PlanningError, TypeError, ValueError):
-        raise _Failure("plan_mismatch", "plan.jsonl") from None
+    _validate_verified_plan(
+        capsule=capsule,
+        manifest=manifest,
+        input_index=input_index,
+        captured=captured,
+        case_index=case_index,
+        plan=plan,
+        arms=arms,
+    )
 
     try:
         journals = snapshot_journal_pair(
@@ -2825,7 +2990,10 @@ def _verify_core(root_fd: int) -> VerifyResultV1:
 
     inventory = _scan_inventory(root_fd)
     context = _verify_capsule_context_descriptors(root_fd, inventory)
-    return _valid_result(context, inventory)
+    final_inventory = _scan_inventory(root_fd)
+    if final_inventory != inventory:
+        raise _Failure("unstable_snapshot", None)
+    return _valid_result(context, final_inventory)
 
 
 def _verify_prepared_capsule_descriptors(

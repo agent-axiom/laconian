@@ -44,7 +44,15 @@ DatasetRole: TypeAlias = Literal[
 ComparisonRole: TypeAlias = Literal["primary", "secondary", "contextual", "diagnostic"]
 ProtocolStage: TypeAlias = Literal["scoring", "judging", "inference", "publication"]
 DeclaredRequirement: TypeAlias = Literal["optional", "required_for_declared_claim"]
-InputRole: TypeAlias = Literal["case", "arm", "replay", "protocol", "runner_source"]
+InputRole: TypeAlias = Literal[
+    "case",
+    "arm",
+    "replay",
+    "protocol",
+    "runner_source",
+    "parent_plan",
+    "shard_plan",
+]
 Locale: TypeAlias = Literal["en", "ru"]
 CaseCategory: TypeAlias = Literal[
     "direct",

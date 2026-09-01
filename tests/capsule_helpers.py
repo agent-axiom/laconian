@@ -6,7 +6,7 @@ import hashlib
 from typing import Any
 
 from laconian_eval import __version__
-from laconian_eval.capsule.canonical import canonical_json
+from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -214,6 +214,36 @@ def input_index_v1_payload() -> dict[str, Any]:
             },
         ],
     }
+
+
+def planning_input_records_v1_payload(
+    parent_plan_bytes: bytes,
+    shard_plan_bytes: bytes,
+) -> list[dict[str, Any]]:
+    """Return the exact optional planning-input pair for one shard capsule."""
+
+    return [
+        {
+            "role": "parent_plan",
+            "role_ordinal": 0,
+            "logical_locator": "preflight.parent_plan",
+            "capsule_path": "inputs/planning/parent-plan.jsonl",
+            "byte_length": len(parent_plan_bytes),
+            "sha256": sha256_bytes(parent_plan_bytes),
+            "dataset_id": None,
+            "binding_id": None,
+        },
+        {
+            "role": "shard_plan",
+            "role_ordinal": 0,
+            "logical_locator": "preflight.shard_plan",
+            "capsule_path": "inputs/planning/shard-plan.json",
+            "byte_length": len(shard_plan_bytes),
+            "sha256": sha256_bytes(shard_plan_bytes),
+            "dataset_id": None,
+            "binding_id": None,
+        },
+    ]
 
 
 def case_index_row_v1_payload() -> dict[str, Any]:

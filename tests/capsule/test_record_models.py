@@ -28,6 +28,7 @@ from laconian_eval.capsule.record_models import (
     CapsuleV1,
     CaseIndexRowV1,
     EnvironmentV1,
+    InputFileRecordV1,
     InputIndexV1,
     PlanRowV1,
     PreparedEventV1,
@@ -43,6 +44,26 @@ def _set_nested(payload: dict[str, Any], path: tuple[str | int, ...], value: obj
     for part in path[:-1]:
         current = current[part]
     current[path[-1]] = value
+
+
+def _planning_input_file_payload(role: str) -> dict[str, object]:
+    if role == "parent_plan":
+        logical_locator = "preflight.parent_plan"
+        capsule_path = "inputs/planning/parent-plan.jsonl"
+    else:
+        assert role == "shard_plan"
+        logical_locator = "preflight.shard_plan"
+        capsule_path = "inputs/planning/shard-plan.json"
+    return {
+        "role": role,
+        "role_ordinal": 0,
+        "logical_locator": logical_locator,
+        "capsule_path": capsule_path,
+        "byte_length": 123,
+        "sha256": SHA_A,
+        "dataset_id": None,
+        "binding_id": None,
+    }
 
 
 def test_capsule_v1_complete_shape() -> None:
@@ -244,6 +265,55 @@ def test_input_index_enforces_file_role_contracts(
 
     with pytest.raises(ValidationError):
         InputIndexV1.model_validate(payload)
+
+
+@pytest.mark.parametrize("role", ["parent_plan", "shard_plan"])
+def test_planning_input_roles_round_trip_exact_contract(role: str) -> None:
+    payload = _planning_input_file_payload(role)
+
+    record = InputFileRecordV1.model_validate(payload)
+
+    assert record.model_dump(mode="json") == payload
+    assert list(record.model_dump().keys()) == [
+        "role",
+        "role_ordinal",
+        "logical_locator",
+        "capsule_path",
+        "byte_length",
+        "sha256",
+        "dataset_id",
+        "binding_id",
+    ]
+
+
+@pytest.mark.parametrize("role", ["parent_plan", "shard_plan"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("role_ordinal", 1),
+        ("logical_locator", "preflight.other_plan"),
+        ("capsule_path", "inputs/planning/other-plan.json"),
+        ("dataset_id", "dataset-alpha"),
+        ("binding_id", "binding-alpha"),
+    ],
+)
+def test_planning_input_roles_reject_any_contract_mutation(
+    role: str, field: str, value: object
+) -> None:
+    payload = _planning_input_file_payload(role)
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        InputFileRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize("role", ["parent-plan", "shard-plan"])
+def test_planning_input_roles_reject_nonliteral_spellings(role: str) -> None:
+    payload = _planning_input_file_payload("parent_plan")
+    payload["role"] = role
+
+    with pytest.raises(ValidationError, match="role"):
+        InputFileRecordV1.model_validate(payload)
 
 
 def test_input_index_requires_sorted_unique_paths() -> None:

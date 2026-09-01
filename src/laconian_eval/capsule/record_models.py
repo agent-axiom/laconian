@@ -144,6 +144,23 @@ class InputFileRecordV1(CapsuleModel):
                     or self.capsule_path != "inputs/provider/replay.yaml"
                 ):
                     raise ValueError("replay locator, ordinal, and capsule path are fixed")
+            elif self.role in ("parent_plan", "shard_plan"):
+                expected_locator, expected_path = {
+                    "parent_plan": (
+                        "preflight.parent_plan",
+                        "inputs/planning/parent-plan.jsonl",
+                    ),
+                    "shard_plan": (
+                        "preflight.shard_plan",
+                        "inputs/planning/shard-plan.json",
+                    ),
+                }[self.role]
+                if (
+                    self.role_ordinal != 0
+                    or self.logical_locator != expected_locator
+                    or self.capsule_path != expected_path
+                ):
+                    raise ValueError("planning-input locator, ordinal, and capsule path are fixed")
             elif self.role == "arm":
                 match = _ARM_LOCATOR_PATTERN.fullmatch(self.logical_locator)
                 if match is None:
