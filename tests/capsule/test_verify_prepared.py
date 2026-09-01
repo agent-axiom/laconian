@@ -2931,6 +2931,118 @@ def test_descriptor_context_rejects_a_coherently_forged_history_and_lifecycle(
     assert (caught.value.code, caught.value.path) == ("invalid_model", None)
 
 
+@pytest.mark.parametrize(
+    "raw_summary",
+    [
+        history_module.RawHistorySummaryV1(True, 0, 0, 0, 0, 0),
+        history_module.RawHistorySummaryV1(0, 1, 0, 0, 0, 0),
+        history_module.RawHistorySummaryV1(0, 0, 0, 0, 1, 1),
+        history_module.RawHistorySummaryV1(0, 0, 0, 0, 0, 1),
+    ],
+    ids=("bool", "usage-sum", "redacted-attempt", "replacement-without-attempt"),
+)
+def test_descriptor_context_rejects_forged_raw_history_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_summary: history_module.RawHistorySummaryV1,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged_history = replace(context.history, raw_summary=raw_summary)
+
+    with pytest.raises(verify_module._Failure) as caught:
+        replace(context, history=forged_history)
+
+    assert (caught.value.code, caught.value.path) == ("invalid_model", None)
+
+
+def test_descriptor_context_binds_history_summary_and_no_call_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged_summary = history_module.RawHistorySummaryV1(1, 0, 0, 1, 0, 0)
+    summary_history = replace(context.history, raw_summary=forged_summary)
+    reason_history = replace(
+        context.history,
+        latest_no_call_blocked=True,
+        latest_no_call_blocked_reason="provider_unavailable",
+    )
+
+    assert verify_module._history_commitment(summary_history) != verify_module._history_commitment(
+        context.history
+    )
+    assert verify_module._history_commitment(reason_history) != verify_module._history_commitment(
+        context.history
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["has_ambiguous_delivery", "has_authentication_stop"],
+)
+def test_descriptor_context_rejects_terminal_call_state_without_request_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged_history = replace(context.history, **{field: True})
+
+    with pytest.raises(TypeError):
+        verify_module._strict_history_copy(forged_history, context.plan)
+
+
+def test_strict_history_copy_rejects_returned_model_without_resolved_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _fixture, _source = _prepared_fixture(tmp_path, monkeypatch)
+    root_fd = open_directory_no_follow(root)
+    try:
+        context = verify_module._verify_capsule_context_descriptors(
+            root_fd,
+            verify_module._scan_inventory(root_fd),
+        )
+    finally:
+        os.close(root_fd)
+    forged_history = replace(
+        context.history,
+        returned_models=("forged-returned",),
+        raw_summary=history_module.RawHistorySummaryV1(1, 0, 0, 1, 0, 0),
+        next_call_sequence=1,
+        next_attempt_number=2,
+        request_history_present=True,
+        execution_history_present=True,
+    )
+
+    with pytest.raises(TypeError):
+        verify_module._strict_history_copy(forged_history, context.plan)
+
+
 @pytest.mark.parametrize("forgery", ["record", "bytes"])
 def test_descriptor_context_rejects_forged_nested_captured_inputs(
     tmp_path: Path,

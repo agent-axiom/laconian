@@ -56,6 +56,7 @@ from laconian_eval.capsule.history import (
     HistoryError,
     LifecycleProjectionV1,
     RawCommitProjectionV1,
+    RawHistorySummaryV1,
     RecoveryRequirementV1,
     ValidatedHistoryV1,
     derive_lifecycle_v1,
@@ -97,6 +98,7 @@ from laconian_eval.capsule.sharding import (
     materialize_shard_projection,
     parse_shard_plan_file_bytes,
 )
+from laconian_eval.capsule.tree_policy import capsule_path_kind
 from laconian_eval.cases import parse_response_case_bytes
 from laconian_eval.models import ResponseCase
 
@@ -483,13 +485,29 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
     resolved = _strict_string_tuple(value.resolved_plan_item_ids, sha256=True)
     missing = _strict_string_tuple(value.missing_plan_item_ids, sha256=True)
     returned = _strict_string_tuple(value.returned_models, sha256=False)
+    summary_value = value.raw_summary
+    if type(summary_value) is not RawHistorySummaryV1:
+        raise TypeError
+    raw_summary = RawHistorySummaryV1(
+        raw_attempt_count=_strict_nonnegative_int(summary_value.raw_attempt_count),
+        usage_complete_count=_strict_nonnegative_int(summary_value.usage_complete_count),
+        usage_partial_count=_strict_nonnegative_int(summary_value.usage_partial_count),
+        usage_unavailable_count=_strict_nonnegative_int(summary_value.usage_unavailable_count),
+        redacted_output_attempt_count=_strict_nonnegative_int(
+            summary_value.redacted_output_attempt_count
+        ),
+        redacted_output_replacement_count=_strict_nonnegative_int(
+            summary_value.redacted_output_replacement_count
+        ),
+    )
     plan_ids = tuple(row.plan_item_id for row in plan)
     if (
         resolved != plan_ids[: len(resolved)]
         or missing
         != tuple(sorted(plan_ids[len(resolved) :], key=lambda item: item.encode("utf-8")))
         or returned != tuple(sorted(returned, key=lambda item: item.encode("utf-8")))
-        or len(returned) > 2
+        or len(returned) > len(resolved)
+        or len(resolved) > raw_summary.raw_attempt_count
     ):
         raise TypeError
     next_ordinal = value.next_unresolved_plan_ordinal
@@ -523,10 +541,21 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
     )
     if any(type(item) is not bool for item in bool_values):
         raise TypeError
+    blocked_reason = value.latest_no_call_blocked_reason
+    if blocked_reason not in (None, "credential_unavailable", "provider_unavailable") or (
+        blocked_reason is not None and type(blocked_reason) is not str
+    ):
+        raise TypeError
     if (
         value.request_history_present != (next_call > 0)
         or (value.request_history_present and not value.execution_history_present)
         or (value.request_history_present and value.latest_no_call_blocked)
+        or value.latest_no_call_blocked != (blocked_reason is not None)
+        or (blocked_reason is not None and not value.execution_history_present)
+        or (
+            (value.has_ambiguous_delivery or value.has_authentication_stop)
+            and (not value.request_history_present or not value.execution_history_present)
+        )
         or (value.has_ambiguous_delivery and value.has_authentication_stop)
         or (not missing and (value.has_ambiguous_delivery or value.has_authentication_stop))
         or len(resolved) > next_call
@@ -566,22 +595,44 @@ def _strict_history_copy(value: object, plan: tuple[PlanRowV1, ...]) -> Validate
                 raise TypeError
             if raw.terminal_reason == "ambiguous_delivery" and not value.has_ambiguous_delivery:
                 raise TypeError
+    rawless_open = open_attempt is not None and open_attempt.raw is None
+    usage_count = (
+        raw_summary.usage_complete_count
+        + raw_summary.usage_partial_count
+        + raw_summary.usage_unavailable_count
+    )
+    if (
+        raw_summary.raw_attempt_count != next_call - int(rawless_open)
+        or usage_count != raw_summary.raw_attempt_count
+        or raw_summary.redacted_output_attempt_count > raw_summary.raw_attempt_count
+        or (raw_summary.redacted_output_attempt_count == 0)
+        != (raw_summary.redacted_output_replacement_count == 0)
+        or raw_summary.redacted_output_replacement_count < raw_summary.redacted_output_attempt_count
+    ):
+        raise TypeError
     seal = None
     if value.seal_requested is not None:
         seal = _strict_model_copy(SealRequestedEventV1, value.seal_requested)
         if requirements:
             raise TypeError
     return ValidatedHistoryV1(
-        resolved,
-        missing,
-        returned,
-        expected_ordinal,
-        next_call,
-        next_attempt,
-        open_attempt,
-        requirements,
-        *bool_values,
-        seal,
+        resolved_plan_item_ids=resolved,
+        missing_plan_item_ids=missing,
+        returned_models=returned,
+        raw_summary=raw_summary,
+        next_unresolved_plan_ordinal=expected_ordinal,
+        next_call_sequence=next_call,
+        next_attempt_number=next_attempt,
+        open_attempt=open_attempt,
+        recovery_requirements=requirements,
+        request_history_present=bool_values[0],
+        execution_history_present=bool_values[1],
+        latest_no_call_blocked=bool_values[2],
+        latest_no_call_blocked_reason=blocked_reason,
+        latest_event_recovered=bool_values[3],
+        has_ambiguous_delivery=bool_values[4],
+        has_authentication_stop=bool_values[5],
+        seal_requested=seal,
     )
 
 
@@ -611,6 +662,18 @@ def _history_commitment(history: ValidatedHistoryV1) -> str:
             "resolved_plan_item_ids": history.resolved_plan_item_ids,
             "missing_plan_item_ids": history.missing_plan_item_ids,
             "returned_models": history.returned_models,
+            "raw_summary": {
+                "raw_attempt_count": history.raw_summary.raw_attempt_count,
+                "usage_complete_count": history.raw_summary.usage_complete_count,
+                "usage_partial_count": history.raw_summary.usage_partial_count,
+                "usage_unavailable_count": history.raw_summary.usage_unavailable_count,
+                "redacted_output_attempt_count": (
+                    history.raw_summary.redacted_output_attempt_count
+                ),
+                "redacted_output_replacement_count": (
+                    history.raw_summary.redacted_output_replacement_count
+                ),
+            },
             "next_unresolved_plan_ordinal": history.next_unresolved_plan_ordinal,
             "next_call_sequence": history.next_call_sequence,
             "next_attempt_number": history.next_attempt_number,
@@ -630,6 +693,7 @@ def _history_commitment(history: ValidatedHistoryV1) -> str:
             "request_history_present": history.request_history_present,
             "execution_history_present": history.execution_history_present,
             "latest_no_call_blocked": history.latest_no_call_blocked,
+            "latest_no_call_blocked_reason": history.latest_no_call_blocked_reason,
             "latest_event_recovered": history.latest_event_recovered,
             "has_ambiguous_delivery": history.has_ambiguous_delivery,
             "has_authentication_stop": history.has_authentication_stop,
@@ -907,7 +971,7 @@ def _immutable_inventory_commitment(inventory: _Inventory) -> tuple[str, int]:
     return digest.hexdigest(), immutable_evidence_bytes
 
 
-_FIXED_FILES = frozenset(
+_REQUIRED_FILES = frozenset(
     {
         ".laconian.lock",
         "capsule.json",
@@ -921,7 +985,7 @@ _FIXED_FILES = frozenset(
         "raw.jsonl",
     }
 )
-_FIXED_DIRECTORIES = frozenset(
+_REQUIRED_DIRECTORIES = frozenset(
     {
         "inputs",
         "inputs/arms",
@@ -940,24 +1004,9 @@ _STATIC_JSON_FILES = frozenset(
         "manifest.json",
     }
 )
-_FIXED_ARM_FILES = frozenset(
-    {
-        "inputs/arms/baseline.txt",
-        "inputs/arms/concise.txt",
-        "inputs/arms/caveman/SKILL.md",
-        "inputs/arms/caveman/SOURCE.md",
-        "inputs/arms/caveman/LICENSE.txt",
-        "inputs/arms/if/SKILL.md",
-    }
-)
-_FIXED_ARM_DIRECTORIES = frozenset({"inputs/arms/caveman", "inputs/arms/if"})
 _PLANNING_DIRECTORY = "inputs/planning"
 _PARENT_PLAN_PATH = "inputs/planning/parent-plan.jsonl"
 _SHARD_PLAN_PATH = "inputs/planning/shard-plan.json"
-_PLANNING_FILES = frozenset({_PARENT_PLAN_PATH, _SHARD_PLAN_PATH})
-_ORDINAL = r"(?:[0-9]{3}|[1-9][0-9]{3,})"
-_CASE_PATH = re.compile(rf"inputs/cases/{_ORDINAL}\.yaml\Z")
-_PROTOCOL_PATH = re.compile(rf"inputs/protocols/{_ORDINAL}-[0-9a-f]{{16}}\.bin\Z")
 _READ_CHUNK = 64 * 1024
 # Producer provenance counts every runner-subtree entry against ``dependency_files``; the source
 # YAML collection bound independently caps case files and protocol bindings at ``case_records``.
@@ -985,13 +1034,13 @@ _CAVEMAN_PINS = {
 
 
 def _artifact_read_limit(path: str) -> int:
-    if _CASE_PATH.fullmatch(path) is not None:
+    if path.startswith("inputs/cases/"):
         return RESOURCE_LIMITS_V1.case_file_bytes
     if path.startswith("inputs/arms/"):
         return RESOURCE_LIMITS_V1.arm_member_bytes
     if path == "inputs/provider/replay.yaml":
         return RESOURCE_LIMITS_V1.replay_fixture_bytes
-    if _PROTOCOL_PATH.fullmatch(path) is not None:
+    if path.startswith("inputs/protocols/"):
         return RESOURCE_LIMITS_V1.protocol_file_bytes
     if path.startswith("inputs/software/runner/laconian_eval/"):
         return RESOURCE_LIMITS_V1.runner_source_file_bytes
@@ -1319,32 +1368,11 @@ def _safe_name(value: object) -> str:
 
 
 def _directory_allowed(path: str) -> bool:
-    if path in _FIXED_DIRECTORIES or path in _FIXED_ARM_DIRECTORIES:
-        return True
-    if path in {"inputs/provider", "inputs/protocols", _PLANNING_DIRECTORY}:
-        return True
-    prefix = "inputs/software/runner/laconian_eval/"
-    if not path.startswith(prefix):
-        return False
-    return "__pycache__" not in path[len(prefix) :].split("/")
+    return capsule_path_kind(path) == "directory"
 
 
 def _file_allowed(path: str) -> bool:
-    if path in _FIXED_FILES or path in _FIXED_ARM_FILES or path in _PLANNING_FILES:
-        return True
-    if _CASE_PATH.fullmatch(path) is not None or _PROTOCOL_PATH.fullmatch(path) is not None:
-        return True
-    if path == "inputs/provider/replay.yaml":
-        return True
-    prefix = "inputs/software/runner/laconian_eval/"
-    if not path.startswith(prefix):
-        return False
-    member = path[len(prefix) :]
-    return (
-        bool(member)
-        and "__pycache__" not in member.split("/")
-        and (member == "py.typed" or member.endswith(".py"))
-    )
+    return capsule_path_kind(path) == "file"
 
 
 def _same_leaf(left: _Identity, right: _Identity) -> bool:
@@ -1426,11 +1454,12 @@ def _scan_inventory(root_fd: int) -> _Inventory:
             if stat.S_ISLNK(current.mode):
                 note_structure(_Failure("unsafe_path_type", relative))
                 continue
+            member_kind = capsule_path_kind(relative)
             if stat.S_ISDIR(current.mode):
-                if _file_allowed(relative) and not _directory_allowed(relative):
+                if member_kind == "file":
                     note_structure(_Failure("unsafe_path_type", relative))
                     continue
-                if not _directory_allowed(relative):
+                if member_kind != "directory":
                     note_structure(_Failure("unexpected_path", relative))
                     continue
                 child_fd: int | None = None
@@ -1467,8 +1496,8 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                 if teardown is None and close_error is not None:
                     teardown = close_error
             elif stat.S_ISREG(current.mode):
-                if not _file_allowed(relative):
-                    code = "unsafe_path_type" if _directory_allowed(relative) else "unexpected_path"
+                if member_kind != "file":
+                    code = "unsafe_path_type" if member_kind == "directory" else "unexpected_path"
                     note_structure(_Failure(code, relative))
                     continue
                 files[relative] = current
@@ -1476,9 +1505,9 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                 note_structure(_Failure("unsafe_path_type", relative))
 
     walk(root_fd, "")
-    for path in _FIXED_FILES - files.keys():
+    for path in _REQUIRED_FILES - files.keys():
         note_structure(_Failure("missing_path", path))
-    for path in _FIXED_DIRECTORIES - set(directories):
+    for path in _REQUIRED_DIRECTORIES - set(directories):
         note_structure(_Failure("missing_path", path))
     if structural is not None:
         raise structural[1]
@@ -1812,13 +1841,13 @@ def _resource_checks(inventory: _Inventory) -> None:
         "shard_plan": [],
     }
     for path in evidence:
-        if _CASE_PATH.fullmatch(path) is not None:
+        if path.startswith("inputs/cases/"):
             role_paths["case"].append(path)
         elif path.startswith("inputs/arms/"):
             role_paths["arm"].append(path)
         elif path == "inputs/provider/replay.yaml":
             role_paths["replay"].append(path)
-        elif _PROTOCOL_PATH.fullmatch(path) is not None:
+        elif path.startswith("inputs/protocols/"):
             role_paths["protocol"].append(path)
         elif path.startswith("inputs/software/runner/laconian_eval/"):
             role_paths["runner_source"].append(path)
@@ -2092,7 +2121,7 @@ def _exact_tree(
     index: InputIndexV1,
     manifest: ResolvedManifestV2 | None = None,
 ) -> None:
-    expected_files = set(_FIXED_FILES)
+    expected_files = set(_REQUIRED_FILES)
     expected_files.update(record.capsule_path for record in index.files)
     if manifest is not None:
         expected_files.update(manifest.case_files)
@@ -2100,7 +2129,7 @@ def _exact_tree(
         if manifest.provider.replay_file is not None:
             expected_files.add(manifest.provider.replay_file)
         expected_files.update(binding.path for binding in manifest.capsule.protocol_bindings)
-    expected_directories = set(_FIXED_DIRECTORIES)
+    expected_directories = set(_REQUIRED_DIRECTORIES)
     for path in expected_files:
         expected_directories.update(_parents(path))
     actual_files = set(inventory.files)

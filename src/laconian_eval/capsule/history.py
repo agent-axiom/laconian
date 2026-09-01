@@ -60,6 +60,7 @@ RecoveryKind = Literal[
     "generation_completed",
 ]
 RecoveryStep = Literal["tail_events", "tail_raw", "finish", "marker", "completion"]
+NoCallBlockedReason = Literal["credential_unavailable", "provider_unavailable"]
 IdentityKind = Literal["run", "operation", "session"]
 CoreIdentityDeclaration = Callable[[UUID, IdentityKind, int], None]
 SealIdentityDeclaration = Callable[[UUID, UUID, int], None]
@@ -146,10 +147,23 @@ class RecoveryRequirementV1:
 
 
 @dataclass(frozen=True, slots=True)
+class RawHistorySummaryV1:
+    """Compact exact aggregates over every committed validated raw row."""
+
+    raw_attempt_count: int
+    usage_complete_count: int
+    usage_partial_count: int
+    usage_unavailable_count: int
+    redacted_output_attempt_count: int
+    redacted_output_replacement_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedHistoryV1:
     resolved_plan_item_ids: tuple[str, ...]
     missing_plan_item_ids: tuple[str, ...]
     returned_models: tuple[str, ...]
+    raw_summary: RawHistorySummaryV1
     next_unresolved_plan_ordinal: int | None
     next_call_sequence: int
     next_attempt_number: int | None
@@ -158,6 +172,7 @@ class ValidatedHistoryV1:
     request_history_present: bool
     execution_history_present: bool
     latest_no_call_blocked: bool
+    latest_no_call_blocked_reason: NoCallBlockedReason | None
     latest_event_recovered: bool
     has_ambiguous_delivery: bool
     has_authentication_stop: bool
@@ -776,6 +791,7 @@ def _validate_history_v1(
     execution_history = False
     request_history = False
     latest_no_call_blocked = False
+    latest_no_call_blocked_reason: NoCallBlockedReason | None = None
     latest_event_recovered = False
     has_ambiguity = False
     has_auth = False
@@ -783,7 +799,13 @@ def _validate_history_v1(
     expected_attempt = 1
     expected_call = 0
     resolved: list[str] = []
-    returned_models: list[str] = []
+    returned_models: set[str] = set()
+    raw_attempt_count = 0
+    usage_complete_count = 0
+    usage_partial_count = 0
+    usage_unavailable_count = 0
+    redacted_output_attempt_count = 0
+    redacted_output_replacement_count = 0
     raw_lookahead: RawAttemptV2 | None = None
     raw_index = 0
 
@@ -872,6 +894,7 @@ def _validate_history_v1(
         if isinstance(event, ExecutionStartedEventV1):
             execution_history = True
             latest_no_call_blocked = False
+            latest_no_call_blocked_reason = None
             if open_commit is not None or pending_marker is not None or completion_seen:
                 _fail("lifecycle_mismatch", "events", row_index)
             if current_ordinal == len(plan):
@@ -943,6 +966,7 @@ def _validate_history_v1(
             if epoch_had_call or open_commit is not None:
                 _fail("history_mismatch", "events", row_index)
             latest_no_call_blocked = not request_history
+            latest_no_call_blocked_reason = event.payload.reason if latest_no_call_blocked else None
             active_epoch = None
             continue
 
@@ -962,6 +986,7 @@ def _validate_history_v1(
             request_history = True
             epoch_had_call = True
             latest_no_call_blocked = False
+            latest_no_call_blocked_reason = None
             if active_epoch is None or open_commit is not None or pending_marker is not None:
                 _fail("history_mismatch", "events", row_index)
             if current_ordinal >= len(plan):
@@ -1001,6 +1026,16 @@ def _validate_history_v1(
                         context,
                         raw_index - 1,
                     )
+                    raw_attempt_count += 1
+                    if candidate.usage.availability == "complete":
+                        usage_complete_count += 1
+                    elif candidate.usage.availability == "partial":
+                        usage_partial_count += 1
+                    else:
+                        usage_unavailable_count += 1
+                    if candidate.output_was_redacted:
+                        redacted_output_attempt_count += 1
+                        redacted_output_replacement_count += candidate.output_redaction_count
                     if not projection.terminal:
                         if projection.attempt == 1 + manifest.retry.max_transient_retries:
                             _fail("retry_mismatch", "raw", raw_index - 1)
@@ -1020,12 +1055,8 @@ def _validate_history_v1(
                     elif projection.terminal_reason == "ambiguous_delivery":
                         has_ambiguity = True
                         pending_marker = "delivery_ambiguous"
-                    if (
-                        projection.response_model is not None
-                        and projection.response_model not in returned_models
-                        and len(returned_models) < 2
-                    ):
-                        returned_models.append(projection.response_model)
+                    if projection.response_model is not None:
+                        returned_models.add(projection.response_model)
             open_commit = AttemptCommitV1(event, projection, None)
             expected_call += 1
             continue
@@ -1181,6 +1212,14 @@ def _validate_history_v1(
         resolved_plan_item_ids=tuple(resolved),
         missing_plan_item_ids=missing,
         returned_models=tuple(sorted(returned_models, key=lambda value: value.encode("utf-8"))),
+        raw_summary=RawHistorySummaryV1(
+            raw_attempt_count=raw_attempt_count,
+            usage_complete_count=usage_complete_count,
+            usage_partial_count=usage_partial_count,
+            usage_unavailable_count=usage_unavailable_count,
+            redacted_output_attempt_count=redacted_output_attempt_count,
+            redacted_output_replacement_count=redacted_output_replacement_count,
+        ),
         next_unresolved_plan_ordinal=None if not missing else current_ordinal,
         next_call_sequence=expected_call,
         next_attempt_number=None if not missing else expected_attempt,
@@ -1189,6 +1228,7 @@ def _validate_history_v1(
         request_history_present=request_history,
         execution_history_present=execution_history,
         latest_no_call_blocked=latest_no_call_blocked,
+        latest_no_call_blocked_reason=latest_no_call_blocked_reason,
         latest_event_recovered=latest_event_recovered,
         has_ambiguous_delivery=has_ambiguity
         or (open_commit is not None and open_commit.raw is None),

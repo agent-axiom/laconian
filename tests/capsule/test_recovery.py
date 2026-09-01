@@ -35,6 +35,7 @@ from laconian_eval.capsule.events import EventV1, event_jsonl, make_event
 from laconian_eval.capsule.history import (
     HistoryContextV1,
     HistoryError,
+    RawHistorySummaryV1,
     RecoveryRequirementV1,
     derive_lifecycle_v1,
 )
@@ -660,6 +661,98 @@ def test_dataclasses_replace_cannot_change_open_raw_terminal_reason(
         _plan(forged_context, journals)
 
     assert caught.value.code in {"invalid_model", "identity_mismatch"}
+    _assert_content_free(caught.value)
+
+
+@pytest.mark.parametrize(
+    "raw_summary",
+    [
+        object(),
+        RawHistorySummaryV1(True, 0, 0, 0, 0, 0),  # type: ignore[arg-type]
+        RawHistorySummaryV1(-1, 0, 0, 0, 0, 0),
+        RawHistorySummaryV1(0, 1, 0, 0, 0, 0),
+        RawHistorySummaryV1(1, 0, 0, 1, 0, 0),
+        RawHistorySummaryV1(0, 0, 0, 0, 1, 1),
+        RawHistorySummaryV1(0, 0, 0, 0, 0, 1),
+    ],
+    ids=(
+        "wrong-class",
+        "boolean-count",
+        "negative-count",
+        "usage-sum",
+        "cursor-count",
+        "redacted-attempt",
+        "replacement-without-attempt",
+    ),
+)
+def test_recovery_rejects_forged_raw_history_summary(
+    raw_summary: object,
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan_rows = _context()
+    context, _journals = _snapshot(tmp_path, event_rows=(_prepared(capsule),))
+    forged_history = replace(context.history, raw_summary=raw_summary)
+
+    with pytest.raises(RecoveryError) as caught:
+        replace(context, history=forged_history)
+
+    assert caught.value.code == "invalid_model"
+    _assert_content_free(caught.value)
+
+
+def test_recovery_rejects_block_reason_without_latest_no_call_block(
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan_rows = _context()
+    context, _journals = _snapshot(tmp_path, event_rows=(_prepared(capsule),))
+    forged_history = replace(
+        context.history,
+        latest_no_call_blocked_reason="provider_unavailable",
+    )
+
+    with pytest.raises(RecoveryError) as caught:
+        replace(context, history=forged_history)
+
+    assert caught.value.code == "invalid_model"
+    _assert_content_free(caught.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["has_ambiguous_delivery", "has_authentication_stop"],
+)
+def test_recovery_rejects_terminal_call_state_without_request_history(
+    field: str,
+    tmp_path: Path,
+) -> None:
+    capsule, _manifest, _environment, _plan_rows = _context()
+    context, _journals = _snapshot(tmp_path, event_rows=(_prepared(capsule),))
+    forged_history = replace(context.history, **{field: True})
+    forged_lifecycle = derive_lifecycle_v1(forged_history)
+
+    with pytest.raises(RecoveryError) as caught:
+        replace(
+            context,
+            history=forged_history,
+            lifecycle=forged_lifecycle,
+        )
+
+    assert caught.value.code == "invalid_model"
+    _assert_content_free(caught.value)
+
+
+def test_recovery_rejects_returned_model_without_resolved_success(
+    tmp_path: Path,
+) -> None:
+    events, raw_rows = _truth_state_rows("safe_retry", finish_committed=True)
+    context, _journals = _snapshot(tmp_path, event_rows=events, raw_rows=raw_rows)
+    assert context.history.resolved_plan_item_ids == ()
+    forged_history = replace(context.history, returned_models=("forged-returned",))
+
+    with pytest.raises(RecoveryError) as caught:
+        replace(context, history=forged_history)
+
+    assert caught.value.code == "invalid_model"
     _assert_content_free(caught.value)
 
 

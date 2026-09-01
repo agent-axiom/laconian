@@ -425,3 +425,38 @@ def verify_result_v1_payload() -> dict[str, Any]:
         "warnings": ["broader_permissions", "producer_runtime_differs"],
         "first_error": None,
     }
+
+
+def seal_v1_payload() -> dict[str, Any]:
+    """Return one complete, canonical SealV1 payload."""
+
+    return {
+        "seal_schema_version": "1",
+        "run_id": UUID_A,
+        "seal_transaction_id": UUID_B,
+        "generation_status": "complete",
+        "structural_integrity": "valid",
+        "missing_plan_item_ids": [],
+        "operational_blocker_codes": [],
+        "never_started_detail": None,
+        "disclosures": {
+            "source_state": "clean",
+            "returned_models": ["gpt-5.6-sol-2026-08-30"],
+            "usage_availability_counts": {
+                "complete": 40,
+                "partial": 0,
+                "unavailable": 0,
+            },
+            "redacted_output_attempt_count": 0,
+            "redacted_output_replacement_count": 0,
+            "dataset_ids": ["response-public-v1"],
+            "protocol_binding_ids": [],
+        },
+        "final_event_sequence": 83,
+        "raw_attempt_count": 40,
+        "sealed_at": "2026-08-30T12:34:56.123456Z",
+        "files": [
+            {"path": "capsule.json", "byte_length": 321, "sha256": SHA_A},
+            {"path": "events.jsonl", "byte_length": 654, "sha256": SHA_B},
+        ],
+    }

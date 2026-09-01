@@ -40,6 +40,7 @@ from laconian_eval.capsule.history import (
     HistoryError,
     LifecycleProjectionV1,
     RawCommitProjectionV1,
+    RawHistorySummaryV1,
     RecoveryRequirementV1,
     ValidatedHistoryV1,
     derive_lifecycle_v1,
@@ -269,13 +270,27 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
     resolved = tuple(_sha256(item) for item in value.resolved_plan_item_ids)
     missing = tuple(_sha256(item) for item in value.missing_plan_item_ids)
     returned = tuple(_provider_text(item) for item in value.returned_models)
+    summary_value = value.raw_summary
+    if type(summary_value) is not RawHistorySummaryV1:
+        raise TypeError
+    raw_summary = RawHistorySummaryV1(
+        raw_attempt_count=_nonnegative(summary_value.raw_attempt_count),
+        usage_complete_count=_nonnegative(summary_value.usage_complete_count),
+        usage_partial_count=_nonnegative(summary_value.usage_partial_count),
+        usage_unavailable_count=_nonnegative(summary_value.usage_unavailable_count),
+        redacted_output_attempt_count=_nonnegative(summary_value.redacted_output_attempt_count),
+        redacted_output_replacement_count=_nonnegative(
+            summary_value.redacted_output_replacement_count
+        ),
+    )
     plan_ids = tuple(row.plan_item_id for row in plan)
     if (
         resolved != plan_ids[: len(resolved)]
         or missing
         != tuple(sorted(plan_ids[len(resolved) :], key=lambda item: item.encode("utf-8")))
         or returned != tuple(sorted(set(returned), key=lambda item: item.encode("utf-8")))
-        or len(returned) > 2
+        or len(returned) > len(resolved)
+        or len(resolved) > raw_summary.raw_attempt_count
     ):
         raise TypeError
     expected_ordinal = None if not missing else len(resolved)
@@ -346,10 +361,21 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
     )
     if any(type(item) is not bool for item in booleans):
         raise TypeError
+    blocked_reason = value.latest_no_call_blocked_reason
+    if blocked_reason not in (None, "credential_unavailable", "provider_unavailable") or (
+        blocked_reason is not None and type(blocked_reason) is not str
+    ):
+        raise TypeError
     if (
         value.request_history_present != (next_call > 0)
         or (value.request_history_present and not value.execution_history_present)
         or (value.request_history_present and value.latest_no_call_blocked)
+        or value.latest_no_call_blocked != (blocked_reason is not None)
+        or (blocked_reason is not None and not value.execution_history_present)
+        or (
+            (value.has_ambiguous_delivery or value.has_authentication_stop)
+            and (not value.request_history_present or not value.execution_history_present)
+        )
         or (value.has_ambiguous_delivery and value.has_authentication_stop)
         or (not missing and (value.has_ambiguous_delivery or value.has_authentication_stop))
         or len(resolved) > next_call
@@ -397,6 +423,21 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
                 raise TypeError
             if raw.terminal_reason == "ambiguous_delivery" and not value.has_ambiguous_delivery:
                 raise TypeError
+    rawless_open = open_attempt is not None and open_attempt.raw is None
+    usage_count = (
+        raw_summary.usage_complete_count
+        + raw_summary.usage_partial_count
+        + raw_summary.usage_unavailable_count
+    )
+    if (
+        raw_summary.raw_attempt_count != next_call - int(rawless_open)
+        or usage_count != raw_summary.raw_attempt_count
+        or raw_summary.redacted_output_attempt_count > raw_summary.raw_attempt_count
+        or (raw_summary.redacted_output_attempt_count == 0)
+        != (raw_summary.redacted_output_replacement_count == 0)
+        or raw_summary.redacted_output_replacement_count < raw_summary.redacted_output_attempt_count
+    ):
+        raise TypeError
     requirement_kinds = tuple(item.kind for item in requirements)
     if open_attempt is None and "request_finished" in requirement_kinds:
         raise TypeError
@@ -429,16 +470,23 @@ def _strict_history(value: object, context: HistoryContextV1) -> ValidatedHistor
         if requirements:
             raise TypeError
     return ValidatedHistoryV1(
-        resolved,
-        missing,
-        returned,
-        expected_ordinal,
-        next_call,
-        next_attempt,
-        open_attempt,
-        requirements,
-        *booleans,
-        seal,
+        resolved_plan_item_ids=resolved,
+        missing_plan_item_ids=missing,
+        returned_models=returned,
+        raw_summary=raw_summary,
+        next_unresolved_plan_ordinal=expected_ordinal,
+        next_call_sequence=next_call,
+        next_attempt_number=next_attempt,
+        open_attempt=open_attempt,
+        recovery_requirements=requirements,
+        request_history_present=booleans[0],
+        execution_history_present=booleans[1],
+        latest_no_call_blocked=booleans[2],
+        latest_no_call_blocked_reason=blocked_reason,
+        latest_event_recovered=booleans[3],
+        has_ambiguous_delivery=booleans[4],
+        has_authentication_stop=booleans[5],
+        seal_requested=seal,
     )
 
 
