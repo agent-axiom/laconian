@@ -1007,10 +1007,13 @@ terminal LF. Its decoded body contains exactly one signature packet and no trail
 The issuer identifies the primary key or exactly one signing-capable subkey whose valid binding and
 issuer-to-primary fingerprint chain resolve to the registry fingerprint. Both keyed profiles verify
 the exact raw Git signed-payload bytes in binary mode without newline or text canonicalization.
-Every OpenPGP signature packet is version 4, binary-document signature type, EdDSA public-key
-algorithm, and SHA-256 hash; its hashed issuer-fingerprint/key-flags/creation-time fields and all
-unhashed issuer fields must be internally consistent. Unknown critical subpackets, multiple issuer
-identities, and an issuer-key-ID-only match are insufficient and reject.
+Every OpenPGP signature packet is version 4 and uses the EdDSA public-key algorithm with SHA-256.
+Only the detached commit-signature packet has binary-document signature type `0x00`; the key
+material retains the required positive-certification `0x13`, subkey-binding `0x18`, and embedded
+primary-key-binding `0x19` signature types stated above. Each packet's hashed
+issuer-fingerprint/key-flags/creation-time fields and all unhashed issuer fields must be internally
+consistent. Unknown critical subpackets, multiple issuer identities, and an issuer-key-ID-only
+match are insufficient and reject.
 
 The fixed entrypoint is literal
 `laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1`. It is in-process and imports

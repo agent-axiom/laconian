@@ -1125,9 +1125,12 @@ The OpenPGP key packet order is one v4 Ed25519 primary key; one UTF-8 User ID eq
 `author_name_ascii + " <" + author_email_ascii + ">"`; one v4 positive-certification self-signature
 with signing flags; then zero or more ascending-fingerprint pairs of v4 Ed25519 subkey and v4
 subkey-binding self-signature. A signing subkey also carries a valid embedded primary-key-binding
-signature. All OpenPGP signatures are v4 binary-document EdDSA/SHA-256 and bind an unambiguous
-issuer fingerprint to that primary or one valid subkey. Extra user IDs, packet kinds, unknown
-critical subpackets, issuer-key-ID-only matches, or inconsistent hashed/unhashed issuer data reject.
+signature. All OpenPGP signatures are v4 EdDSA/SHA-256. Only the detached commit-signature packet
+has binary-document signature type `0x00`; key-material signatures retain their required
+positive-certification `0x13`, subkey-binding `0x18`, and embedded primary-key-binding `0x19`
+types. Every packet binds an unambiguous issuer fingerprint to that primary or one valid subkey.
+Extra user IDs, packet kinds, unknown critical subpackets, issuer-key-ID-only matches, or
+inconsistent hashed/unhashed issuer data reject.
 
 The fixed in-process entrypoint is
 `laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1`; it uses only dependencies
