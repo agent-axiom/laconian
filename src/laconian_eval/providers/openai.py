@@ -19,7 +19,9 @@ import threading
 import tomllib
 import types
 import typing
-from contextlib import contextmanager
+import unicodedata
+from collections.abc import Mapping
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath
 from typing import (
     Any,
@@ -36,18 +38,34 @@ from typing import (
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic.fields import FieldInfo
 
+import laconian_eval
 from laconian_eval.benchmark import canonical_json_v1 as _canonical_json_v1
 from laconian_eval.capsule.canonical import stable_digest
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, bounded_utf8_length
 from laconian_eval.capsule.schema import CapsuleModel, Sha256
 from laconian_eval.providers.base import (
+    AppliedCacheControlStatus,
+    CacheReadStatus,
+    CacheWriteStatus,
     DeliveryCertainty,
     GenerationRequest,
     GenerationResult,
     ProviderError,
     PublicBenchmarkRequestPolicyV1,
     PublicBenchmarkRequestV1,
+    ReasoningTokenAccounting,
+    ServiceTierStatus,
     TokenUsage,
+    conservative_input_token_bound,
 )
+
+if typing.TYPE_CHECKING:
+    from laconian_eval.capsule.attempts import (
+        AttemptUsageV2,
+        PublicBenchmarkProviderErrorEvidenceV1,
+        PublicBenchmarkRawResponseSourceV1,
+        PublicBenchmarkResponseEvidenceV1,
+    )
 
 BENCHMARK_OPENAI_REQUEST_FIELDS_V1 = (
     "model",
@@ -393,6 +411,638 @@ def _public_benchmark_responses_kwargs(
     }
     result["service_tier"] = request.policy.service_tier
     return result
+
+
+def _assert_no_public_benchmark_cache_control(value: object) -> None:
+    """Recursively reject every exact string key beginning prompt_cache_."""
+
+    active_containers: set[int] = set()
+
+    def visit(item: object) -> None:
+        if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in active_containers:
+                raise _configuration_error("public benchmark cache-control tree must be acyclic")
+            active_containers.add(identity)
+            try:
+                for key, child in item.items():
+                    if type(key) is not str:
+                        raise _configuration_error(
+                            "public benchmark cache-control mapping key must be an exact string"
+                        )
+                    if key.startswith("prompt_cache_"):
+                        raise _configuration_error(
+                            "public benchmark request contains forbidden prompt_cache_ control"
+                        )
+                    visit(child)
+            except ProviderError:
+                raise
+            except Exception:
+                raise _configuration_error(
+                    "public benchmark cache-control tree is not inspectable"
+                ) from None
+            finally:
+                active_containers.remove(identity)
+            return
+        if type(item) in (list, tuple):
+            children = cast(list[object] | tuple[object, ...], item)
+            identity = id(item)
+            if identity in active_containers:
+                raise _configuration_error("public benchmark cache-control tree must be acyclic")
+            active_containers.add(identity)
+            try:
+                for child in children:
+                    visit(child)
+            except ProviderError:
+                raise
+            except Exception:
+                raise _configuration_error(
+                    "public benchmark cache-control tree is not inspectable"
+                ) from None
+            finally:
+                active_containers.remove(identity)
+
+    visit(value)
+
+
+_PUBLIC_BENCHMARK_RAW_RESPONSE_PATHS: tuple[str, ...] = (
+    "response.id",
+    "response.status",
+    "response.error",
+    "response.output",
+    "response.model",
+    "response.service_tier",
+    "response.prompt_cache_options.mode",
+    "response.prompt_cache_options.ttl",
+    "response.usage.input_tokens",
+    "response.usage.input_tokens_details.cached_tokens",
+    "response.usage.input_tokens_details.cache_write_tokens",
+    "response.usage.output_tokens",
+    "response.usage.output_tokens_details.reasoning_tokens",
+    "response.usage.total_tokens",
+)
+_PUBLIC_BENCHMARK_SOURCE_DIGEST_FIELDS: tuple[str, ...] = (
+    "returned_model_source_sha256",
+    "service_tier_source_sha256",
+    "applied_cache_control_source_sha256",
+    "cache_read_source_sha256",
+    "cache_write_source_sha256",
+    "usage_source_sha256",
+    "reasoning_tokens_source_sha256",
+)
+_MISSING_RESPONSE_MEMBER = object()
+
+
+class _RawResponseMember(typing.NamedTuple):
+    present: bool
+    value: object
+
+
+def _read_public_benchmark_response_path(response: object, path: str) -> _RawResponseMember:
+    current = response
+    for component in path.split(".")[1:]:
+        if current is None:
+            return _RawResponseMember(False, None)
+        try:
+            value = getattr(current, component, _MISSING_RESPONSE_MEMBER)
+        except Exception:
+            raise ValueError("public benchmark response path lookup failed") from None
+        if value is _MISSING_RESPONSE_MEMBER:
+            return _RawResponseMember(False, None)
+        current = value
+    return _RawResponseMember(True, current)
+
+
+def _project_public_benchmark_raw_response(
+    response: object,
+) -> tuple[PublicBenchmarkRawResponseSourceV1, dict[str, _RawResponseMember]]:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkRawResponseSourceEntryV1,
+        PublicBenchmarkRawResponseSourceV1,
+    )
+
+    raw_members: dict[str, _RawResponseMember] = {}
+    entries: list[PublicBenchmarkRawResponseSourceEntryV1] = []
+    for path in _PUBLIC_BENCHMARK_RAW_RESPONSE_PATHS:
+        member = _read_public_benchmark_response_path(response, path)
+        raw_members[path] = member
+        entries.append(
+            PublicBenchmarkRawResponseSourceEntryV1(
+                path=cast(Any, path),
+                present=member.present,
+                value=member.value if member.present else None,
+            )
+        )
+    source = PublicBenchmarkRawResponseSourceV1(
+        schema_version="PublicBenchmarkRawResponseSourceV1",
+        entries=tuple(entries),
+    )
+    return source, raw_members
+
+
+def _public_benchmark_raw_response_source(
+    response: object,
+) -> PublicBenchmarkRawResponseSourceV1:
+    """Return the exact bounded 14-path typed SDK projection."""
+
+    source, _ = _project_public_benchmark_raw_response(response)
+    return source
+
+
+def _safe_public_benchmark_metadata(value: object) -> str | None:
+    if type(value) is not str:
+        return None
+    try:
+        bounded_utf8_length(
+            value,
+            limit=RESOURCE_LIMITS_V1.bounded_string_bytes,
+            code="bounded_string_limit",
+        )
+    except Exception:
+        return None
+    if not value.strip() or any(
+        ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value
+    ):
+        return None
+    return value
+
+
+def _benchmark_provider_request_id(response: object) -> str | None:
+    try:
+        value = getattr(response, "_request_id", None)
+    except Exception:
+        return None
+    return _safe_public_benchmark_metadata(value)
+
+
+def _source_entries(
+    source: PublicBenchmarkRawResponseSourceV1,
+) -> dict[str, object]:
+    return {entry.path: entry for entry in source.entries}
+
+
+def _source_metadata(entry: object) -> str | None:
+    if not bool(getattr(entry, "present", False)):
+        return None
+    return _safe_public_benchmark_metadata(getattr(entry, "value", None))
+
+
+def _source_count(entry: object) -> int | None:
+    if not bool(getattr(entry, "present", False)):
+        return None
+    value = getattr(entry, "value", None)
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
+def _received_service_tier(
+    entry: object,
+) -> tuple[str | None, ServiceTierStatus]:
+    value = _source_metadata(entry)
+    if value == "default":
+        return value, "reported_default"
+    if value is not None:
+        return value, "mismatch"
+    return None, "missing"
+
+
+def _applied_cache_control(
+    source: PublicBenchmarkRawResponseSourceV1,
+) -> tuple[str | None, str | None, AppliedCacheControlStatus]:
+    entries = _source_entries(source)
+    mode_entry = entries["response.prompt_cache_options.mode"]
+    ttl_entry = entries["response.prompt_cache_options.ttl"]
+    mode = _source_metadata(mode_entry)
+    ttl = _source_metadata(ttl_entry)
+    mode_present = bool(getattr(mode_entry, "present", False))
+    ttl_present = bool(getattr(ttl_entry, "present", False))
+    mode_value = getattr(mode_entry, "value", None)
+    ttl_value = getattr(ttl_entry, "value", None)
+    if (mode_present and mode_value is not None and mode is None) or (
+        ttl_present and ttl_value is not None and ttl is None
+    ):
+        status: AppliedCacheControlStatus = "invalid"
+    elif not mode_present or mode_value is None or not ttl_present or ttl_value is None:
+        status = "missing"
+    elif mode == "explicit" and ttl == "30m":
+        status = "reported_exact"
+    else:
+        status = "mismatch"
+    return mode, ttl, status
+
+
+def _optional_reasoning_count(
+    raw_usage: object | None,
+    output_tokens: int | None,
+) -> tuple[int | None, ReasoningTokenAccounting]:
+    missing = object()
+    if raw_usage is None:
+        return None, "not_reported"
+    try:
+        details = getattr(raw_usage, "output_tokens_details", missing)
+        if details is missing or details is None:
+            return None, "not_reported"
+        value = getattr(details, "reasoning_tokens", missing)
+    except Exception:
+        return None, "invalid"
+    if value is missing or value is None:
+        return None, "not_reported"
+    if type(value) is not int or value < 0 or output_tokens is None or value > output_tokens:
+        return None, "invalid"
+    return value, "reported"
+
+
+def _benchmark_usage_from_source(
+    source: PublicBenchmarkRawResponseSourceV1,
+    raw_usage: object | None,
+) -> AttemptUsageV2:
+    from laconian_eval.capsule.attempts import AttemptUsageV2
+
+    entries = _source_entries(source)
+    input_tokens = _source_count(entries["response.usage.input_tokens"])
+    output_tokens = _source_count(entries["response.usage.output_tokens"])
+    total_tokens = _source_count(entries["response.usage.total_tokens"])
+    if (
+        input_tokens is not None
+        and output_tokens is not None
+        and total_tokens is not None
+        and total_tokens != input_tokens + output_tokens
+    ):
+        total_tokens = None
+
+    cache_values: list[int | None] = []
+    cache_statuses: list[CacheReadStatus | CacheWriteStatus] = []
+    for path in (
+        "response.usage.input_tokens_details.cached_tokens",
+        "response.usage.input_tokens_details.cache_write_tokens",
+    ):
+        entry = entries[path]
+        present = bool(getattr(entry, "present", False))
+        raw_value = getattr(entry, "value", None)
+        count = _source_count(entry)
+        if not present or raw_value is None:
+            status: CacheReadStatus | CacheWriteStatus = "missing"
+        elif count is None or input_tokens is None or count > input_tokens:
+            count = None
+            status = "invalid"
+        elif count == 0:
+            status = "reported_zero"
+        else:
+            status = "reported_nonzero"
+        cache_values.append(count)
+        cache_statuses.append(status)
+    if (
+        input_tokens is not None
+        and cache_values[0] is not None
+        and cache_values[1] is not None
+        and cache_values[0] + cache_values[1] > input_tokens
+    ):
+        cache_values = [None, None]
+        cache_statuses = ["invalid", "invalid"]
+
+    reasoning_tokens, reasoning_accounting = _optional_reasoning_count(
+        raw_usage,
+        output_tokens,
+    )
+    available_core_counts = sum(
+        value is not None for value in (input_tokens, output_tokens, total_tokens)
+    )
+    if available_core_counts == 3:
+        availability = "complete"
+    elif available_core_counts:
+        availability = "partial"
+    else:
+        availability = "unavailable"
+    ordinary_uncached_input_tokens = (
+        None
+        if input_tokens is None
+        else input_tokens - (cache_values[0] or 0) - (cache_values[1] or 0)
+    )
+    return AttemptUsageV2(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cache_read_tokens=cache_values[0],
+        cache_write_tokens=cache_values[1],
+        ordinary_uncached_input_tokens=ordinary_uncached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+        availability=cast(Any, availability),
+        source="provider",
+        cache_read_status=cast(Any, cache_statuses[0]),
+        cache_write_status=cast(Any, cache_statuses[1]),
+        reasoning_token_accounting=reasoning_accounting,
+    )
+
+
+def _unavailable_benchmark_usage(
+    *,
+    cache_status: CacheReadStatus | CacheWriteStatus,
+    reasoning_accounting: ReasoningTokenAccounting,
+) -> AttemptUsageV2:
+    from laconian_eval.capsule.attempts import AttemptUsageV2
+
+    return AttemptUsageV2(
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        ordinary_uncached_input_tokens=None,
+        reasoning_tokens=None,
+        availability="unavailable",
+        source="provider",
+        cache_read_status=cache_status,
+        cache_write_status=cache_status,
+        reasoning_token_accounting=reasoning_accounting,
+    )
+
+
+def _raw_output_member(value: object, name: str) -> object:
+    if type(value) is dict:
+        return value.get(name, _MISSING_RESPONSE_MEMBER)
+    try:
+        return getattr(value, name, _MISSING_RESPONSE_MEMBER)
+    except Exception:
+        return _MISSING_RESPONSE_MEMBER
+
+
+def _committed_output_text(raw_output: _RawResponseMember) -> str:
+    if not raw_output.present or type(raw_output.value) not in (list, tuple):
+        raise ValueError("response output is missing or malformed")
+    pieces: list[str] = []
+    byte_length = 0
+    output_items = cast(list[object] | tuple[object, ...], raw_output.value)
+    for item in output_items:
+        item_type = _raw_output_member(item, "type")
+        if type(item_type) is not str:
+            raise ValueError("response output item is malformed")
+        if item_type != "message":
+            continue
+        content = _raw_output_member(item, "content")
+        if type(content) not in (list, tuple):
+            raise ValueError("response message content is malformed")
+        content_items = cast(list[object] | tuple[object, ...], content)
+        for part in content_items:
+            part_type = _raw_output_member(part, "type")
+            if type(part_type) is not str:
+                raise ValueError("response content item is malformed")
+            if part_type != "output_text":
+                continue
+            text = _raw_output_member(part, "text")
+            if type(text) is not str:
+                raise ValueError("response output text is malformed")
+            try:
+                encoded_length = len(text.encode("utf-8", errors="strict"))
+            except UnicodeEncodeError:
+                raise ValueError("response output text is not strict UTF-8") from None
+            byte_length += encoded_length
+            if byte_length > RESOURCE_LIMITS_V1.output_utf8_bytes:
+                raise ValueError("response output text exceeds its byte bound")
+            pieces.append(text)
+    output = "".join(pieces)
+    if not output.strip():
+        raise ValueError("response output text is blank")
+    return output
+
+
+def _typed_source_has_usable_completed_output(entries: dict[str, object]) -> bool:
+    response_id_entry = entries["response.id"]
+    status_entry = entries["response.status"]
+    error_entry = entries["response.error"]
+    output_entry = entries["response.output"]
+    status_present = getattr(status_entry, "present", False)
+    status_value = getattr(status_entry, "value", None)
+    error_present = getattr(error_entry, "present", False)
+    error_value = getattr(error_entry, "value", None)
+    output_present = getattr(output_entry, "present", False)
+    output_value = getattr(output_entry, "value", None)
+    if (
+        _source_metadata(response_id_entry) is None
+        or status_present is not True
+        or type(status_value) is not str
+        or status_value != "completed"
+        or type(error_present) is not bool
+        or (error_present and error_value is not None)
+        or output_present is not True
+    ):
+        return False
+    try:
+        _committed_output_text(_RawResponseMember(True, output_value))
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    return True
+
+
+def _benchmark_error_payload(
+    *,
+    request: PublicBenchmarkRequestV1,
+    delivery_certainty: DeliveryCertainty,
+    provider_request_id: str | None,
+    response_id: str | None,
+    raw_response_sha256: str | None,
+    raw_response_source: PublicBenchmarkRawResponseSourceV1 | None,
+    usage: AttemptUsageV2,
+    returned_model_id: str | None,
+    returned_service_tier: str | None,
+    service_tier_status: ServiceTierStatus,
+    applied_prompt_cache_mode: str | None,
+    applied_prompt_cache_ttl: str | None,
+    applied_cache_control_status: AppliedCacheControlStatus,
+    structured_status: int | None,
+) -> PublicBenchmarkProviderErrorEvidenceV1:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        public_benchmark_provider_error_source_sha256,
+    )
+
+    placeholder = "0" * 64
+    payload: dict[str, object] = {
+        "schema_version": "public-benchmark-provider-error-evidence-v1",
+        "delivery_certainty": delivery_certainty,
+        "provider_request_id": provider_request_id,
+        "response_id": response_id,
+        "raw_response_sha256": raw_response_sha256,
+        "raw_response_source": raw_response_source,
+        "usage": usage,
+        "requested_model_id": request.requested_model_id,
+        "returned_model_id": returned_model_id,
+        "returned_model_source_sha256": placeholder,
+        "requested_service_tier": request.policy.service_tier,
+        "returned_service_tier": returned_service_tier,
+        "service_tier_status": service_tier_status,
+        "service_tier_source_sha256": placeholder,
+        "applied_prompt_cache_mode": applied_prompt_cache_mode,
+        "applied_prompt_cache_ttl": applied_prompt_cache_ttl,
+        "applied_cache_control_status": applied_cache_control_status,
+        "applied_cache_control_source_sha256": placeholder,
+        "cache_read_source_sha256": placeholder,
+        "cache_write_source_sha256": placeholder,
+        "usage_source_sha256": placeholder,
+        "reasoning_tokens_source_sha256": placeholder,
+        "structured_status": structured_status,
+        "error_source_sha256": placeholder,
+    }
+    error_digest = public_benchmark_provider_error_source_sha256(payload)
+    payload["error_source_sha256"] = error_digest
+    common_digest = raw_response_sha256 or error_digest
+    for field_name in _PUBLIC_BENCHMARK_SOURCE_DIGEST_FIELDS:
+        payload[field_name] = common_digest
+    return PublicBenchmarkProviderErrorEvidenceV1.model_validate(payload)
+
+
+def _projection_failure_evidence(
+    request: PublicBenchmarkRequestV1,
+    response: object,
+) -> PublicBenchmarkProviderErrorEvidenceV1:
+    provider_request_id = _benchmark_provider_request_id(response)
+    return _benchmark_error_payload(
+        request=request,
+        delivery_certainty="response_received",
+        provider_request_id=provider_request_id,
+        response_id=None,
+        raw_response_sha256=None,
+        raw_response_source=None,
+        usage=_unavailable_benchmark_usage(
+            cache_status="invalid",
+            reasoning_accounting="invalid",
+        ),
+        returned_model_id=None,
+        returned_service_tier=None,
+        service_tier_status="missing",
+        applied_prompt_cache_mode=None,
+        applied_prompt_cache_ttl=None,
+        applied_cache_control_status="invalid",
+        structured_status=None,
+    )
+
+
+def _parse_benchmark_response(
+    response: object,
+    request: PublicBenchmarkRequestV1,
+) -> PublicBenchmarkResponseEvidenceV1 | PublicBenchmarkProviderErrorEvidenceV1:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkResponseEvidenceV1,
+        public_benchmark_raw_response_sha256,
+    )
+
+    try:
+        source, raw_members = _project_public_benchmark_raw_response(response)
+    except Exception:
+        return _projection_failure_evidence(request, response)
+    raw_digest = public_benchmark_raw_response_sha256(source)
+    entries = _source_entries(source)
+
+    response_id = _source_metadata(entries["response.id"])
+    returned_model_id = _source_metadata(entries["response.model"])
+    returned_service_tier, service_tier_status = _received_service_tier(
+        entries["response.service_tier"]
+    )
+    applied_mode, applied_ttl, applied_status = _applied_cache_control(source)
+    try:
+        raw_usage = getattr(response, "usage", None)
+    except Exception:
+        raw_usage = None
+    usage = _benchmark_usage_from_source(source, raw_usage)
+    provider_request_id = _benchmark_provider_request_id(response)
+
+    status_member = raw_members["response.status"]
+    error_member = raw_members["response.error"]
+    output_member = raw_members["response.output"]
+    output_text: str | None = None
+    with suppress(TypeError, ValueError, UnicodeError):
+        output_text = _committed_output_text(output_member)
+    completed = (
+        status_member.present
+        and type(status_member.value) is str
+        and status_member.value == "completed"
+    )
+    no_error = not error_member.present or error_member.value is None
+    if completed and no_error and response_id is not None and output_text is not None:
+        payload: dict[str, object] = {
+            "schema_version": "public-benchmark-response-evidence-v1",
+            "response_id": response_id,
+            "raw_response_sha256": raw_digest,
+            "output_text": output_text,
+            "raw_response_source": source,
+            "usage": usage,
+            "requested_model_id": request.requested_model_id,
+            "returned_model_id": returned_model_id,
+            "returned_model_source_sha256": raw_digest,
+            "requested_service_tier": request.policy.service_tier,
+            "returned_service_tier": returned_service_tier,
+            "service_tier_status": service_tier_status,
+            "service_tier_source_sha256": raw_digest,
+            "applied_prompt_cache_mode": applied_mode,
+            "applied_prompt_cache_ttl": applied_ttl,
+            "applied_cache_control_status": applied_status,
+            "applied_cache_control_source_sha256": raw_digest,
+            "cache_read_source_sha256": raw_digest,
+            "cache_write_source_sha256": raw_digest,
+            "usage_source_sha256": raw_digest,
+            "reasoning_tokens_source_sha256": raw_digest,
+        }
+        try:
+            return PublicBenchmarkResponseEvidenceV1.model_validate(payload)
+        except Exception:
+            pass
+
+    if _typed_source_has_usable_completed_output(entries):
+        return _projection_failure_evidence(request, response)
+
+    return _benchmark_error_payload(
+        request=request,
+        delivery_certainty="response_received",
+        provider_request_id=provider_request_id,
+        response_id=response_id,
+        raw_response_sha256=raw_digest,
+        raw_response_source=source,
+        usage=usage,
+        returned_model_id=returned_model_id,
+        returned_service_tier=returned_service_tier,
+        service_tier_status=service_tier_status,
+        applied_prompt_cache_mode=applied_mode,
+        applied_prompt_cache_ttl=applied_ttl,
+        applied_cache_control_status=applied_status,
+        structured_status=None,
+    )
+
+
+def _parse_benchmark_provider_error(
+    error: Exception,
+    classified: ProviderError,
+    request: PublicBenchmarkRequestV1,
+) -> PublicBenchmarkProviderErrorEvidenceV1:
+    raw_status = getattr(error, "status_code", None)
+    structured_status = raw_status if type(raw_status) is int and 100 <= raw_status <= 599 else None
+    delivery_certainty = classified.delivery_certainty
+    if delivery_certainty == "definitely_rejected" and structured_status is None:
+        delivery_certainty = "unknown"
+    if delivery_certainty == "definitely_not_sent":
+        not_applicable: ServiceTierStatus = "not_applicable_definitely_not_sent"
+    elif delivery_certainty == "definitely_rejected":
+        not_applicable = "not_applicable_definitely_rejected"
+    else:
+        not_applicable = "missing"
+    return _benchmark_error_payload(
+        request=request,
+        delivery_certainty=delivery_certainty,
+        provider_request_id=_safe_public_benchmark_metadata(classified.request_id),
+        response_id=None,
+        raw_response_sha256=None,
+        raw_response_source=None,
+        usage=_unavailable_benchmark_usage(
+            cache_status=cast(CacheReadStatus, not_applicable),
+            reasoning_accounting="not_reported",
+        ),
+        returned_model_id=None,
+        returned_service_tier=None,
+        service_tier_status=not_applicable,
+        applied_prompt_cache_mode=None,
+        applied_prompt_cache_ttl=None,
+        applied_cache_control_status=cast(AppliedCacheControlStatus, not_applicable),
+        structured_status=structured_status,
+    )
 
 
 def _rewrite_private_openai_source(name: str, source: str) -> str:
@@ -1481,6 +2131,124 @@ class OpenAIProvider:
             raise _configuration_error(
                 "request timeout_seconds does not match the provider client timeout"
             )
+
+    def _validate_benchmark_request(self, request: PublicBenchmarkRequestV1) -> None:
+        if type(request) is not PublicBenchmarkRequestV1:
+            raise _configuration_error("request must be an exact PublicBenchmarkRequestV1")
+        if type(request.case_id) is not str or not request.case_id.strip():
+            raise _configuration_error("case_id must be an exact nonblank string")
+        if type(request.arm) is not str or request.arm not in {
+            "baseline",
+            "concise",
+            "caveman",
+            "if",
+        }:
+            raise _configuration_error("arm must be an exact public benchmark arm")
+        if type(request.repetition) is not int or request.repetition < 0:
+            raise _configuration_error("repetition must be a nonnegative exact integer")
+        if type(request.requested_model_id) is not str or request.requested_model_id not in {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        }:
+            raise _configuration_error("requested_model_id must be an exact public benchmark model")
+        if request.instructions is not None and (
+            type(request.instructions) is not str or not request.instructions.strip()
+        ):
+            raise _configuration_error("instructions must be null or an exact nonblank string")
+        if type(request.prompt) is not str or not request.prompt.strip():
+            raise _configuration_error("prompt must be an exact nonblank string")
+        if type(request.max_output_tokens) is not int or request.max_output_tokens < 1:
+            raise _configuration_error("max_output_tokens must be a positive exact integer")
+        if request.temperature is not None:
+            raise _configuration_error("temperature must be null for public benchmark requests")
+        if request.reasoning_effort is not None and (
+            type(request.reasoning_effort) is not str
+            or request.reasoning_effort not in {"low", "medium", "high"}
+        ):
+            raise _configuration_error("reasoning_effort must be null or an exact supported value")
+        if request.text_verbosity is not None and (
+            type(request.text_verbosity) is not str
+            or request.text_verbosity not in {"low", "medium", "high"}
+        ):
+            raise _configuration_error("text_verbosity must be null or an exact supported value")
+
+        policy = request.policy
+        if type(policy) is not PublicBenchmarkRequestPolicyV1:
+            raise _configuration_error("policy must be an exact PublicBenchmarkRequestPolicyV1")
+        if type(policy.schema_version) is not str or policy.schema_version != (
+            "PublicBenchmarkRequestPolicyV1"
+        ):
+            raise _configuration_error("policy schema_version is invalid")
+        if type(policy.reasoning_mode) is not str or policy.reasoning_mode != "omitted":
+            raise _configuration_error("reasoning_mode must be exactly omitted")
+        if type(policy.prompt_cache_mode) is not str or policy.prompt_cache_mode != "explicit":
+            raise _configuration_error("prompt_cache_mode must be exactly explicit")
+        if type(policy.prompt_cache_ttl) is not str or policy.prompt_cache_ttl != "30m":
+            raise _configuration_error("prompt_cache_ttl must be exactly 30m")
+        if type(policy.service_tier) is not str or policy.service_tier != "default":
+            raise _configuration_error("service_tier must be exactly default")
+        if (
+            type(policy.input_token_bound_version) is not str
+            or policy.input_token_bound_version != "openai-utf8-envelope-v1"
+        ):
+            raise _configuration_error(
+                "input_token_bound_version must be exactly openai-utf8-envelope-v1"
+            )
+        if type(policy.max_input_tokens) is not int or policy.max_input_tokens != 272_000:
+            raise _configuration_error("max_input_tokens must be exactly 272000")
+
+        try:
+            if (
+                request.instructions is not None
+                and unicodedata.normalize("NFC", request.instructions) != request.instructions
+            ):
+                raise _configuration_error("instructions must be canonical NFC text")
+            if unicodedata.normalize("NFC", request.prompt) != request.prompt:
+                raise _configuration_error("prompt must be canonical NFC text")
+            instruction_utf8_bytes = (
+                0
+                if request.instructions is None
+                else len(request.instructions.encode("utf-8", errors="strict"))
+            )
+            prompt_utf8_bytes = len(request.prompt.encode("utf-8", errors="strict"))
+        except UnicodeEncodeError:
+            raise _configuration_error("instructions and prompt must be strict UTF-8") from None
+        bound = conservative_input_token_bound(
+            instruction_utf8_bytes=instruction_utf8_bytes,
+            prompt_utf8_bytes=prompt_utf8_bytes,
+        )
+        if bound > policy.max_input_tokens:
+            raise _configuration_error("public benchmark input token bound exceeds 272000")
+
+        request_timeout = _validate_timeout(request.timeout_seconds)
+        if request_timeout != self._timeout_seconds:
+            raise _configuration_error(
+                "request timeout_seconds does not match the provider client timeout"
+            )
+
+    def generate_benchmark(
+        self,
+        request: PublicBenchmarkRequestV1,
+    ) -> laconian_eval.capsule.attempts.PublicBenchmarkProviderOutcomeV1:  # type: ignore[name-defined]
+        self._validate_benchmark_request(request)
+        _assert_no_public_benchmark_cache_control(request.instructions)
+        _assert_no_public_benchmark_cache_control(request.prompt)
+        kwargs = _public_benchmark_responses_kwargs(request)
+        try:
+            hashlib.sha256(_canonical_json_v1(kwargs)).hexdigest()
+        except Exception:
+            raise _configuration_error(
+                "public benchmark request is not canonical JSON v1"
+            ) from None
+        try:
+            response = self._client.responses.create(**kwargs)
+        except Exception as exc:
+            classified = _classify_api_error(exc)
+            if classified is None:
+                raise
+            return _parse_benchmark_provider_error(exc, classified, request)
+        return _parse_benchmark_response(response, request)
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         self._validate_request(request)

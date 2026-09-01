@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 import laconian_eval.providers.replay as replay_module
+from laconian_eval.capsule.canonical import stable_digest
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
 from laconian_eval.cases import load_response_cases
 from laconian_eval.providers import (
@@ -19,10 +20,15 @@ from laconian_eval.providers import (
     ReplayProvider,
     TokenUsage,
 )
+from laconian_eval.providers.base import (
+    PublicBenchmarkRequestPolicyV1,
+    PublicBenchmarkRequestV1,
+)
 from laconian_eval.yaml_io import StrictYamlError
 
 ROOT = Path(__file__).parents[1]
 REPLAY_FIXTURE = ROOT / "tests/fixtures/replay-responses.yaml"
+PUBLIC_BENCHMARK_REPLAY_FIXTURE = ROOT / "tests/fixtures/replay-public-benchmark-responses.yaml"
 RESPONSE_CASES = ROOT / "evals/cases/response-smoke.yaml"
 ARMS = ("baseline", "concise", "caveman", "if")
 
@@ -43,6 +49,36 @@ def request(
         max_output_tokens=128,
         temperature=None,
         timeout_seconds=5.0,
+    )
+
+
+def benchmark_request(
+    *,
+    case_id: str = "case-en",
+    arm: str = "if",
+    repetition: int = 0,
+) -> PublicBenchmarkRequestV1:
+    return PublicBenchmarkRequestV1(
+        case_id=case_id,
+        arm=arm,
+        repetition=repetition,
+        requested_model_id="gpt-5.6-sol",
+        instructions="Synthetic instructions.",
+        prompt="Synthetic prompt.",
+        max_output_tokens=128,
+        temperature=None,
+        timeout_seconds=5.0,
+        policy=PublicBenchmarkRequestPolicyV1(
+            schema_version="PublicBenchmarkRequestPolicyV1",
+            service_tier="default",
+            prompt_cache_mode="explicit",
+            prompt_cache_ttl="30m",
+            reasoning_mode="omitted",
+            input_token_bound_version="openai-utf8-envelope-v1",
+            max_input_tokens=272000,
+        ),
+        reasoning_effort="medium",
+        text_verbosity="medium",
     )
 
 
@@ -783,3 +819,482 @@ def test_complete_replay_fixture_contains_explicit_synthetic_hard_failures() -> 
     assert all(literal in concise for literal in case.hard_constraints.required_literals)
     assert len(if_output) < len(concise)
     assert any(literal not in if_output for literal in case.hard_constraints.required_literals)
+
+
+_RAW_RESPONSE_PATHS = (
+    ("response", "id"),
+    ("response", "status"),
+    ("response", "error"),
+    ("response", "output"),
+    ("response", "model"),
+    ("response", "service_tier"),
+    ("response", "prompt_cache_options", "mode"),
+    ("response", "prompt_cache_options", "ttl"),
+    ("response", "usage", "input_tokens"),
+    ("response", "usage", "input_tokens_details", "cached_tokens"),
+    ("response", "usage", "input_tokens_details", "cache_write_tokens"),
+    ("response", "usage", "output_tokens"),
+    ("response", "usage", "output_tokens_details", "reasoning_tokens"),
+    ("response", "usage", "total_tokens"),
+)
+
+_SUCCESS_BENCHMARK_ROW = "case-en:if:0"
+_FAILED_BENCHMARK_ROW = "case-en:baseline:0"
+_COMMON_BENCHMARK_FIXTURE_MEMBER_PATHS: tuple[tuple[str | int, ...], ...] = (
+    ("requested_model_id",),
+    ("response",),
+    ("response", "id"),
+    ("response", "status"),
+    ("response", "error"),
+    ("response", "output"),
+    ("response", "model"),
+    ("response", "service_tier"),
+    ("response", "prompt_cache_options"),
+    ("response", "usage"),
+    ("response", "prompt_cache_options", "mode"),
+    ("response", "prompt_cache_options", "ttl"),
+    ("response", "usage", "input_tokens"),
+    ("response", "usage", "input_tokens_details"),
+    ("response", "usage", "output_tokens"),
+    ("response", "usage", "output_tokens_details"),
+    ("response", "usage", "total_tokens"),
+    ("response", "usage", "input_tokens_details", "cached_tokens"),
+    ("response", "usage", "input_tokens_details", "cache_write_tokens"),
+    ("response", "usage", "output_tokens_details", "reasoning_tokens"),
+)
+_SUCCESS_BENCHMARK_FIXTURE_MEMBER_PATHS: tuple[tuple[str | int, ...], ...] = (
+    ("response", "output", 0, "type"),
+    ("response", "output", 0, "content"),
+    ("response", "output", 0, "content", 0, "type"),
+    ("response", "output", 0, "content", 0, "text"),
+)
+_FAILED_BENCHMARK_FIXTURE_MEMBER_PATHS: tuple[tuple[str | int, ...], ...] = (
+    ("response", "error", "code"),
+    ("response", "error", "message"),
+)
+_BENCHMARK_FIXTURE_MEMBER_TARGETS = tuple(
+    (row_key, path)
+    for row_key, paths in (
+        (
+            _SUCCESS_BENCHMARK_ROW,
+            (
+                *_COMMON_BENCHMARK_FIXTURE_MEMBER_PATHS,
+                *_SUCCESS_BENCHMARK_FIXTURE_MEMBER_PATHS,
+            ),
+        ),
+        (
+            _FAILED_BENCHMARK_ROW,
+            (
+                *_COMMON_BENCHMARK_FIXTURE_MEMBER_PATHS,
+                *_FAILED_BENCHMARK_FIXTURE_MEMBER_PATHS,
+            ),
+        ),
+    )
+    for path in paths
+)
+_REORDERABLE_BENCHMARK_FIXTURE_MEMBER_TARGETS = tuple(
+    (row_key, path)
+    for row_key, path in _BENCHMARK_FIXTURE_MEMBER_TARGETS
+    if sum(
+        candidate_row == row_key and candidate_path[:-1] == path[:-1]
+        for candidate_row, candidate_path in _BENCHMARK_FIXTURE_MEMBER_TARGETS
+    )
+    > 1
+)
+
+
+def _benchmark_fixture_document() -> dict[str, object]:
+    raw = yaml.safe_load(PUBLIC_BENCHMARK_REPLAY_FIXTURE.read_bytes())
+    assert type(raw) is dict
+    return raw
+
+
+def _mapping_at_path(
+    document: dict[str, object],
+    path: tuple[str | int, ...],
+    *,
+    row_key: str = _SUCCESS_BENCHMARK_ROW,
+) -> dict[str, object]:
+    current: object = document[row_key]
+    for member in path[:-1]:
+        if type(member) is int:
+            assert type(current) is list
+            current = current[member]
+        else:
+            assert type(current) is dict
+            current = current[member]
+    assert type(current) is dict
+    assert type(path[-1]) is str
+    return current
+
+
+def _benchmark_fixture_bytes(document: dict[str, object]) -> bytes:
+    return yaml.safe_dump(document, sort_keys=False).encode("utf-8")
+
+
+def test_public_benchmark_replay_derives_exact_response_evidence() -> None:
+    provider = ReplayProvider.from_benchmark_path(PUBLIC_BENCHMARK_REPLAY_FIXTURE)
+    outcome = provider.generate_benchmark(benchmark_request())
+    payload = outcome.model_dump(mode="json")
+
+    assert type(outcome).__name__ == "PublicBenchmarkResponseEvidenceV1"
+    assert tuple(payload) == (
+        "schema_version",
+        "response_id",
+        "raw_response_sha256",
+        "output_text",
+        "raw_response_source",
+        "usage",
+        "requested_model_id",
+        "returned_model_id",
+        "returned_model_source_sha256",
+        "requested_service_tier",
+        "returned_service_tier",
+        "service_tier_status",
+        "service_tier_source_sha256",
+        "applied_prompt_cache_mode",
+        "applied_prompt_cache_ttl",
+        "applied_cache_control_status",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    )
+    assert payload["schema_version"] == "public-benchmark-response-evidence-v1"
+    assert payload["response_id"] == "replay-benchmark-response-1"
+    assert payload["output_text"] == "Done."
+    assert payload["requested_model_id"] == "gpt-5.6-sol"
+    assert payload["returned_model_id"] == "gpt-5.6-sol-2026-08-07"
+    assert payload["requested_service_tier"] == "default"
+    assert payload["returned_service_tier"] == "default"
+    assert payload["service_tier_status"] == "reported_default"
+    assert payload["applied_prompt_cache_mode"] == "explicit"
+    assert payload["applied_prompt_cache_ttl"] == "30m"
+    assert payload["applied_cache_control_status"] == "reported_exact"
+    assert payload["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "ordinary_uncached_input_tokens": 10,
+        "reasoning_tokens": 2,
+        "availability": "complete",
+        "source": "provider",
+        "cache_read_status": "reported_zero",
+        "cache_write_status": "reported_zero",
+        "reasoning_token_accounting": "reported",
+    }
+
+    expected_values = (
+        "replay-benchmark-response-1",
+        "completed",
+        None,
+        [{"type": "message", "content": [{"type": "output_text", "text": "Done."}]}],
+        "gpt-5.6-sol-2026-08-07",
+        "default",
+        "explicit",
+        "30m",
+        10,
+        0,
+        0,
+        5,
+        2,
+        15,
+    )
+    expected_entries = [
+        {"path": ".".join(path), "present": True, "value": value}
+        for path, value in zip(_RAW_RESPONSE_PATHS, expected_values, strict=True)
+    ]
+    source = payload["raw_response_source"]
+    assert source == {
+        "schema_version": "PublicBenchmarkRawResponseSourceV1",
+        "entries": expected_entries,
+    }
+    expected_digest = stable_digest(
+        "laconian-public-benchmark-raw-response-source-v1",
+        source,
+    )
+    assert payload["raw_response_sha256"] == expected_digest
+    for field in (
+        "returned_model_source_sha256",
+        "service_tier_source_sha256",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    ):
+        assert payload[field] == expected_digest
+
+
+def test_public_benchmark_replay_derives_exact_received_error_evidence() -> None:
+    provider = ReplayProvider.from_benchmark_path(PUBLIC_BENCHMARK_REPLAY_FIXTURE)
+    outcome = provider.generate_benchmark(benchmark_request(arm="baseline"))
+    payload = outcome.model_dump(mode="json")
+
+    assert type(outcome).__name__ == "PublicBenchmarkProviderErrorEvidenceV1"
+    assert tuple(payload) == (
+        "schema_version",
+        "delivery_certainty",
+        "provider_request_id",
+        "response_id",
+        "raw_response_sha256",
+        "raw_response_source",
+        "usage",
+        "requested_model_id",
+        "returned_model_id",
+        "returned_model_source_sha256",
+        "requested_service_tier",
+        "returned_service_tier",
+        "service_tier_status",
+        "service_tier_source_sha256",
+        "applied_prompt_cache_mode",
+        "applied_prompt_cache_ttl",
+        "applied_cache_control_status",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+        "structured_status",
+        "error_source_sha256",
+    )
+    assert payload["schema_version"] == "public-benchmark-provider-error-evidence-v1"
+    assert payload["delivery_certainty"] == "response_received"
+    assert payload["provider_request_id"] == "replay-benchmark-response-2"
+    assert payload["response_id"] == "replay-benchmark-response-2"
+    assert payload["structured_status"] is None
+    assert payload["requested_model_id"] == "gpt-5.6-sol"
+    assert payload["returned_model_id"] == "gpt-5.6-sol-2026-08-07"
+    assert payload["service_tier_status"] == "reported_default"
+    assert payload["applied_cache_control_status"] == "reported_exact"
+    digest = payload["raw_response_sha256"]
+    assert digest == stable_digest(
+        "laconian-public-benchmark-raw-response-source-v1",
+        payload["raw_response_source"],
+    )
+    for field in (
+        "returned_model_source_sha256",
+        "service_tier_source_sha256",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    ):
+        assert payload[field] == digest
+
+
+def test_public_benchmark_replay_derives_exact_missing_key_error_evidence() -> None:
+    from laconian_eval.capsule.attempts import (
+        public_benchmark_provider_error_source_sha256,
+    )
+
+    provider = ReplayProvider.from_benchmark_path(PUBLIC_BENCHMARK_REPLAY_FIXTURE)
+    outcome = provider.generate_benchmark(benchmark_request(repetition=1))
+    payload = outcome.model_dump(mode="json")
+
+    assert type(outcome).__name__ == "PublicBenchmarkProviderErrorEvidenceV1"
+    assert payload["delivery_certainty"] == "definitely_not_sent"
+    assert payload["provider_request_id"] is None
+    assert payload["response_id"] is None
+    assert payload["raw_response_sha256"] is None
+    assert payload["raw_response_source"] is None
+    assert payload["returned_model_id"] is None
+    assert payload["returned_service_tier"] is None
+    assert payload["service_tier_status"] == "not_applicable_definitely_not_sent"
+    assert payload["applied_prompt_cache_mode"] is None
+    assert payload["applied_prompt_cache_ttl"] is None
+    assert payload["applied_cache_control_status"] == "not_applicable_definitely_not_sent"
+    assert payload["structured_status"] is None
+    assert payload["usage"] == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "ordinary_uncached_input_tokens": None,
+        "reasoning_tokens": None,
+        "availability": "unavailable",
+        "source": "provider",
+        "cache_read_status": "not_applicable_definitely_not_sent",
+        "cache_write_status": "not_applicable_definitely_not_sent",
+        "reasoning_token_accounting": "not_reported",
+    }
+    error_digest = public_benchmark_provider_error_source_sha256(payload)
+    assert payload["error_source_sha256"] == error_digest
+    for field in (
+        "returned_model_source_sha256",
+        "service_tier_source_sha256",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    ):
+        assert payload[field] == error_digest
+
+
+def _invalid_benchmark_fixture_member_value(value: object) -> object:
+    if value is None:
+        return {"unexpected": True}
+    if type(value) in (dict, list):
+        return None
+    return True
+
+
+def _other_benchmark_row_bytes(document: dict[str, object], row_key: str) -> bytes:
+    other_row = (
+        _FAILED_BENCHMARK_ROW if row_key == _SUCCESS_BENCHMARK_ROW else _SUCCESS_BENCHMARK_ROW
+    )
+    return yaml.safe_dump(document[other_row], sort_keys=False).encode("utf-8")
+
+
+def _assert_benchmark_fixture_rejected(
+    document: dict[str, object],
+    *,
+    row_key: str,
+) -> None:
+    with pytest.raises(ValueError) as caught:
+        ReplayProvider.from_benchmark_bytes(_benchmark_fixture_bytes(document))
+    assert str(caught.value).startswith("captured benchmark replay: replay entry ")
+    assert repr(row_key) in str(caught.value)
+
+
+def test_public_benchmark_replay_preserves_safe_nondefault_returned_tier() -> None:
+    document = _benchmark_fixture_document()
+    container = _mapping_at_path(document, ("response", "service_tier"))
+    container["service_tier"] = "priority"
+    provider = ReplayProvider.from_benchmark_bytes(_benchmark_fixture_bytes(document))
+
+    payload = provider.generate_benchmark(benchmark_request()).model_dump(mode="json")
+
+    assert payload["returned_service_tier"] == "priority"
+    assert payload["service_tier_status"] == "mismatch"
+    assert payload["service_tier_source_sha256"] == payload["raw_response_sha256"]
+
+
+@pytest.mark.parametrize(
+    "returned_tier",
+    [
+        "",
+        "priority\nunsafe",
+        True,
+        "x" * (RESOURCE_LIMITS_V1.bounded_string_bytes + 1),
+    ],
+)
+def test_public_benchmark_replay_rejects_unsafe_returned_tier(
+    returned_tier: object,
+) -> None:
+    document = _benchmark_fixture_document()
+    container = _mapping_at_path(document, ("response", "service_tier"))
+    container["service_tier"] = returned_tier
+
+    with pytest.raises(ValueError):
+        ReplayProvider.from_benchmark_bytes(_benchmark_fixture_bytes(document))
+
+
+@pytest.mark.parametrize(("row_key", "path"), _BENCHMARK_FIXTURE_MEMBER_TARGETS)
+def test_public_benchmark_replay_rejects_each_mutated_strict_fixture_member(
+    row_key: str,
+    path: tuple[str | int, ...],
+) -> None:
+    document = _benchmark_fixture_document()
+    other_row_before = _other_benchmark_row_bytes(document, row_key)
+    container = _mapping_at_path(document, path, row_key=row_key)
+    member = path[-1]
+    assert type(member) is str
+    original = container[member]
+    invalid = _invalid_benchmark_fixture_member_value(original)
+    assert invalid != original
+    container[member] = invalid
+
+    assert container[member] == invalid
+    assert _other_benchmark_row_bytes(document, row_key) == other_row_before
+    _assert_benchmark_fixture_rejected(document, row_key=row_key)
+
+
+@pytest.mark.parametrize(("row_key", "path"), _BENCHMARK_FIXTURE_MEMBER_TARGETS)
+def test_public_benchmark_replay_rejects_each_missing_strict_fixture_member(
+    row_key: str,
+    path: tuple[str | int, ...],
+) -> None:
+    document = _benchmark_fixture_document()
+    other_row_before = _other_benchmark_row_bytes(document, row_key)
+    container = _mapping_at_path(document, path, row_key=row_key)
+    member = path[-1]
+    assert type(member) is str
+    del container[member]
+
+    assert member not in container
+    assert _other_benchmark_row_bytes(document, row_key) == other_row_before
+    _assert_benchmark_fixture_rejected(document, row_key=row_key)
+
+
+@pytest.mark.parametrize(("row_key", "path"), _BENCHMARK_FIXTURE_MEMBER_TARGETS)
+def test_public_benchmark_replay_rejects_extra_member_beside_each_strict_fixture_member(
+    row_key: str,
+    path: tuple[str | int, ...],
+) -> None:
+    document = _benchmark_fixture_document()
+    other_row_before = _other_benchmark_row_bytes(document, row_key)
+    container = _mapping_at_path(document, path, row_key=row_key)
+    member = path[-1]
+    assert type(member) is str
+    unexpected = f"unexpected_{member}"
+    assert unexpected not in container
+    container[unexpected] = None
+
+    assert unexpected in container
+    assert _other_benchmark_row_bytes(document, row_key) == other_row_before
+    _assert_benchmark_fixture_rejected(document, row_key=row_key)
+
+
+@pytest.mark.parametrize(
+    ("row_key", "path"),
+    _REORDERABLE_BENCHMARK_FIXTURE_MEMBER_TARGETS,
+)
+def test_public_benchmark_replay_rejects_each_reordered_strict_fixture_member(
+    row_key: str,
+    path: tuple[str | int, ...],
+) -> None:
+    document = _benchmark_fixture_document()
+    other_row_before = _other_benchmark_row_bytes(document, row_key)
+    container = _mapping_at_path(document, path, row_key=row_key)
+    member = path[-1]
+    assert type(member) is str
+    original_order = list(container)
+    original_index = original_order.index(member)
+    items = list(container.items())
+    moved = items.pop(original_index)
+    destination = len(items) if original_index == 0 else 0
+    items.insert(destination, moved)
+    reordered = dict(items)
+    container.clear()
+    container.update(reordered)
+
+    assert list(container) != original_order
+    assert list(container).index(member) != original_index
+    assert _other_benchmark_row_bytes(document, row_key) == other_row_before
+    _assert_benchmark_fixture_rejected(document, row_key=row_key)
+
+
+def test_public_benchmark_replay_isolated_from_legacy_bytes_parser_and_generate() -> None:
+    before = REPLAY_FIXTURE.read_bytes()
+    legacy = ReplayProvider.from_bytes(before)
+    expected = legacy.generate(request(case_id="structured-json-en", arm="if", repetition=0))
+
+    benchmark = ReplayProvider.from_benchmark_bytes(PUBLIC_BENCHMARK_REPLAY_FIXTURE.read_bytes())
+    benchmark.generate_benchmark(benchmark_request())
+
+    assert REPLAY_FIXTURE.read_bytes() == before
+    assert sha256(before).hexdigest() == (
+        "e3551fde8def4e41101bb9965f46111a3ebeb31e28e84e900ecbd592e399062d"
+    )
+    assert (
+        legacy.generate(request(case_id="structured-json-en", arm="if", repetition=0)) == expected
+    )
+    with pytest.raises(ValueError):
+        ReplayProvider.from_bytes(PUBLIC_BENCHMARK_REPLAY_FIXTURE.read_bytes())

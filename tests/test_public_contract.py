@@ -759,3 +759,181 @@ def test_benchmark_sdk_contract_has_one_public_owner() -> None:
     source = inspect.getsource(provider_openai)
     assert "ProtocolSubjectKindV1" not in source
     assert "PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1" not in source
+
+
+def test_benchmark_policy_status_exports_have_exact_public_owners() -> None:
+    import laconian_eval.providers as providers
+    from laconian_eval.capsule import attempts, schema
+    from laconian_eval.providers import base
+
+    exported = (
+        "ServiceTier",
+        "AppliedCacheControlStatus",
+        "CacheReadStatus",
+        "CacheWriteStatus",
+        "ServiceTierStatus",
+    )
+    owners = {
+        "ServiceTier": schema.ServiceTier,
+        "AppliedCacheControlStatus": base.AppliedCacheControlStatus,
+        "CacheReadStatus": base.CacheReadStatus,
+        "CacheWriteStatus": base.CacheWriteStatus,
+        "ServiceTierStatus": base.ServiceTierStatus,
+    }
+    for name in exported:
+        assert getattr(providers, name) is owners[name]
+        assert providers.__all__.count(name) == 1
+
+    forbidden = {
+        "OutputString",
+        "PublicBenchmarkProvider",
+        "PublicBenchmarkProviderOutcomeV1",
+        "PublicBenchmarkProviderErrorEvidenceV1",
+        "PublicBenchmarkResponseEvidenceV1",
+        "ReasoningTokenAccounting",
+    }
+    assert forbidden.isdisjoint(providers.__all__)
+    assert attempts.OutputString is not None
+    assert attempts.PublicBenchmarkProvider is not None
+    assert attempts.PublicBenchmarkProviderOutcomeV1 is not None
+
+
+def test_benchmark_response_and_error_evidence_fields_are_exact() -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        PublicBenchmarkResponseEvidenceV1,
+    )
+
+    shared_evidence = (
+        "usage",
+        "requested_model_id",
+        "returned_model_id",
+        "returned_model_source_sha256",
+        "requested_service_tier",
+        "returned_service_tier",
+        "service_tier_status",
+        "service_tier_source_sha256",
+        "applied_prompt_cache_mode",
+        "applied_prompt_cache_ttl",
+        "applied_cache_control_status",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    )
+    response_fields = (
+        "schema_version",
+        "response_id",
+        "raw_response_sha256",
+        "output_text",
+        "raw_response_source",
+        *shared_evidence,
+    )
+    error_fields = (
+        "schema_version",
+        "delivery_certainty",
+        "provider_request_id",
+        "response_id",
+        "raw_response_sha256",
+        "raw_response_source",
+        *shared_evidence,
+        "structured_status",
+        "error_source_sha256",
+    )
+    assert tuple(PublicBenchmarkResponseEvidenceV1.model_fields) == response_fields
+    assert tuple(PublicBenchmarkProviderErrorEvidenceV1.model_fields) == error_fields
+
+
+def test_benchmark_token_usage_fields_append_without_changing_legacy_results() -> None:
+    from dataclasses import fields
+
+    from laconian_eval.providers.base import GenerationResult, ProviderError, TokenUsage
+
+    assert tuple(field.name for field in fields(TokenUsage)) == (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "reasoning_token_accounting",
+    )
+    assert tuple(field.name for field in fields(GenerationResult)) == (
+        "output_text",
+        "usage",
+        "request_id",
+        "finish_reason",
+        "response_model",
+        "delivery_certainty",
+    )
+    assert ProviderError.__slots__ == (
+        "_delivery_certainty",
+        "_finish_reason",
+        "_kind",
+        "_message",
+        "_request_id",
+        "_response_model",
+        "_retryable",
+        "_usage",
+    )
+
+
+def test_replay_legacy_callable_annotations_remain_eager_owner_objects() -> None:
+    from collections.abc import Mapping
+
+    import laconian_eval.providers.replay as replay
+    from laconian_eval.providers.base import (
+        GenerationRequest,
+        GenerationResult,
+        TokenUsage,
+    )
+
+    assert replay._entry_error.__annotations__ == {
+        "source": Path | str,
+        "key": str,
+        "message": str,
+        "return": ValueError,
+    }
+    assert replay._optional_string.__annotations__ == {
+        "path": Path | str,
+        "key": str,
+        "entry": Mapping[object, object],
+        "field": str,
+        "return": str | None,
+    }
+    assert replay._parse_usage.__annotations__ == {
+        "path": Path | str,
+        "key": str,
+        "entry": Mapping[object, object],
+        "return": TokenUsage | None,
+    }
+    assert replay._parse_entry.__annotations__ == {
+        "path": Path | str,
+        "key": str,
+        "raw_entry": object,
+        "return": GenerationResult,
+    }
+    assert replay.ReplayProvider.__init__.__annotations__ == {
+        "entries": Mapping[str, GenerationResult],
+        "source": Path | None,
+        "return": None,
+    }
+    assert replay.ReplayProvider._from_mapping.__annotations__ == {
+        "raw": object,
+        "error_source": Path | str,
+        "source": Path | None,
+        "return": "ReplayProvider",
+    }
+    assert replay.ReplayProvider.from_path.__annotations__ == {
+        "path": Path,
+        "return": "ReplayProvider",
+    }
+    assert replay.ReplayProvider.from_bytes.__annotations__ == {
+        "data": bytes,
+        "return": "ReplayProvider",
+    }
+    assert replay.ReplayProvider.generate.__annotations__ == {
+        "request": GenerationRequest,
+        "return": GenerationResult,
+    }

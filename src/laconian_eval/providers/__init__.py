@@ -1,9 +1,14 @@
+from laconian_eval.capsule.schema import ServiceTier
 from laconian_eval.providers.base import (
+    AppliedCacheControlStatus,
+    CacheReadStatus,
+    CacheWriteStatus,
     DeliveryCertainty,
     GenerationRequest,
     GenerationResult,
     Provider,
     ProviderError,
+    ServiceTierStatus,
     TokenUsage,
 )
 from laconian_eval.providers.fake import FakeProvider
@@ -36,8 +41,11 @@ __all__ = [
     "BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1",
     "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1",
     "BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1",
+    "AppliedCacheControlStatus",
     "BenchmarkSDKContractError",
     "BenchmarkSDKContractErrorCode",
+    "CacheReadStatus",
+    "CacheWriteStatus",
     "DeliveryCertainty",
     "FakeProvider",
     "GenerationRequest",
@@ -45,6 +53,8 @@ __all__ = [
     "Provider",
     "ProviderError",
     "ReplayProvider",
+    "ServiceTier",
+    "ServiceTierStatus",
     "TokenUsage",
     "VerifiedBenchmarkSDKContractV1",
     "require_benchmark_sdk_contract",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib
 import inspect
@@ -15,6 +16,7 @@ from uuid import UUID
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 import laconian_eval.capsule.execution as execution_module
 from laconian_eval.capsule.execution import (
@@ -37,24 +39,62 @@ from laconian_eval.providers import (
     ReplayProvider,
     TokenUsage,
 )
+from laconian_eval.providers.base import (
+    PublicBenchmarkRequestPolicyV1,
+    PublicBenchmarkRequestV1,
+)
 from laconian_eval.providers.openai import OpenAIProvider
 
+from . import test_prepare as test_prepare_module
 from .test_prepare import _install_harness, _manifest_payload, _request
 
 _DIGEST = "a" * 64
 _SECRET = "credential-CANARY-do-not-disclose"
 _REPLAY_CANARY = b"replay-CANARY-do-not-disclose"
+_PUBLIC_BENCHMARK_REPLAY_FIXTURE = (
+    Path(__file__).parents[1] / "fixtures/replay-public-benchmark-responses.yaml"
+)
+
+
+def _benchmark_request(
+    *,
+    case_id: str = "case-en",
+    arm: str = "if",
+) -> PublicBenchmarkRequestV1:
+    return PublicBenchmarkRequestV1(
+        case_id=case_id,
+        arm=arm,
+        repetition=0,
+        requested_model_id="gpt-5.6-sol",
+        instructions="Synthetic instructions.",
+        prompt="Synthetic prompt.",
+        max_output_tokens=128,
+        temperature=None,
+        timeout_seconds=5.0,
+        reasoning_effort="medium",
+        text_verbosity="medium",
+        policy=PublicBenchmarkRequestPolicyV1(
+            schema_version="PublicBenchmarkRequestPolicyV1",
+            reasoning_mode="omitted",
+            prompt_cache_mode="explicit",
+            prompt_cache_ttl="30m",
+            service_tier="default",
+            input_token_bound_version="openai-utf8-envelope-v1",
+            max_input_tokens=272000,
+        ),
+    )
 
 
 def _factory_request(
     *,
     provider_kind: str = "fake",
+    requested_model: str = "fixture-v1",
     api_key_env: str | None = None,
     captured_replay_bytes: bytes | None = None,
 ) -> ProviderFactoryRequest:
     return ProviderFactoryRequest(
         provider_kind=provider_kind,
-        requested_model="fixture-v1",
+        requested_model=requested_model,
         api_key_env=api_key_env,
         timeout_seconds=5.0,
         adapter_source_sha256=_DIGEST,
@@ -83,6 +123,10 @@ def _single_plan_capsule(
     monkeypatch: pytest.MonkeyPatch,
     *,
     max_transient_retries: int = 0,
+    provider_kind: str = "fake",
+    provider_model: str = "fixture-v1",
+    api_key_env: str | None = None,
+    benchmark_generation: bool = False,
 ) -> Path:
     source = tmp_path / "execution-source"
     cases = source / "cases"
@@ -113,7 +157,25 @@ def _single_plan_capsule(
             sort_keys=False,
         ).encode("utf-8")
     )
-    payload = _manifest_payload(arms=["baseline"])
+    payload = _manifest_payload(
+        arms=["baseline"],
+        provider_kind=provider_kind,
+        api_key_env=api_key_env,
+    )
+    provider_payload = payload["provider"]
+    assert isinstance(provider_payload, dict)
+    provider_payload["model"] = provider_model
+    if benchmark_generation:
+        payload["generation"] = {
+            "max_output_tokens": 128,
+            "temperature": None,
+            "reasoning_effort": "medium",
+            "text_verbosity": "medium",
+            "reasoning_mode": "omitted",
+            "prompt_cache_mode": "explicit",
+            "prompt_cache_ttl": "30m",
+            "service_tier": "default",
+        }
     retry = payload["retry"]
     assert isinstance(retry, dict)
     retry["max_transient_retries"] = max_transient_retries
@@ -124,6 +186,18 @@ def _single_plan_capsule(
     results = tmp_path / "execution-results"
     results.mkdir()
     _install_harness(monkeypatch, results)
+    if provider_model != "fixture-v1":
+        original_environment = test_prepare_module._environment
+
+        def matching_environment(*args: object, **kwargs: object) -> object:
+            environment = original_environment(*args, **kwargs)  # type: ignore[arg-type]
+            environment_payload = environment.model_dump(mode="python")
+            provider_environment = environment_payload["provider"]
+            assert isinstance(provider_environment, dict)
+            provider_environment["requested_model"] = provider_model
+            return type(environment).model_validate(environment_payload)
+
+        monkeypatch.setattr(test_prepare_module, "_environment", matching_environment)
     prepared = prepare_capsule(_request(manifest, results))
 
     # Preparation deliberately installs construction bombs in the provider modules. Resume
@@ -193,8 +267,56 @@ class _ScriptedProvider:
         return outcome
 
 
+class _BenchmarkProbeProvider:
+    def __init__(self) -> None:
+        self.benchmark_calls: list[object] = []
+        self.legacy_calls: list[object] = []
+
+    def generate_benchmark(self, request: object) -> object:
+        self.benchmark_calls.append(request)
+        raise RuntimeError("stop after captured benchmark request")
+
+    def generate(self, request: object) -> GenerationResult:
+        self.legacy_calls.append(request)
+        raise RuntimeError("legacy provider path must not serve a public benchmark request")
+
+
+class _BenchmarkScriptedProvider:
+    def __init__(self, outcomes: list[object]) -> None:
+        self.outcomes = list(outcomes)
+        self.benchmark_calls: list[PublicBenchmarkRequestV1] = []
+        self.legacy_calls: list[object] = []
+
+    def generate_benchmark(self, request: PublicBenchmarkRequestV1) -> object:
+        self.benchmark_calls.append(request)
+        if not self.outcomes:
+            raise AssertionError("benchmark provider was called after its final outcome")
+        return self.outcomes.pop(0)
+
+    def generate(self, request: object) -> GenerationResult:
+        self.legacy_calls.append(request)
+        raise AssertionError("legacy path served a public benchmark request")
+
+
+class _BenchmarkAuthorityMutatingProvider:
+    def __init__(self, outcome: object, mutate: Callable[[], None]) -> None:
+        self.outcome = outcome
+        self.mutate = mutate
+        self.benchmark_calls: list[PublicBenchmarkRequestV1] = []
+
+    def generate_benchmark(self, request: PublicBenchmarkRequestV1) -> object:
+        self.benchmark_calls.append(request)
+        self.mutate()
+        return self.outcome
+
+
 def _seams_for_provider(
-    provider: _ScriptedProvider,
+    provider: (
+        _ScriptedProvider
+        | _BenchmarkProbeProvider
+        | _BenchmarkScriptedProvider
+        | _BenchmarkAuthorityMutatingProvider
+    ),
     *,
     credential_values: tuple[str, ...] = (),
     sleeps: list[float] | None = None,
@@ -235,6 +357,60 @@ def _seams_for_provider(
         ),
         private_provider_factory=bind,
     )
+
+
+def _benchmark_replay_outcome(*, returned_service_tier: str) -> object:
+    fixture = _PUBLIC_BENCHMARK_REPLAY_FIXTURE.read_bytes()
+    if returned_service_tier != "default":
+        fixture = fixture.replace(
+            b"service_tier: default",
+            f"service_tier: {returned_service_tier}".encode(),
+        )
+    provider = ReplayProvider.from_benchmark_bytes(fixture)
+    return provider.generate_benchmark(_benchmark_request())
+
+
+def _benchmark_replay_response_with_output(output_text: str) -> object:
+    response_type = execution_module._attempts_module.PublicBenchmarkResponseEvidenceV1
+    source_type = execution_module._attempts_module.PublicBenchmarkRawResponseSourceV1
+    response = _benchmark_replay_outcome(returned_service_tier="default")
+    assert type(response) is response_type
+    source_payload = response.raw_response_source.model_dump(mode="python")
+    source_entries = list(source_payload["entries"])
+    output_ordinal = next(
+        ordinal
+        for ordinal, entry in enumerate(source_entries)
+        if entry["path"] == "response.output"
+    )
+    source_entries[output_ordinal] = source_entries[output_ordinal] | {
+        "value": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": output_text}],
+            }
+        ]
+    }
+    source = source_type.model_validate(source_payload | {"entries": source_entries})
+    digest = execution_module._attempts_module.public_benchmark_raw_response_sha256(source)
+    payload = response_type.model_dump(response, mode="python", round_trip=True)
+    payload.update(
+        {
+            "output_text": output_text,
+            "raw_response_source": source,
+            "raw_response_sha256": digest,
+        }
+    )
+    for field in (
+        "returned_model_source_sha256",
+        "service_tier_source_sha256",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    ):
+        payload[field] = digest
+    return response_type.model_validate(payload)
 
 
 def _install_fast_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -462,6 +638,11 @@ def test_provider_factory_uses_captured_seals_when_all_public_tables_are_rebound
     monkeypatch.setattr(execution_module, "_PROVIDER_MODULE_CLASS_SEALS", ())
     monkeypatch.setattr(execution_module, "_PROVIDER_GLOBAL_BINDINGS", ())
     monkeypatch.setattr(execution_module, "_PROVIDER_TRANSITIVE_GLOBAL_BINDINGS", ())
+    monkeypatch.setattr(execution_module, "_PROVIDER_EVIDENCE_BUILTIN_BINDINGS", ())
+    monkeypatch.setattr(execution_module, "_PROVIDER_EVIDENCE_MODULE_NAMESPACE_SEALS", ())
+    monkeypatch.setattr(execution_module, "_PROVIDER_TRANSITIVE_ATTRIBUTE_SEALS", ())
+    monkeypatch.setattr(execution_module, "_PROVIDER_INHERITED_DESCRIPTOR_SEALS", ())
+    monkeypatch.setattr(execution_module, "_PROVIDER_RUNTIME_HELPER_ROOTS", ())
     monkeypatch.setattr(execution_module, "_provider_adapter_runtime_intact", lambda: True)
 
     with pytest.raises(ProviderUnavailable):
@@ -566,6 +747,140 @@ def test_provider_factory_rejects_mutated_openai_request_validator(
         ProviderFactory().create(_factory_request())
 
 
+@pytest.mark.parametrize(
+    "target",
+    (
+        ReplayProvider._validate_benchmark_request,
+        ReplayProvider.generate_benchmark,
+        OpenAIProvider._validate_benchmark_request,
+        OpenAIProvider.generate_benchmark,
+    ),
+    ids=(
+        "replay-validator",
+        "replay-dispatch",
+        "openai-validator",
+        "openai-dispatch",
+    ),
+)
+def test_provider_factory_rejects_mutated_benchmark_adapter_code(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Callable[..., object],
+) -> None:
+    def forged_benchmark_method(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("mutated benchmark adapter executed")
+
+    monkeypatch.setattr(target, "__code__", forged_benchmark_method.__code__)
+
+    with pytest.raises(ProviderUnavailable):
+        ProviderFactory().create(_factory_request())
+
+
+@pytest.mark.parametrize(
+    ("owner", "name", "replacement"),
+    (
+        (
+            execution_module._openai_provider_module,
+            "_canonical_json_v1",
+            lambda _value: b"{}",
+        ),
+        (
+            execution_module._openai_provider_module.hashlib,
+            "sha256",
+            lambda _value=b"": object(),
+        ),
+        (
+            execution_module._openai_provider_module.unicodedata,
+            "normalize",
+            lambda _form, value: value,
+        ),
+        (
+            execution_module._replay_provider_module,
+            "_BENCHMARK_MODEL_IDS",
+            frozenset(),
+        ),
+        (
+            execution_module._attempts_module,
+            "PublicBenchmarkResponseEvidenceV1",
+            object,
+        ),
+        (
+            execution_module,
+            "normalize_public_benchmark_outcome",
+            lambda *_args, **_kwargs: object(),
+        ),
+        (
+            execution_module._attempts_module,
+            "sanitize_output",
+            lambda *_args, **_kwargs: object(),
+        ),
+    ),
+    ids=(
+        "canonicalizer",
+        "sha256",
+        "unicode-normalizer",
+        "replay-models",
+        "evidence-type",
+        "execution-normalizer",
+        "attempts-sanitizer",
+    ),
+)
+def test_provider_factory_rejects_rebound_benchmark_global_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: object,
+    name: str,
+    replacement: object,
+) -> None:
+    monkeypatch.setattr(owner, name, replacement)
+
+    with pytest.raises(ProviderUnavailable):
+        ProviderFactory().create(_factory_request())
+
+
+def test_provider_factory_rejects_mutated_benchmark_digest_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = execution_module._attempts_module.public_benchmark_raw_response_sha256
+
+    def forged_digest(_source: object) -> str:
+        return "0" * 64
+
+    monkeypatch.setattr(digest, "__code__", forged_digest.__code__)
+
+    with pytest.raises(ProviderUnavailable):
+        ProviderFactory().create(_factory_request())
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ("model_validate", "model_dump", "__pydantic_validator__"),
+)
+def test_provider_runtime_checks_reject_direct_benchmark_model_namespace_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    model_type = execution_module._attempts_module.PublicBenchmarkResponseEvidenceV1
+    forged_calls: list[object] = []
+
+    if authority == "__pydantic_validator__":
+        replacement = object()
+    else:
+
+        def replacement(*args: object, **kwargs: object) -> object:
+            forged_calls.append((args, kwargs))
+            return {}
+
+    monkeypatch.setattr(model_type, authority, replacement, raising=False)
+
+    assert vars(model_type)[authority] is replacement
+    assert execution_module._provider_adapter_runtime_intact() is False
+    assert runtime_integrity_check() is False
+    assert forged_calls == []
+
+
 def test_resume_rejects_mutated_factory_code_before_filesystem_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -658,6 +973,1024 @@ def test_provider_factory_constructs_replay_only_from_captured_bytes(
     assert type(binding.provider) is ReplayProvider
     assert binding.provider.generate(request).output_text == "Captured result."
     assert binding.credential_values == ()
+
+
+def test_provider_factory_selects_strict_benchmark_replay_from_captured_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _PUBLIC_BENCHMARK_REPLAY_FIXTURE.read_bytes()
+
+    def forbidden_path_read(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("benchmark replay factory reopened a pathname")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_path_read)
+    monkeypatch.setattr(Path, "read_bytes", forbidden_path_read)
+
+    binding = ProviderFactory().create(
+        _factory_request(
+            provider_kind="replay",
+            requested_model="gpt-5.6-sol",
+            captured_replay_bytes=captured,
+        )
+    )
+    provider = binding.provider
+
+    assert type(provider) is ReplayProvider
+    outcome = provider.generate_benchmark(_benchmark_request())
+    assert outcome.output_text == "Done."  # type: ignore[union-attr]
+    assert outcome.requested_service_tier == "default"
+    assert outcome.returned_service_tier == "default"
+    assert outcome.service_tier_status == "reported_default"
+    assert binding.credential_values == ()
+
+
+def test_public_benchmark_execution_reconstructs_exact_captured_policy_before_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    provider = _BenchmarkProbeProvider()
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider),
+    )
+
+    assert outcome.exit_code == 1, outcome.result.model_dump(mode="json")
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert provider.legacy_calls == []
+    assert len(provider.benchmark_calls) == 1
+    request = provider.benchmark_calls[0]
+    assert type(request) is PublicBenchmarkRequestV1
+    assert request.requested_model_id == "gpt-5.6-sol"
+    assert request.reasoning_effort == "medium"
+    assert request.text_verbosity == "medium"
+    assert request.policy.reasoning_mode == "omitted"
+    assert request.policy.prompt_cache_mode == "explicit"
+    assert request.policy.prompt_cache_ttl == "30m"
+    assert request.policy.service_tier == "default"
+
+
+@pytest.mark.parametrize(
+    ("returned_service_tier", "expected_status"),
+    (
+        ("default", "reported_default"),
+        ("priority", "mismatch"),
+    ),
+)
+def test_public_benchmark_execution_commits_tier_and_usage_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returned_service_tier: str,
+    expected_status: str,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    evidence = _benchmark_replay_outcome(returned_service_tier=returned_service_tier)
+    provider = _BenchmarkScriptedProvider([evidence, evidence])
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 0
+    assert outcome.result.state == "GENERATION_COMPLETE"
+    assert len(provider.benchmark_calls) == len(raw) == 2
+    assert provider.legacy_calls == []
+    assert [row["attempt"] for row in raw] == [1, 1]
+    assert [row["retry_of_attempt"] for row in raw] == [None, None]
+    assert [row["terminal_reason"] for row in raw] == ["success", "success"]
+    for row in raw:
+        assert row["requested_model_id"] == "gpt-5.6-sol"
+        assert row["returned_model_id"] == "gpt-5.6-sol-2026-08-07"
+        assert row["requested_service_tier"] == "default"
+        assert row["returned_service_tier"] == returned_service_tier
+        assert row["service_tier_status"] == expected_status
+        assert row["applied_prompt_cache_mode"] == "explicit"
+        assert row["applied_prompt_cache_ttl"] == "30m"
+        assert row["applied_cache_control_status"] == "reported_exact"
+        assert row["usage"]["input_tokens"] == 10
+        assert row["usage"]["cache_read_tokens"] == 0
+        assert row["usage"]["cache_write_tokens"] == 0
+        assert row["usage"]["ordinary_uncached_input_tokens"] == 10
+        assert row["usage"]["reasoning_tokens"] == 2
+        assert row["usage"]["output_tokens"] == 5
+        assert row["usage"]["total_tokens"] == 15
+
+
+def test_public_benchmark_post_redaction_expansion_commits_durable_discard_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    credential = "z"
+    replacement = b"[REDACTED]"
+    replacement_count = RESOURCE_LIMITS_V1.output_utf8_bytes // len(replacement) + 1
+    source_output = credential * replacement_count
+    assert len(source_output.encode()) <= RESOURCE_LIMITS_V1.output_utf8_bytes
+    evidence = _benchmark_replay_response_with_output(source_output)
+    provider = _BenchmarkScriptedProvider([evidence, evidence])
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, credential_values=(credential,)),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    raw_bytes = (capsule / "raw.jsonl").read_bytes()
+    expected_discarded = replacement * replacement_count
+    assert outcome.exit_code == 0
+    assert outcome.result.state == "GENERATION_COMPLETE"
+    assert len(provider.benchmark_calls) == len(raw) == 2
+    assert source_output.encode() not in raw_bytes
+    for row in raw:
+        assert row["terminal_reason"] == "provider_rejected"
+        assert row["error"] == {
+            "kind": "response_too_large",
+            "message": "response_too_large",
+            "retryable": False,
+            "request_id": evidence.response_id,
+        }
+        assert row["output_text"] is None
+        assert row["output_sha256"] is None
+        assert row["discarded_output_byte_length"] == len(expected_discarded)
+        assert row["discarded_output_sha256"] == hashlib.sha256(expected_discarded).hexdigest()
+        assert row["output_was_redacted"] is True
+        assert row["output_redaction_count"] == replacement_count
+        assert row["requested_model_id"] == evidence.requested_model_id
+        assert row["returned_model_id"] == evidence.returned_model_id
+        assert row["requested_service_tier"] == "default"
+        assert row["returned_service_tier"] == evidence.returned_service_tier
+        assert row["service_tier_status"] == evidence.service_tier_status
+        assert row["applied_prompt_cache_mode"] == evidence.applied_prompt_cache_mode
+        assert row["applied_prompt_cache_ttl"] == evidence.applied_prompt_cache_ttl
+        assert row["applied_cache_control_status"] == evidence.applied_cache_control_status
+        assert row["usage"] == evidence.usage.model_dump(mode="json")
+        assert row["request_id"] == evidence.response_id
+
+
+@pytest.mark.parametrize("authority", ("normalizer", "sanitizer"))
+def test_public_benchmark_checkpoint_rejects_post_call_evidence_authority_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        if not runtime_integrity_check():
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    forged_calls: list[object] = []
+
+    def forged(*args: object, **kwargs: object) -> object:
+        forged_calls.append((args, kwargs))
+        return object()
+
+    def mutate() -> None:
+        if authority == "normalizer":
+            monkeypatch.setattr(
+                execution_module,
+                "normalize_public_benchmark_outcome",
+                forged,
+            )
+        else:
+            monkeypatch.setattr(execution_module._attempts_module, "sanitize_output", forged)
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
+
+
+@pytest.mark.parametrize(
+    "authority",
+    (
+        "heapq-heappush",
+        "heapq-heappop",
+        "builtins-enumerate",
+        "builtins-next",
+        "sanitizer-enumerate-shadow",
+    ),
+)
+def test_public_benchmark_checkpoint_rejects_post_call_sanitizer_resolution_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    checkpoint_calls = [0]
+    mutation_complete = [False]
+    post_mutation_checkpoint_calls = [0]
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        checkpoint_calls[0] += 1
+        if mutation_complete[0]:
+            post_mutation_checkpoint_calls[0] += 1
+        if not runtime_integrity_check():
+            if mutation_complete[0]:
+                restore_mutation()
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    forged_calls: list[object] = []
+    pre_call_checkpoint_counts: list[int] = []
+    checker_results: list[tuple[bool, bool]] = []
+    sanitizer = execution_module._sanitizer_module
+
+    def forged(*args: object, **kwargs: object) -> object:
+        forged_calls.append((args, kwargs))
+        if authority in {"heapq-heappop", "builtins-enumerate", "builtins-next"}:
+            return original(*args, **kwargs)
+        return ()
+
+    if authority.startswith("heapq-"):
+        name = authority.removeprefix("heapq-")
+        owner = sanitizer.heapq
+        original = getattr(owner, name)
+    elif authority.startswith("builtins-"):
+        name = authority.removeprefix("builtins-")
+        owner = builtins
+        original = getattr(owner, name)
+    else:
+        name = "enumerate"
+        owner = sanitizer
+        original = builtins.enumerate
+
+    def restore_mutation() -> None:
+        setattr(owner, name, original)
+
+    def mutate() -> None:
+        pre_call_checkpoint_counts.append(checkpoint_calls[0])
+        monkeypatch.setattr(owner, name, forged, raising=False)
+        consumer_resolution = (
+            getattr(sanitizer.heapq, name)
+            if authority.startswith("heapq-")
+            else vars(sanitizer).get(name, vars(builtins)[name])
+        )
+        assert consumer_resolution is forged
+        mutation_complete[0] = True
+        checker_results.append(
+            (
+                execution_module._provider_adapter_runtime_intact(),
+                runtime_integrity_check(),
+            )
+        )
+        assert forged_calls == []
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, credential_values=("Done.",)),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1, (
+        pre_call_checkpoint_counts,
+        post_mutation_checkpoint_calls,
+        checker_results,
+        forged_calls,
+        len(provider.benchmark_calls),
+        raw,
+        outcome,
+    )
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert pre_call_checkpoint_counts and pre_call_checkpoint_counts[0] > 0
+    assert post_mutation_checkpoint_calls[0] == 1
+    assert checker_results == [(False, False)]
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
+
+
+def test_public_benchmark_checkpoint_rejects_post_call_private_checker_closure_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    checker_closure = runtime_integrity_check.__closure__
+    assert checker_closure is not None
+    checker_freevars = runtime_integrity_check.__code__.co_freevars
+    assert len(checker_closure) == len(checker_freevars)
+    named_cells = dict(zip(checker_freevars, checker_closure, strict=True))
+    assert "runtime_closure_state" in named_cells
+    closure_state = named_cells["runtime_closure_state"].cell_contents
+    assert type(closure_state) is list
+    assert len(closure_state) == 1
+    sealed_function, sealed_cells = closure_state[0]
+    assert sealed_function is runtime_integrity_check
+    assert type(sealed_cells) is tuple
+    sealed_names: list[str] = []
+    for sealed_name, expected_value, expected_type in sealed_cells:
+        sealed_names.append(sealed_name)
+        assert sealed_name in named_cells
+        actual_value = named_cells[sealed_name].cell_contents
+        assert actual_value is expected_value
+        assert type(actual_value) is expected_type
+    assert sealed_names == [name for name in checker_freevars if name != "runtime_closure_state"]
+    assert "all_of" in named_cells
+    all_of_cell = named_cells["all_of"]
+    original_all_of = all_of_cell.cell_contents
+    assert original_all_of is builtins.all
+
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    sanitizer = execution_module._sanitizer_module
+    original_heappush = sanitizer.heapq.heappush
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    mutation_complete = [False]
+    checker_results: list[tuple[bool, bool]] = []
+    forged_calls: list[object] = []
+
+    def forged_heappush(*args: object, **kwargs: object) -> None:
+        forged_calls.append((args, kwargs))
+        restore_mutation()
+        original_heappush(*args, **kwargs)
+
+    def restore_mutation() -> None:
+        all_of_cell.cell_contents = original_all_of
+        sanitizer.heapq.heappush = original_heappush
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        if not runtime_integrity_check():
+            if mutation_complete[0]:
+                restore_mutation()
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+
+    def mutate() -> None:
+        all_of_cell.cell_contents = builtins.any
+        monkeypatch.setattr(sanitizer.heapq, "heappush", forged_heappush)
+        mutation_complete[0] = True
+        checker_results.append(
+            (
+                execution_module._provider_adapter_runtime_intact(),
+                runtime_integrity_check(),
+            )
+        )
+        assert forged_calls == []
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+    try:
+        outcome = execution_module._resume_capsule(
+            capsule,
+            provider_factory=ProviderFactory(),
+            seams=_seams_for_provider(provider, credential_values=("Done.",)),
+        )
+    finally:
+        restore_mutation()
+
+    _events, raw = _journal_rows(capsule)
+    assert checker_results == [(False, False)]
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
+
+
+def test_public_benchmark_checkpoint_rejects_resealed_private_checker_closure_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    checker_closure = runtime_integrity_check.__closure__
+    assert checker_closure is not None
+    checker_freevars = runtime_integrity_check.__code__.co_freevars
+    named_cells = dict(zip(checker_freevars, checker_closure, strict=True))
+    closure_state = named_cells["runtime_closure_state"].cell_contents
+    assert type(closure_state) is list
+    assert len(closure_state) == 1
+    original_closure_state = closure_state[0]
+    all_of_cell = named_cells["all_of"]
+    original_all_of = all_of_cell.cell_contents
+    assert original_all_of is builtins.all
+
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    attempts_module = execution_module._attempts_module
+    original_sanitize_output = attempts_module.sanitize_output
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    checker_results: list[tuple[bool, bool]] = []
+    forged_calls: list[object] = []
+
+    def restore_mutation() -> None:
+        all_of_cell.cell_contents = original_all_of
+        attempts_module.sanitize_output = original_sanitize_output
+        closure_state[0] = original_closure_state
+
+    def forged_sanitize_output(*args: object, **kwargs: object) -> object:
+        forged_calls.append((args, kwargs))
+        restore_mutation()
+        return original_sanitize_output(*args, **kwargs)
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        if not runtime_integrity_check():
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+
+    def mutate() -> None:
+        all_of_cell.cell_contents = builtins.any
+        monkeypatch.setattr(attempts_module, "sanitize_output", forged_sanitize_output)
+        closure_state[0] = (
+            runtime_integrity_check,
+            tuple(
+                (name, cell.cell_contents, type(cell.cell_contents))
+                for name, cell in zip(checker_freevars, checker_closure, strict=True)
+                if name != "runtime_closure_state"
+            ),
+        )
+        checker_results.append(
+            (
+                execution_module._provider_adapter_runtime_intact(),
+                runtime_integrity_check(),
+            )
+        )
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+    try:
+        outcome = execution_module._resume_capsule(
+            capsule,
+            provider_factory=ProviderFactory(),
+            seams=_seams_for_provider(provider),
+        )
+    finally:
+        restore_mutation()
+
+    _events, raw = _journal_rows(capsule)
+    assert checker_results == [(False, True)]
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
+
+
+@pytest.mark.parametrize(
+    "dispatch_name",
+    (
+        "_complete_execution_checkpoint",
+        "_runtime_checkpoint",
+        "_revalidate_mutator_session_v1",
+    ),
+)
+def test_public_benchmark_checkpoint_rejects_post_call_dispatch_rebinding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch_name: str,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    replacement_calls: list[object] = []
+
+    def replacement(*args: object, **kwargs: object) -> None:
+        replacement_calls.append((args, kwargs))
+
+    def mutate() -> None:
+        monkeypatch.setattr(execution_module, dispatch_name, replacement)
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert replacement_calls == []
+    assert raw == []
+
+
+@pytest.mark.parametrize(
+    "dispatch_name",
+    (
+        "_complete_execution_checkpoint",
+        "_runtime_checkpoint",
+        "_revalidate_mutator_session_v1",
+    ),
+)
+def test_public_benchmark_checkpoint_rejects_post_call_dispatch_code_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch_name: str,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    dispatch = getattr(execution_module, dispatch_name)
+    original_code = dispatch.__code__
+    replacement_calls: list[object] = []
+    monkeypatch.setitem(
+        dispatch.__globals__,
+        "_TEST_DISPATCH_REPLACEMENT_CALLS",
+        replacement_calls,
+    )
+
+    def replacement(*args: object, **kwargs: object) -> None:
+        calls = globals()["_TEST_DISPATCH_REPLACEMENT_CALLS"]
+        assert isinstance(calls, list)
+        calls.append((args, kwargs))
+
+    assert replacement.__closure__ is None
+
+    def mutate() -> None:
+        monkeypatch.setattr(dispatch, "__code__", replacement.__code__)
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+    try:
+        outcome = execution_module._resume_capsule(
+            capsule,
+            provider_factory=ProviderFactory(),
+            seams=_seams_for_provider(provider),
+        )
+    finally:
+        dispatch.__code__ = original_code
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert replacement_calls == []
+    assert raw == []
+
+
+def test_public_benchmark_checkpoint_rejects_coordinated_matcher_and_dispatch_code_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    matcher = execution_module._function_matches_seal
+    checkpoint = execution_module._complete_execution_checkpoint
+    original_matcher_code = matcher.__code__
+    original_checkpoint_code = checkpoint.__code__
+    checkpoint_calls: list[object] = []
+    monkeypatch.setitem(
+        checkpoint.__globals__,
+        "_TEST_COORDINATED_CHECKPOINT_CALLS",
+        checkpoint_calls,
+    )
+
+    def accept_match(_value: object, _seal: object) -> bool:
+        return True
+
+    def skip_checkpoint(*args: object, **kwargs: object) -> None:
+        calls = globals()["_TEST_COORDINATED_CHECKPOINT_CALLS"]
+        assert isinstance(calls, list)
+        calls.append((args, kwargs))
+
+    assert accept_match.__closure__ is None
+    assert skip_checkpoint.__closure__ is None
+
+    def mutate() -> None:
+        matcher.__code__ = accept_match.__code__
+        checkpoint.__code__ = skip_checkpoint.__code__
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+    try:
+        outcome = execution_module._resume_capsule(
+            capsule,
+            provider_factory=ProviderFactory(),
+            seams=_seams_for_provider(provider),
+        )
+    finally:
+        matcher.__code__ = original_matcher_code
+        checkpoint.__code__ = original_checkpoint_code
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert checkpoint_calls == []
+    assert raw == []
+
+
+def test_public_benchmark_checkpoint_rejects_post_call_runtime_checkpoint_default_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+
+    def integrity_only_checkpoint(
+        *_args: object,
+        _runtime_integrity_check: Callable[[], bool] = runtime_integrity_check,
+        **_kwargs: object,
+    ) -> None:
+        if not _runtime_integrity_check():
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    replacement_calls: list[object] = []
+    runtime_defaults = integrity_only_checkpoint.__kwdefaults__
+    assert runtime_defaults is not None
+    original_runtime_integrity_check = runtime_defaults["_runtime_integrity_check"]
+
+    def replacement_runtime_integrity_check() -> bool:
+        replacement_calls.append(object())
+        return True
+
+    def mutate() -> None:
+        monkeypatch.setitem(
+            runtime_defaults,
+            "_runtime_integrity_check",
+            replacement_runtime_integrity_check,
+        )
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+    try:
+        outcome = execution_module._resume_capsule(
+            capsule,
+            provider_factory=ProviderFactory(),
+            seams=_seams_for_provider(provider),
+        )
+    finally:
+        runtime_defaults["_runtime_integrity_check"] = original_runtime_integrity_check
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert len(provider.benchmark_calls) == 1
+    assert replacement_calls == []
+    assert raw == []
+
+
+@pytest.mark.parametrize("helper_authority", ("function", "class"))
+def test_public_benchmark_checkpoint_rejects_post_call_runtime_helper_composition_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    helper_authority: str,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    checkpoint_calls = [0]
+    mutation_complete = [False]
+    post_mutation_checkpoint_calls = [0]
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    forged_calls: list[object] = []
+    pre_call_checkpoint_counts: list[int] = []
+    checker_results: list[tuple[bool, bool]] = []
+
+    def accept_function_match(_value: object, _seal: object) -> bool:
+        return True
+
+    helper_mutations = [
+        (
+            execution_module._function_matches_seal,
+            execution_module._function_matches_seal.__code__,
+            accept_function_match.__code__,
+        )
+    ]
+    if helper_authority == "function":
+
+        def accept_attribute_match(_seal: object) -> bool:
+            return True
+
+        helper_mutations.append(
+            (
+                execution_module._attribute_matches_seal,
+                execution_module._attribute_matches_seal.__code__,
+                accept_attribute_match.__code__,
+            )
+        )
+        owner = execution_module._sanitizer_module.heapq
+        name = "heappush"
+    else:
+
+        def accept_class_match(_value: object, _seal: object) -> bool:
+            return True
+
+        helper_mutations = [
+            (
+                execution_module._class_matches_seal,
+                execution_module._class_matches_seal.__code__,
+                accept_class_match.__code__,
+            )
+        ]
+        owner = type(evidence)
+        name = "model_dump"
+    original_consumer = getattr(owner, name)
+
+    def forged_consumer(*args: object, **kwargs: object) -> object:
+        forged_calls.append((args, kwargs))
+        return original_consumer(*args, **kwargs)
+
+    def restore_mutation() -> None:
+        for helper, original_code, _forged_code in helper_mutations:
+            helper.__code__ = original_code
+        setattr(owner, name, original_consumer)
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        checkpoint_calls[0] += 1
+        if mutation_complete[0]:
+            post_mutation_checkpoint_calls[0] += 1
+        if not runtime_integrity_check():
+            if mutation_complete[0]:
+                restore_mutation()
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+
+    def mutate() -> None:
+        pre_call_checkpoint_counts.append(checkpoint_calls[0])
+        for helper, _original_code, forged_code in helper_mutations:
+            monkeypatch.setattr(helper, "__code__", forged_code)
+        monkeypatch.setattr(owner, name, forged_consumer, raising=False)
+        assert getattr(owner, name) is forged_consumer
+        mutation_complete[0] = True
+        checker_results.append(
+            (
+                execution_module._provider_adapter_runtime_intact(),
+                runtime_integrity_check(),
+            )
+        )
+        assert forged_calls == []
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider, credential_values=("Done.",)),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1, (
+        pre_call_checkpoint_counts,
+        post_mutation_checkpoint_calls,
+        checker_results,
+        forged_calls,
+        len(provider.benchmark_calls),
+        raw,
+        outcome,
+    )
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert pre_call_checkpoint_counts and pre_call_checkpoint_counts[0] > 0
+    assert post_mutation_checkpoint_calls[0] == 1
+    assert checker_results == [(False, False)]
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
+
+
+@pytest.mark.parametrize("method_name", ("model_validate", "model_dump"))
+def test_public_benchmark_checkpoint_rejects_post_call_base_model_method_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+) -> None:
+    checkpoint_defaults = execution_module._runtime_checkpoint.__kwdefaults__
+    assert checkpoint_defaults is not None
+    runtime_integrity_check = checkpoint_defaults["_runtime_integrity_check"]
+    assert callable(runtime_integrity_check)
+    capsule = _single_plan_capsule(
+        tmp_path,
+        monkeypatch,
+        provider_kind="fake",
+        provider_model="gpt-5.6-sol",
+        benchmark_generation=True,
+    )
+    _install_fast_runtime(monkeypatch)
+    checkpoint_calls = [0]
+    mutation_complete = [False]
+    post_mutation_checkpoint_calls = [0]
+
+    def integrity_only_checkpoint(*_args: object, **_kwargs: object) -> None:
+        checkpoint_calls[0] += 1
+        if mutation_complete[0]:
+            post_mutation_checkpoint_calls[0] += 1
+        if not runtime_integrity_check():
+            if mutation_complete[0]:
+                restore_mutation()
+            raise ResumeError("producer_runtime_differs")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_runtime_checkpoint",
+        integrity_only_checkpoint,
+    )
+    evidence = _benchmark_replay_outcome(returned_service_tier="default")
+    forged_calls: list[object] = []
+    pre_call_checkpoint_counts: list[int] = []
+    checker_results: list[tuple[bool, bool]] = []
+    original_descriptor = vars(BaseModel)[method_name]
+
+    if method_name == "model_validate":
+        assert type(original_descriptor) is classmethod
+        original = original_descriptor.__func__
+
+        def forged(cls: type[BaseModel], *args: object, **kwargs: object) -> object:
+            forged_calls.append((cls, args, kwargs))
+            return original(cls, *args, **kwargs)
+
+        replacement: object = classmethod(forged)
+    else:
+        assert callable(original_descriptor)
+        original = original_descriptor
+
+        def forged(self: BaseModel, *args: object, **kwargs: object) -> object:
+            forged_calls.append((self, args, kwargs))
+            return original(self, *args, **kwargs)
+
+        replacement = forged
+
+    def restore_mutation() -> None:
+        setattr(BaseModel, method_name, original_descriptor)
+
+    def mutate() -> None:
+        pre_call_checkpoint_counts.append(checkpoint_calls[0])
+        monkeypatch.setattr(BaseModel, method_name, replacement)
+        assert vars(BaseModel)[method_name] is replacement
+        inherited_resolution = getattr(type(evidence), method_name)
+        if method_name == "model_validate":
+            assert inherited_resolution.__func__ is forged
+        else:
+            assert inherited_resolution is forged
+        mutation_complete[0] = True
+        checker_results.append(
+            (
+                execution_module._provider_adapter_runtime_intact(),
+                runtime_integrity_check(),
+            )
+        )
+        assert forged_calls == []
+
+    provider = _BenchmarkAuthorityMutatingProvider(evidence, mutate)
+
+    outcome = execution_module._resume_capsule(
+        capsule,
+        provider_factory=ProviderFactory(),
+        seams=_seams_for_provider(provider),
+    )
+
+    _events, raw = _journal_rows(capsule)
+    assert outcome.exit_code == 1, (
+        pre_call_checkpoint_counts,
+        post_mutation_checkpoint_calls,
+        checker_results,
+        forged_calls,
+        len(provider.benchmark_calls),
+        raw,
+        outcome,
+    )
+    assert outcome.result.state == "AMBIGUOUS_INFLIGHT"
+    assert pre_call_checkpoint_counts and pre_call_checkpoint_counts[0] > 0
+    assert post_mutation_checkpoint_calls[0] == 1
+    assert checker_results == [(False, False)]
+    assert len(provider.benchmark_calls) == 1
+    assert forged_calls == []
+    assert raw == []
 
 
 class _EnvironmentSpy(Mapping[str, str]):

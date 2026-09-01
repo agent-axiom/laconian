@@ -16,7 +16,7 @@ import pwd
 import socket
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,18 +25,27 @@ from types import CodeType, FunctionType, ModuleType
 from typing import Literal, NoReturn, cast
 from uuid import RFC_4122, UUID, uuid4
 
+from pydantic import BaseModel
+
 import laconian_eval.providers.fake as _fake_provider_module
 import laconian_eval.providers.openai as _openai_provider_module
 import laconian_eval.providers.replay as _replay_provider_module
 import laconian_eval.yaml_io as _yaml_io_module
 from laconian_eval import __version__
+from laconian_eval import capsule as _capsule_module
+from laconian_eval.capsule import attempts as _attempts_module
+from laconian_eval.capsule import canonical as _canonical_module
+from laconian_eval.capsule import sanitizer as _sanitizer_module
 from laconian_eval.capsule.attempts import (
     NormalizedProviderEvidenceV2,
+    PublicBenchmarkProvider,
+    PublicBenchmarkProviderOutcomeV1,
     RawAttemptV2,
     TerminalReason,
     _derive_response_id_fields,
     derive_attempt_id,
     normalize_provider_outcome,
+    normalize_public_benchmark_outcome,
     raw_attempt_bytes,
     raw_record_sha256,
 )
@@ -100,6 +109,7 @@ from laconian_eval.capsule.recovery import (
     _revalidate_mutator_session_v1,
 )
 from laconian_eval.capsule.sanitizer import SanitizerPatterns
+from laconian_eval.capsule.schema import PublicBenchmarkModelId, ServiceTier
 from laconian_eval.capsule.verify import (
     _busy_result,
     _check_lock_identity,
@@ -117,6 +127,8 @@ from laconian_eval.providers.base import (
     GenerationResult,
     Provider,
     ProviderError,
+    PublicBenchmarkRequestPolicyV1,
+    PublicBenchmarkRequestV1,
 )
 from laconian_eval.providers.fake import FakeProvider
 from laconian_eval.providers.openai import OpenAIProvider
@@ -144,15 +156,29 @@ _REAL_GUARD_STATE: Literal["fresh", "installing", "installed", "poisoned"] = "fr
 _FAKE_PROVIDER_TYPE = FakeProvider
 _REPLAY_PROVIDER_TYPE = ReplayProvider
 _OPENAI_PROVIDER_TYPE = OpenAIProvider
+_NORMALIZE_PROVIDER_OUTCOME = normalize_provider_outcome
+_NORMALIZE_PUBLIC_BENCHMARK_OUTCOME = normalize_public_benchmark_outcome
+_OPENAI_HASHLIB_MODULE = cast(ModuleType, vars(_openai_provider_module)["hashlib"])
+_OPENAI_UNICODEDATA_MODULE = cast(
+    ModuleType,
+    vars(_openai_provider_module)["unicodedata"],
+)
+_CANONICAL_JSON_MODULE = cast(ModuleType, vars(_canonical_module)["json"])
+_CANONICAL_MATH_MODULE = cast(ModuleType, vars(_canonical_module)["math"])
 _FAKE_PROVIDER_INIT = FakeProvider.__init__
 _FAKE_PROVIDER_GENERATE = FakeProvider.generate
 _REPLAY_PROVIDER_INIT = ReplayProvider.__init__
 _REPLAY_PROVIDER_FROM_MAPPING = ReplayProvider.__dict__["_from_mapping"].__func__
 _REPLAY_PROVIDER_FROM_BYTES = ReplayProvider.__dict__["from_bytes"].__func__
+_REPLAY_PROVIDER_FROM_BENCHMARK_BYTES = ReplayProvider.__dict__["from_benchmark_bytes"].__func__
 _REPLAY_PROVIDER_GENERATE = ReplayProvider.generate
+_REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST = ReplayProvider._validate_benchmark_request
+_REPLAY_PROVIDER_GENERATE_BENCHMARK = ReplayProvider.generate_benchmark
 _OPENAI_PROVIDER_INIT = OpenAIProvider.__init__
 _OPENAI_PROVIDER_VALIDATE_REQUEST = OpenAIProvider._validate_request
 _OPENAI_PROVIDER_GENERATE = OpenAIProvider.generate
+_OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST = OpenAIProvider._validate_benchmark_request
+_OPENAI_PROVIDER_GENERATE_BENCHMARK = OpenAIProvider.generate_benchmark
 
 
 class ResumeError(ValueError):
@@ -199,9 +225,33 @@ class _FunctionSeal:
 @dataclass(frozen=True, slots=True)
 class _ClassSeal:
     class_type: type[object] = field(repr=False)
+    metaclass: type[object] = field(repr=False)
     mro: tuple[type[object], ...] = field(repr=False)
     namespace: tuple[tuple[str, object], ...] = field(repr=False)
     functions: tuple[tuple[str, str, _FunctionSeal], ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _AttributeSeal:
+    owner: object = field(repr=False)
+    name: str
+    value: object = field(repr=False)
+    function: _FunctionSeal | None = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _DescriptorSeal:
+    owner: type[object] = field(repr=False)
+    name: str
+    kind: Literal["function", "classmethod", "staticmethod"]
+    descriptor: object = field(repr=False)
+    function: _FunctionSeal = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleNamespaceSeal:
+    module: ModuleType = field(repr=False)
+    bindings: tuple[tuple[str, object], ...] = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,16 +357,93 @@ def _function_matches_seal(value: object, seal: _FunctionSeal) -> bool:
         return False
 
 
+def _seal_attribute(owner: object, name: str) -> _AttributeSeal:
+    value = getattr(owner, name)
+    function = _seal_function(value) if type(value) is FunctionType else None
+    return _AttributeSeal(owner, name, value, function)
+
+
+def _attribute_matches_seal(seal: _AttributeSeal) -> bool:
+    try:
+        value = getattr(seal.owner, seal.name)
+        return value is seal.value and (
+            seal.function is None or _function_matches_seal(value, seal.function)
+        )
+    except Exception:
+        return False
+
+
+def _seal_descriptor(owner: type[object], name: str) -> _DescriptorSeal:
+    descriptor = vars(owner)[name]
+    if type(descriptor) is FunctionType:
+        kind: Literal["function", "classmethod", "staticmethod"] = "function"
+        function = descriptor
+    elif type(descriptor) is classmethod:
+        kind = "classmethod"
+        function = cast(FunctionType, descriptor.__func__)
+    elif type(descriptor) is staticmethod:
+        kind = "staticmethod"
+        function = cast(FunctionType, descriptor.__func__)
+    else:
+        raise TypeError
+    return _DescriptorSeal(owner, name, kind, descriptor, _seal_function(function))
+
+
+def _descriptor_matches_seal(seal: _DescriptorSeal) -> bool:
+    try:
+        descriptor = vars(seal.owner).get(seal.name)
+        if descriptor is not seal.descriptor:
+            return False
+        if seal.kind == "function":
+            function = descriptor
+        elif (seal.kind == "classmethod" and type(descriptor) is classmethod) or (
+            seal.kind == "staticmethod" and type(descriptor) is staticmethod
+        ):
+            function = descriptor.__func__
+        else:
+            return False
+        return _function_matches_seal(function, seal.function)
+    except Exception:
+        return False
+
+
+def _seal_module_namespace(module: ModuleType) -> _ModuleNamespaceSeal:
+    if type(module) is not ModuleType:
+        raise TypeError
+    bindings = tuple(
+        (name, value)
+        for name, value in sorted(vars(module).items(), key=lambda item: item[0].encode("utf-8"))
+        if not name.startswith("__")
+    )
+    return _ModuleNamespaceSeal(module, bindings)
+
+
+def _module_namespace_matches_seal(seal: _ModuleNamespaceSeal) -> bool:
+    try:
+        namespace = vars(seal.module)
+        return sum(not name.startswith("__") for name in namespace) == len(seal.bindings) and all(
+            name in namespace and namespace[name] is expected for name, expected in seal.bindings
+        )
+    except Exception:
+        return False
+
+
 def _seal_class(value: object) -> _ClassSeal:
-    if type(value) is not type:
+    if not isinstance(value, type):
         raise TypeError
     namespace = tuple(sorted(vars(value).items(), key=lambda item: item[0].encode("utf-8")))
-    return _ClassSeal(value, value.__mro__, namespace, _function_descriptor_seals(namespace))
+    return _ClassSeal(
+        value,
+        type(value),
+        value.__mro__,
+        namespace,
+        _function_descriptor_seals(namespace),
+    )
 
 
 def _class_matches_seal(value: object, seal: _ClassSeal) -> bool:
     try:
-        if type(value) is not type or value is not seal.class_type:
+        if value is not seal.class_type or type(value) is not seal.metaclass:
             return False
         if value.__mro__ != seal.mro:
             return False
@@ -541,7 +668,17 @@ class ProviderFactory:
                 replay = request.captured_replay_bytes
                 if type(replay) is not bytes:
                     raise ProviderUnavailable()
-                provider = _REPLAY_PROVIDER_FROM_BYTES(_REPLAY_PROVIDER_TYPE, replay)
+                if request.requested_model in {
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                }:
+                    provider = _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES(
+                        _REPLAY_PROVIDER_TYPE,
+                        replay,
+                    )
+                else:
+                    provider = _REPLAY_PROVIDER_FROM_BYTES(_REPLAY_PROVIDER_TYPE, replay)
                 credentials = ()
             else:
                 sdk = _resolve_openai_sdk()
@@ -611,10 +748,114 @@ def _module_class_seals(
     return tuple(
         (name, _seal_class(value))
         for name, value in sorted(vars(module).items(), key=lambda item: item[0].encode("utf-8"))
-        if type(value) is type and value.__module__ == module.__name__
+        if isinstance(value, type) and value.__module__ == module.__name__
     )
 
 
+_PROVIDER_EVIDENCE_MODULES = (
+    _attempts_module,
+    _canonical_module,
+    _sanitizer_module,
+    _yaml_io_module,
+)
+_PROVIDER_EVIDENCE_BUILTIN_NAMES = (
+    "AttributeError",
+    "Exception",
+    "NotImplemented",
+    "TypeError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "ValueError",
+    "all",
+    "any",
+    "bool",
+    "bytearray",
+    "bytes",
+    "chr",
+    "classmethod",
+    "dict",
+    "enumerate",
+    "float",
+    "getattr",
+    "hash",
+    "id",
+    "int",
+    "isinstance",
+    "len",
+    "list",
+    "max",
+    "min",
+    "next",
+    "object",
+    "ord",
+    "property",
+    "range",
+    "set",
+    "slice",
+    "sorted",
+    "staticmethod",
+    "str",
+    "sum",
+    "super",
+    "tuple",
+    "type",
+    "vars",
+    "zip",
+)
+_PROVIDER_EVIDENCE_BUILTINS = cast(
+    dict[str, object],
+    object.__getattribute__(_NORMALIZE_PUBLIC_BENCHMARK_OUTCOME, "__builtins__"),
+)
+_PROVIDER_CHECK_ALL = all
+_PROVIDER_CHECK_TUPLE: Callable[[Iterable[object]], tuple[object, ...]] = tuple
+_PROVIDER_CHECK_TYPE = type
+_PROVIDER_RUNTIME_HELPER_ROOTS = tuple(
+    (function, function.__code__)
+    for function in (
+        _function_matches_seal,
+        _class_matches_seal,
+        _default_identity_seal,
+        _kwdefault_identity_seal,
+        _closure_identity_seal,
+        _attribute_matches_seal,
+        _descriptor_matches_seal,
+        _module_namespace_matches_seal,
+    )
+)
+_PROVIDER_EVIDENCE_BUILTIN_BINDINGS = tuple(
+    (_PROVIDER_EVIDENCE_BUILTINS, name, _PROVIDER_EVIDENCE_BUILTINS[name])
+    for name in _PROVIDER_EVIDENCE_BUILTIN_NAMES
+)
+_PROVIDER_EVIDENCE_MODULE_NAMESPACE_SEALS = tuple(
+    _seal_module_namespace(module) for module in _PROVIDER_EVIDENCE_MODULES
+)
+_PROVIDER_TRANSITIVE_ATTRIBUTE_SEALS = tuple(
+    _seal_attribute(owner, name)
+    for owner, name in (
+        (vars(_openai_provider_module)["hashlib"], "sha256"),
+        (vars(_openai_provider_module)["math"], "isfinite"),
+        (vars(_openai_provider_module)["re"], "fullmatch"),
+        (vars(_openai_provider_module)["unicodedata"], "normalize"),
+        (vars(_attempts_module)["hashlib"], "sha256"),
+        (vars(_attempts_module)["math"], "isfinite"),
+        (vars(_canonical_module)["hashlib"], "sha256"),
+        (vars(_canonical_module)["json"], "dumps"),
+        (vars(_canonical_module)["math"], "isfinite"),
+        (vars(_sanitizer_module)["hashlib"], "sha256"),
+        (vars(_sanitizer_module)["heapq"], "heappop"),
+        (vars(_sanitizer_module)["heapq"], "heappush"),
+        (vars(_yaml_io_module)["yaml"], "SafeLoader"),
+        (vars(_yaml_io_module)["yaml"], "compose"),
+        (vars(_yaml_io_module)["yaml"], "load"),
+        (vars(_yaml_io_module)["yaml"], "parse"),
+        (vars(_yaml_io_module)["yaml"], "scan"),
+    )
+)
+_PROVIDER_INHERITED_DESCRIPTOR_SEALS = tuple(
+    _seal_descriptor(cast(type[object], BaseModel), name)
+    for name in ("model_dump", "model_validate")
+)
 _PROVIDER_EXACT_CLASS_SEALS = tuple(
     _seal_class(class_type)
     for class_type in (
@@ -633,10 +874,15 @@ _PROVIDER_CLASS_FUNCTION_SEALS = tuple(
         _REPLAY_PROVIDER_INIT,
         _REPLAY_PROVIDER_FROM_MAPPING,
         _REPLAY_PROVIDER_FROM_BYTES,
+        _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES,
         _REPLAY_PROVIDER_GENERATE,
+        _REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _REPLAY_PROVIDER_GENERATE_BENCHMARK,
         _OPENAI_PROVIDER_INIT,
         _OPENAI_PROVIDER_VALIDATE_REQUEST,
         _OPENAI_PROVIDER_GENERATE,
+        _OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _OPENAI_PROVIDER_GENERATE_BENCHMARK,
     )
 )
 _PROVIDER_MODULE_FUNCTION_SEALS = tuple(
@@ -645,6 +891,9 @@ _PROVIDER_MODULE_FUNCTION_SEALS = tuple(
         _fake_provider_module,
         _replay_provider_module,
         _openai_provider_module,
+        _attempts_module,
+        _canonical_module,
+        _sanitizer_module,
         _yaml_io_module,
     )
 )
@@ -654,16 +903,40 @@ _PROVIDER_MODULE_CLASS_SEALS = tuple(
         _fake_provider_module,
         _replay_provider_module,
         _openai_provider_module,
+        _attempts_module,
+        _canonical_module,
+        _sanitizer_module,
         _yaml_io_module,
     )
 )
-_PROVIDER_TRANSITIVE_GLOBAL_BINDINGS = tuple(
-    (name, value)
-    for name, value in sorted(
-        vars(_yaml_io_module).items(),
-        key=lambda item: item[0].encode("utf-8"),
-    )
-    if not name.startswith("__")
+_PROVIDER_TRANSITIVE_GLOBAL_BINDINGS = (
+    *(
+        (module, name, value)
+        for module in (
+            _attempts_module,
+            _canonical_module,
+            _sanitizer_module,
+            _yaml_io_module,
+        )
+        for name, value in sorted(
+            vars(module).items(),
+            key=lambda item: item[0].encode("utf-8"),
+        )
+        if not name.startswith("__")
+    ),
+    (
+        _OPENAI_HASHLIB_MODULE,
+        "sha256",
+        _OPENAI_HASHLIB_MODULE.sha256,
+    ),
+    (
+        _OPENAI_UNICODEDATA_MODULE,
+        "normalize",
+        _OPENAI_UNICODEDATA_MODULE.normalize,
+    ),
+    (_CANONICAL_JSON_MODULE, "dumps", _CANONICAL_JSON_MODULE.dumps),
+    (_CANONICAL_MATH_MODULE, "isfinite", _CANONICAL_MATH_MODULE.isfinite),
+    (_capsule_module, "attempts", _attempts_module),
 )
 _PROVIDER_GLOBAL_BINDINGS = tuple(
     (module, name, getattr(module, name))
@@ -680,10 +953,25 @@ _PROVIDER_GLOBAL_BINDINGS = tuple(
                 "Mapping",
                 "Path",
                 "ProviderError",
+                "PublicBenchmarkRequestPolicyV1",
+                "PublicBenchmarkRequestV1",
                 "RESOURCE_LIMITS_V1",
                 "ReplayProvider",
                 "TokenUsage",
                 "YAMLError",
+                "_BENCHMARK_CACHE_FIELDS",
+                "_BENCHMARK_ERROR_FIELDS",
+                "_BENCHMARK_INPUT_DETAIL_FIELDS",
+                "_BENCHMARK_MESSAGE_FIELDS",
+                "_BENCHMARK_MODEL_IDS",
+                "_BENCHMARK_OUTPUT_DETAIL_FIELDS",
+                "_BENCHMARK_OUTPUT_TEXT_FIELDS",
+                "_BENCHMARK_RAW_RESPONSE_PATHS",
+                "_BENCHMARK_RESPONSE_FIELDS",
+                "_BENCHMARK_ROW_FIELDS",
+                "_BENCHMARK_SOURCE_DIGEST_FIELDS",
+                "_BENCHMARK_USAGE_FIELDS",
+                "safe_load_unique",
                 "safe_load_unique_bytes",
             ),
         ),
@@ -694,10 +982,46 @@ _PROVIDER_GLOBAL_BINDINGS = tuple(
                 "GenerationResult",
                 "OpenAIProvider",
                 "ProviderError",
+                "PublicBenchmarkRequestPolicyV1",
+                "PublicBenchmarkRequestV1",
+                "ReasoningTokenAccounting",
+                "RESOURCE_LIMITS_V1",
+                "ServiceTierStatus",
                 "TokenUsage",
+                "Any",
+                "AppliedCacheControlStatus",
+                "CacheReadStatus",
+                "CacheWriteStatus",
+                "DeliveryCertainty",
+                "Mapping",
+                "_MISSING_RESPONSE_MEMBER",
+                "_PUBLIC_BENCHMARK_RAW_RESPONSE_PATHS",
+                "_PUBLIC_BENCHMARK_SOURCE_DIGEST_FIELDS",
+                "_canonical_json_v1",
+                "bounded_utf8_length",
                 "cast",
+                "conservative_input_token_bound",
+                "hashlib",
+                "laconian_eval",
                 "math",
                 "os",
+                "re",
+                "suppress",
+                "typing",
+                "unicodedata",
+            ),
+        ),
+        (
+            _attempts_module,
+            (
+                "AttemptUsageV2",
+                "PublicBenchmarkProviderErrorEvidenceV1",
+                "PublicBenchmarkProviderOutcomeV1",
+                "PublicBenchmarkRawResponseSourceEntryV1",
+                "PublicBenchmarkRawResponseSourceV1",
+                "PublicBenchmarkResponseEvidenceV1",
+                "public_benchmark_provider_error_source_sha256",
+                "public_benchmark_raw_response_sha256",
             ),
         ),
     )
@@ -710,7 +1034,13 @@ def _provider_adapter_runtime_intact() -> bool:
 
     replay_from_mapping = _REPLAY_PROVIDER_TYPE.__dict__.get("_from_mapping")
     replay_from_bytes = _REPLAY_PROVIDER_TYPE.__dict__.get("from_bytes")
-    exact_class_roots = tuple(class_seal.class_type for class_seal in _PROVIDER_EXACT_CLASS_SEALS)
+    replay_from_benchmark_bytes = _REPLAY_PROVIDER_TYPE.__dict__.get("from_benchmark_bytes")
+    replay_validate_benchmark_request = _REPLAY_PROVIDER_TYPE.__dict__.get(
+        "_validate_benchmark_request"
+    )
+    exact_class_roots = _PROVIDER_CHECK_TUPLE(
+        class_seal.class_type for class_seal in _PROVIDER_EXACT_CLASS_SEALS
+    )
     class_functions = (
         _PROVIDER_FACTORY_CREATE,
         _UNGUARDED_PROVIDER_FACTORY_CREATE,
@@ -719,10 +1049,15 @@ def _provider_adapter_runtime_intact() -> bool:
         _REPLAY_PROVIDER_INIT,
         _REPLAY_PROVIDER_FROM_MAPPING,
         _REPLAY_PROVIDER_FROM_BYTES,
+        _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES,
         _REPLAY_PROVIDER_GENERATE,
+        _REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _REPLAY_PROVIDER_GENERATE_BENCHMARK,
         _OPENAI_PROVIDER_INIT,
         _OPENAI_PROVIDER_VALIDATE_REQUEST,
         _OPENAI_PROVIDER_GENERATE,
+        _OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _OPENAI_PROVIDER_GENERATE_BENCHMARK,
     )
     return (
         (
@@ -738,19 +1073,58 @@ def _provider_adapter_runtime_intact() -> bool:
         and _FAKE_PROVIDER_TYPE.__init__ is _FAKE_PROVIDER_INIT
         and _FAKE_PROVIDER_TYPE.generate is _FAKE_PROVIDER_GENERATE
         and _REPLAY_PROVIDER_TYPE.__init__ is _REPLAY_PROVIDER_INIT
-        and type(replay_from_mapping) is classmethod
+        and _PROVIDER_CHECK_TYPE(replay_from_mapping) is classmethod
         and replay_from_mapping.__func__ is _REPLAY_PROVIDER_FROM_MAPPING
-        and type(replay_from_bytes) is classmethod
+        and _PROVIDER_CHECK_TYPE(replay_from_bytes) is classmethod
         and replay_from_bytes.__func__ is _REPLAY_PROVIDER_FROM_BYTES
+        and _PROVIDER_CHECK_TYPE(replay_from_benchmark_bytes) is classmethod
+        and replay_from_benchmark_bytes.__func__ is _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES
         and _REPLAY_PROVIDER_TYPE.generate is _REPLAY_PROVIDER_GENERATE
+        and _PROVIDER_CHECK_TYPE(replay_validate_benchmark_request) is staticmethod
+        and replay_validate_benchmark_request.__func__
+        is _REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST
+        and _REPLAY_PROVIDER_TYPE.generate_benchmark is _REPLAY_PROVIDER_GENERATE_BENCHMARK
         and _OPENAI_PROVIDER_TYPE.__init__ is _OPENAI_PROVIDER_INIT
         and _OPENAI_PROVIDER_TYPE._validate_request is _OPENAI_PROVIDER_VALIDATE_REQUEST
         and _OPENAI_PROVIDER_TYPE.generate is _OPENAI_PROVIDER_GENERATE
-        and all(
+        and _OPENAI_PROVIDER_TYPE._validate_benchmark_request
+        is _OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST
+        and _OPENAI_PROVIDER_TYPE.generate_benchmark is _OPENAI_PROVIDER_GENERATE_BENCHMARK
+        and normalize_provider_outcome is _NORMALIZE_PROVIDER_OUTCOME
+        and normalize_public_benchmark_outcome is _NORMALIZE_PUBLIC_BENCHMARK_OUTCOME
+        and _PROVIDER_CHECK_ALL(
+            namespace.get(name) is expected
+            for namespace, name, expected in _PROVIDER_EVIDENCE_BUILTIN_BINDINGS
+        )
+        and (
+            _function_matches_seal,
+            _class_matches_seal,
+            _default_identity_seal,
+            _kwdefault_identity_seal,
+            _closure_identity_seal,
+            _attribute_matches_seal,
+            _descriptor_matches_seal,
+            _module_namespace_matches_seal,
+        )
+        == _PROVIDER_CHECK_TUPLE(function for function, _code in _PROVIDER_RUNTIME_HELPER_ROOTS)
+        and _PROVIDER_CHECK_ALL(
+            function.__code__ is code for function, code in _PROVIDER_RUNTIME_HELPER_ROOTS
+        )
+        and _PROVIDER_CHECK_ALL(
+            _module_namespace_matches_seal(seal)
+            for seal in _PROVIDER_EVIDENCE_MODULE_NAMESPACE_SEALS
+        )
+        and _PROVIDER_CHECK_ALL(
+            _attribute_matches_seal(seal) for seal in _PROVIDER_TRANSITIVE_ATTRIBUTE_SEALS
+        )
+        and _PROVIDER_CHECK_ALL(
+            _descriptor_matches_seal(seal) for seal in _PROVIDER_INHERITED_DESCRIPTOR_SEALS
+        )
+        and _PROVIDER_CHECK_ALL(
             _class_matches_seal(class_seal.class_type, class_seal)
             for class_seal in _PROVIDER_EXACT_CLASS_SEALS
         )
-        and all(
+        and _PROVIDER_CHECK_ALL(
             _function_matches_seal(function, seal)
             for function, seal in zip(
                 class_functions,
@@ -758,23 +1132,23 @@ def _provider_adapter_runtime_intact() -> bool:
                 strict=True,
             )
         )
-        and all(
+        and _PROVIDER_CHECK_ALL(
             _function_matches_seal(getattr(module, name, None), seal)
             for module, seals in _PROVIDER_MODULE_FUNCTION_SEALS
             for name, seal in seals
         )
-        and all(
+        and _PROVIDER_CHECK_ALL(
             _class_matches_seal(getattr(module, name, None), seal)
             for module, seals in _PROVIDER_MODULE_CLASS_SEALS
             for name, seal in seals
         )
-        and all(
+        and _PROVIDER_CHECK_ALL(
             getattr(module, name, None) is expected
             for module, name, expected in _PROVIDER_GLOBAL_BINDINGS
         )
-        and all(
-            getattr(_yaml_io_module, name, None) is expected
-            for name, expected in _PROVIDER_TRANSITIVE_GLOBAL_BINDINGS
+        and _PROVIDER_CHECK_ALL(
+            getattr(module, name, None) is expected
+            for module, name, expected in _PROVIDER_TRANSITIVE_GLOBAL_BINDINGS
         )
     )
 
@@ -798,17 +1172,37 @@ def _make_captured_provider_runtime_check(
     function_type = FunctionType
     seal_function = _seal_function
     seal_class = _seal_class
+    seal_attribute = _seal_attribute
+    seal_descriptor = _seal_descriptor
+    seal_module_namespace = _seal_module_namespace
     function_matches = _function_matches_seal
     class_matches = _class_matches_seal
+    attribute_matches = _attribute_matches_seal
+    descriptor_matches = _descriptor_matches_seal
+    module_namespace_matches = _module_namespace_matches_seal
     default_identity_seal = _default_identity_seal
     kwdefault_identity_seal = _kwdefault_identity_seal
     closure_identity_seal = _closure_identity_seal
     function_globals = _function_globals
+    raw_getattribute = object.__getattribute__
     zip_of = zip
     ordinary_exception = Exception
     fake_type = _FAKE_PROVIDER_TYPE
     replay_type = _REPLAY_PROVIDER_TYPE
     openai_type = _OPENAI_PROVIDER_TYPE
+    normalize_provider = _NORMALIZE_PROVIDER_OUTCOME
+    normalize_public_benchmark = _NORMALIZE_PUBLIC_BENCHMARK_OUTCOME
+    openai_hashlib_module = _OPENAI_HASHLIB_MODULE
+    openai_unicodedata_module = _OPENAI_UNICODEDATA_MODULE
+    canonical_json_module = _CANONICAL_JSON_MODULE
+    canonical_math_module = _CANONICAL_MATH_MODULE
+    attempts_module = _attempts_module
+    canonical_module = _canonical_module
+    sanitizer_module = _sanitizer_module
+    yaml_io_module = _yaml_io_module
+    openai_provider_module = _openai_provider_module
+    capsule_module = _capsule_module
+    base_model = cast(type[object], BaseModel)
     adapter_class_seals = tuple_of(
         seal_class(class_type) for class_type in (fake_type, replay_type, openai_type)
     )
@@ -818,24 +1212,76 @@ def _make_captured_provider_runtime_check(
         _REPLAY_PROVIDER_INIT,
         _REPLAY_PROVIDER_FROM_MAPPING,
         _REPLAY_PROVIDER_FROM_BYTES,
+        _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES,
         _REPLAY_PROVIDER_GENERATE,
+        _REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _REPLAY_PROVIDER_GENERATE_BENCHMARK,
         _OPENAI_PROVIDER_INIT,
         _OPENAI_PROVIDER_VALIDATE_REQUEST,
         _OPENAI_PROVIDER_GENERATE,
+        _OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _OPENAI_PROVIDER_GENERATE_BENCHMARK,
     )
     adapter_function_seals = tuple_of(seal_function(function) for function in adapter_functions)
     provider_modules = (
         _fake_provider_module,
         _replay_provider_module,
         _openai_provider_module,
+        _attempts_module,
+        _canonical_module,
+        _sanitizer_module,
         _yaml_io_module,
     )
-    yaml_module = _yaml_io_module
     module_function_seals = tuple_of(
         (module, _module_function_seals(module)) for module in provider_modules
     )
     module_class_seals = tuple_of(
         (module, _module_class_seals(module)) for module in provider_modules
+    )
+    evidence_modules = (
+        attempts_module,
+        canonical_module,
+        sanitizer_module,
+        yaml_io_module,
+    )
+    module_namespace_seals = tuple_of(seal_module_namespace(module) for module in evidence_modules)
+    transitive_attribute_seals = tuple_of(
+        seal_attribute(owner, name)
+        for owner, name in (
+            (vars_of(openai_provider_module)["hashlib"], "sha256"),
+            (vars_of(openai_provider_module)["math"], "isfinite"),
+            (vars_of(openai_provider_module)["re"], "fullmatch"),
+            (vars_of(openai_provider_module)["unicodedata"], "normalize"),
+            (vars_of(attempts_module)["hashlib"], "sha256"),
+            (vars_of(attempts_module)["math"], "isfinite"),
+            (vars_of(canonical_module)["hashlib"], "sha256"),
+            (vars_of(canonical_module)["json"], "dumps"),
+            (vars_of(canonical_module)["math"], "isfinite"),
+            (vars_of(sanitizer_module)["hashlib"], "sha256"),
+            (vars_of(sanitizer_module)["heapq"], "heappop"),
+            (vars_of(sanitizer_module)["heapq"], "heappush"),
+            (vars_of(yaml_io_module)["yaml"], "SafeLoader"),
+            (vars_of(yaml_io_module)["yaml"], "compose"),
+            (vars_of(yaml_io_module)["yaml"], "load"),
+            (vars_of(yaml_io_module)["yaml"], "parse"),
+            (vars_of(yaml_io_module)["yaml"], "scan"),
+        )
+    )
+    inherited_descriptor_seals = tuple_of(
+        seal_descriptor(base_model, name) for name in ("model_dump", "model_validate")
+    )
+    runtime_helper_roots = tuple_of(
+        (name, function, raw_getattribute(function, "__code__"))
+        for name, function in (
+            ("_function_matches_seal", function_matches),
+            ("_class_matches_seal", class_matches),
+            ("_default_identity_seal", default_identity_seal),
+            ("_kwdefault_identity_seal", kwdefault_identity_seal),
+            ("_closure_identity_seal", closure_identity_seal),
+            ("_attribute_matches_seal", attribute_matches),
+            ("_descriptor_matches_seal", descriptor_matches),
+            ("_module_namespace_matches_seal", module_namespace_matches),
+        )
     )
     provider_global_bindings = tuple_of(
         (module, name, getattr_of(module, name))
@@ -852,10 +1298,25 @@ def _make_captured_provider_runtime_check(
                     "Mapping",
                     "Path",
                     "ProviderError",
+                    "PublicBenchmarkRequestPolicyV1",
+                    "PublicBenchmarkRequestV1",
                     "RESOURCE_LIMITS_V1",
                     "ReplayProvider",
                     "TokenUsage",
                     "YAMLError",
+                    "_BENCHMARK_CACHE_FIELDS",
+                    "_BENCHMARK_ERROR_FIELDS",
+                    "_BENCHMARK_INPUT_DETAIL_FIELDS",
+                    "_BENCHMARK_MESSAGE_FIELDS",
+                    "_BENCHMARK_MODEL_IDS",
+                    "_BENCHMARK_OUTPUT_DETAIL_FIELDS",
+                    "_BENCHMARK_OUTPUT_TEXT_FIELDS",
+                    "_BENCHMARK_RAW_RESPONSE_PATHS",
+                    "_BENCHMARK_RESPONSE_FIELDS",
+                    "_BENCHMARK_ROW_FIELDS",
+                    "_BENCHMARK_SOURCE_DIGEST_FIELDS",
+                    "_BENCHMARK_USAGE_FIELDS",
+                    "safe_load_unique",
                     "safe_load_unique_bytes",
                 ),
             ),
@@ -866,22 +1327,79 @@ def _make_captured_provider_runtime_check(
                     "GenerationResult",
                     "OpenAIProvider",
                     "ProviderError",
+                    "PublicBenchmarkRequestPolicyV1",
+                    "PublicBenchmarkRequestV1",
+                    "ReasoningTokenAccounting",
+                    "RESOURCE_LIMITS_V1",
+                    "ServiceTierStatus",
                     "TokenUsage",
+                    "Any",
+                    "AppliedCacheControlStatus",
+                    "CacheReadStatus",
+                    "CacheWriteStatus",
+                    "DeliveryCertainty",
+                    "Mapping",
+                    "_MISSING_RESPONSE_MEMBER",
+                    "_PUBLIC_BENCHMARK_RAW_RESPONSE_PATHS",
+                    "_PUBLIC_BENCHMARK_SOURCE_DIGEST_FIELDS",
+                    "_canonical_json_v1",
+                    "bounded_utf8_length",
                     "cast",
+                    "conservative_input_token_bound",
+                    "hashlib",
+                    "laconian_eval",
                     "math",
                     "os",
+                    "re",
+                    "suppress",
+                    "typing",
+                    "unicodedata",
+                ),
+            ),
+            (
+                attempts_module,
+                (
+                    "AttemptUsageV2",
+                    "PublicBenchmarkProviderErrorEvidenceV1",
+                    "PublicBenchmarkProviderOutcomeV1",
+                    "PublicBenchmarkRawResponseSourceEntryV1",
+                    "PublicBenchmarkRawResponseSourceV1",
+                    "PublicBenchmarkResponseEvidenceV1",
+                    "public_benchmark_provider_error_source_sha256",
+                    "public_benchmark_raw_response_sha256",
                 ),
             ),
         )
         for name in names
     )
-    yaml_global_bindings = tuple_of(
-        (name, value)
-        for name, value in sorted_of(
-            vars_of(_yaml_io_module).items(),
-            key=lambda item: item[0].encode("utf-8"),
-        )
-        if not name.startswith("__")
+    transitive_global_bindings = (
+        *tuple_of(
+            (module, name, value)
+            for module in (
+                attempts_module,
+                _canonical_module,
+                _sanitizer_module,
+                _yaml_io_module,
+            )
+            for name, value in sorted_of(
+                vars_of(module).items(),
+                key=lambda item: item[0].encode("utf-8"),
+            )
+            if not name.startswith("__")
+        ),
+        (
+            openai_hashlib_module,
+            "sha256",
+            openai_hashlib_module.sha256,
+        ),
+        (
+            openai_unicodedata_module,
+            "normalize",
+            openai_unicodedata_module.normalize,
+        ),
+        (canonical_json_module, "dumps", canonical_json_module.dumps),
+        (canonical_math_module, "isfinite", canonical_math_module.isfinite),
+        (capsule_module, "attempts", attempts_module),
     )
     execution_bindings = (
         ("ProviderFactory", factory_type),
@@ -891,25 +1409,45 @@ def _make_captured_provider_runtime_check(
         ("_FAKE_PROVIDER_TYPE", fake_type),
         ("_REPLAY_PROVIDER_TYPE", replay_type),
         ("_OPENAI_PROVIDER_TYPE", openai_type),
+        ("normalize_provider_outcome", normalize_provider),
+        ("normalize_public_benchmark_outcome", normalize_public_benchmark),
+        ("_NORMALIZE_PROVIDER_OUTCOME", normalize_provider),
+        ("_NORMALIZE_PUBLIC_BENCHMARK_OUTCOME", normalize_public_benchmark),
+        ("_OPENAI_HASHLIB_MODULE", openai_hashlib_module),
+        ("_OPENAI_UNICODEDATA_MODULE", openai_unicodedata_module),
+        ("_CANONICAL_JSON_MODULE", canonical_json_module),
+        ("_CANONICAL_MATH_MODULE", canonical_math_module),
         ("_FAKE_PROVIDER_INIT", adapter_functions[0]),
         ("_FAKE_PROVIDER_GENERATE", adapter_functions[1]),
         ("_REPLAY_PROVIDER_INIT", adapter_functions[2]),
         ("_REPLAY_PROVIDER_FROM_MAPPING", adapter_functions[3]),
         ("_REPLAY_PROVIDER_FROM_BYTES", adapter_functions[4]),
-        ("_REPLAY_PROVIDER_GENERATE", adapter_functions[5]),
-        ("_OPENAI_PROVIDER_INIT", adapter_functions[6]),
-        ("_OPENAI_PROVIDER_VALIDATE_REQUEST", adapter_functions[7]),
-        ("_OPENAI_PROVIDER_GENERATE", adapter_functions[8]),
+        ("_REPLAY_PROVIDER_FROM_BENCHMARK_BYTES", adapter_functions[5]),
+        ("_REPLAY_PROVIDER_GENERATE", adapter_functions[6]),
+        ("_REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST", adapter_functions[7]),
+        ("_REPLAY_PROVIDER_GENERATE_BENCHMARK", adapter_functions[8]),
+        ("_OPENAI_PROVIDER_INIT", adapter_functions[9]),
+        ("_OPENAI_PROVIDER_VALIDATE_REQUEST", adapter_functions[10]),
+        ("_OPENAI_PROVIDER_GENERATE", adapter_functions[11]),
+        ("_OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST", adapter_functions[12]),
+        ("_OPENAI_PROVIDER_GENERATE_BENCHMARK", adapter_functions[13]),
         ("_function_matches_seal", function_matches),
         ("_class_matches_seal", class_matches),
+        ("_attribute_matches_seal", attribute_matches),
+        ("_descriptor_matches_seal", descriptor_matches),
+        ("_module_namespace_matches_seal", module_namespace_matches),
         ("_default_identity_seal", default_identity_seal),
         ("_kwdefault_identity_seal", kwdefault_identity_seal),
         ("_closure_identity_seal", closure_identity_seal),
         ("_function_globals", function_globals),
+        ("FunctionType", function_type),
     )
     builtins_namespace = cast(
         dict[str, object],
         object.__getattribute__(original_create, "__builtins__"),
+    )
+    evidence_builtin_bindings = tuple_of(
+        (name, builtins_namespace[name]) for name in _PROVIDER_EVIDENCE_BUILTIN_NAMES
     )
     builtin_resolutions = tuple_of(
         (name, dict_get(namespace, name, builtins_namespace[name]))
@@ -918,6 +1456,7 @@ def _make_captured_provider_runtime_check(
             "any",
             "classmethod",
             "dict",
+            "Exception",
             "getattr",
             "id",
             "len",
@@ -926,6 +1465,7 @@ def _make_captured_provider_runtime_check(
             "sorted",
             "staticmethod",
             "str",
+            "sum",
             "tuple",
             "type",
             "vars",
@@ -934,6 +1474,9 @@ def _make_captured_provider_runtime_check(
     )
     original_create_seal = seal_function(original_create)
     factory_state: list[tuple[FunctionType, _FunctionSeal, _ClassSeal]] = []
+    runtime_closure_state: list[
+        tuple[Callable[[], bool], tuple[tuple[str, object, type[object]], ...]]
+    ] = []
 
     def install_factory_create(function: FunctionType) -> None:
         if factory_state or type_of(function) is not function_type:
@@ -948,6 +1491,40 @@ def _make_captured_provider_runtime_check(
 
     def runtime_intact() -> bool:
         try:
+            # This state cell is the sole exclusion: it owns both the self-reference and
+            # the finite expected seal. Every other closure cell is checked without the
+            # compositional helpers that the closure itself is responsible for validating.
+            runtime_function, runtime_closure_seal = runtime_closure_state[0]
+            runtime_closure = raw_getattribute(runtime_function, "__closure__")
+            runtime_code = raw_getattribute(runtime_function, "__code__")
+            runtime_freevars = raw_getattribute(runtime_code, "co_freevars")
+            if (
+                type_of(runtime_closure) is not tuple_of
+                or type_of(runtime_freevars) is not tuple_of
+                or len_of(runtime_closure) != len_of(runtime_freevars)
+            ):
+                return False
+            closure_index = 0
+            seal_index = 0
+            while closure_index < len_of(runtime_freevars):
+                name = runtime_freevars[closure_index]
+                cell = runtime_closure[closure_index]
+                closure_index += 1
+                if name == "runtime_closure_state":
+                    continue
+                if seal_index >= len_of(runtime_closure_seal):
+                    return False
+                expected_name, expected_value, expected_type = runtime_closure_seal[seal_index]
+                seal_index += 1
+                value = raw_getattribute(cell, "cell_contents")
+                if (
+                    name != expected_name
+                    or value is not expected_value
+                    or type_of(value) is not expected_type
+                ):
+                    return False
+            if seal_index != len_of(runtime_closure_seal):
+                return False
             if type_of(namespace) is not dict_type or len_of(factory_state) != 1:
                 return False
             factory_create, factory_create_seal, factory_class_seal = factory_state[0]
@@ -961,9 +1538,22 @@ def _make_captured_provider_runtime_check(
                     dict_get(namespace, name, expected) is expected
                     for name, expected in builtin_resolutions
                 )
+                and all_of(
+                    dict_get(builtins_namespace, name) is expected
+                    for name, expected in evidence_builtin_bindings
+                )
+                and all_of(
+                    dict_get(namespace, name) is function
+                    and type_of(function) is function_type
+                    and raw_getattribute(function, "__code__") is code
+                    for name, function, code in runtime_helper_roots
+                )
                 and class_matches(factory_type, factory_class_seal)
                 and function_matches(factory_create, factory_create_seal)
                 and function_matches(original_create, original_create_seal)
+                and all_of(module_namespace_matches(seal) for seal in module_namespace_seals)
+                and all_of(attribute_matches(seal) for seal in transitive_attribute_seals)
+                and all_of(descriptor_matches(seal) for seal in inherited_descriptor_seals)
                 and all_of(
                     class_matches(class_seal.class_type, class_seal)
                     for class_seal in adapter_class_seals
@@ -991,13 +1581,38 @@ def _make_captured_provider_runtime_check(
                     for module, name, expected in provider_global_bindings
                 )
                 and all_of(
-                    getattr_of(yaml_module, name, None) is expected
-                    for name, expected in yaml_global_bindings
+                    getattr_of(module, name, None) is expected
+                    for module, name, expected in transitive_global_bindings
                 )
             )
         except ordinary_exception:
             return False
 
+    runtime_closure = raw_getattribute(runtime_intact, "__closure__")
+    runtime_freevars = raw_getattribute(
+        raw_getattribute(runtime_intact, "__code__"),
+        "co_freevars",
+    )
+    if (
+        type_of(runtime_closure) is not tuple_of
+        or type_of(runtime_freevars) is not tuple_of
+        or len_of(runtime_closure) != len_of(runtime_freevars)
+    ):
+        raise TypeError
+    runtime_closure_state.append(
+        (
+            runtime_intact,
+            tuple_of(
+                (
+                    name,
+                    raw_getattribute(cell, "cell_contents"),
+                    type_of(raw_getattribute(cell, "cell_contents")),
+                )
+                for name, cell in zip_of(runtime_freevars, runtime_closure, strict=True)
+                if name != "runtime_closure_state"
+            ),
+        )
+    )
     return runtime_intact, install_factory_create
 
 
@@ -1108,18 +1723,37 @@ _PROVIDER_CLASS_FUNCTION_SEALS = tuple(
         _REPLAY_PROVIDER_INIT,
         _REPLAY_PROVIDER_FROM_MAPPING,
         _REPLAY_PROVIDER_FROM_BYTES,
+        _REPLAY_PROVIDER_FROM_BENCHMARK_BYTES,
         _REPLAY_PROVIDER_GENERATE,
+        _REPLAY_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _REPLAY_PROVIDER_GENERATE_BENCHMARK,
         _OPENAI_PROVIDER_INIT,
         _OPENAI_PROVIDER_VALIDATE_REQUEST,
         _OPENAI_PROVIDER_GENERATE,
+        _OPENAI_PROVIDER_VALIDATE_BENCHMARK_REQUEST,
+        _OPENAI_PROVIDER_GENERATE_BENCHMARK,
     )
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _PrivateProviderBinding:
-    provider: Provider = field(repr=False)
+    provider: Provider | PublicBenchmarkProvider = field(repr=False)
     credential_values: tuple[str, ...] = field(default=(), repr=False)
+
+
+@dataclass(slots=True)
+class _ExecutionCheckpointDispatch:
+    complete: Callable[..., None] = field(repr=False)
+    complete_seal: _FunctionSeal = field(repr=False)
+    runtime: Callable[..., None] = field(repr=False)
+    runtime_seal: _FunctionSeal = field(repr=False)
+    revalidate: Callable[[_MutatorSessionV1], object] = field(repr=False)
+    revalidate_seal: _FunctionSeal = field(repr=False)
+    integrity: Callable[[], bool] = field(repr=False)
+    integrity_seal: _FunctionSeal = field(repr=False)
+    matches: Callable[[object, _FunctionSeal], bool] = field(repr=False)
+    seal: Callable[[object], _FunctionSeal] = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1241,7 +1875,7 @@ class _CapturedRequest:
     row: PlanRowV1
     case: ResponseCase
     instruction: str | None
-    request: GenerationRequest
+    request: GenerationRequest | PublicBenchmarkRequestV1
 
 
 def _fail(code: str) -> NoReturn:
@@ -1411,19 +2045,20 @@ def _complete_execution_checkpoint(
     *,
     authored_input_byte_count: int,
     seams: _ExecutionSeams,
+    dispatch: _ExecutionCheckpointDispatch,
 ) -> None:
     """Revalidate the exact capsule and installed runtime at one call boundary."""
 
-    try:
-        _revalidate_mutator_session_v1(session)
-    except (RecoveryError, JournalError):
-        raise ResumeError("producer_runtime_differs") from None
-    _runtime_checkpoint(
+    dispatch.runtime(
         authority,
         context,
         authored_input_byte_count=authored_input_byte_count,
         seams=seams,
     )
+    try:
+        dispatch.revalidate(session)
+    except (RecoveryError, JournalError):
+        raise ResumeError("producer_runtime_differs") from None
 
 
 def _verified_context(session: _MutatorSessionV1) -> _VerifiedCapsuleContext:
@@ -1541,17 +2176,46 @@ def _captured_request(
         ):
             raise TypeError
         manifest = context.manifest
-        request = GenerationRequest(
-            case_id=row.case_id,
-            arm=row.arm,
-            repetition=row.repetition,
-            model=manifest.provider.model,
-            instructions=arm.instruction,
-            prompt=case.prompt,
-            max_output_tokens=manifest.generation.max_output_tokens,
-            temperature=manifest.generation.temperature,
-            timeout_seconds=manifest.retry.timeout_seconds,
-        )
+        if manifest.provider.model in {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        }:
+            policy = PublicBenchmarkRequestPolicyV1(
+                schema_version="PublicBenchmarkRequestPolicyV1",
+                reasoning_mode=manifest.generation.reasoning_mode,
+                prompt_cache_mode=manifest.generation.prompt_cache_mode,
+                prompt_cache_ttl=manifest.generation.prompt_cache_ttl,
+                service_tier=manifest.generation.service_tier,
+                input_token_bound_version="openai-utf8-envelope-v1",
+                max_input_tokens=272_000,
+            )
+            request: GenerationRequest | PublicBenchmarkRequestV1 = PublicBenchmarkRequestV1(
+                case_id=row.case_id,
+                arm=row.arm,
+                repetition=row.repetition,
+                requested_model_id=cast(PublicBenchmarkModelId, manifest.provider.model),
+                instructions=arm.instruction,
+                prompt=case.prompt,
+                max_output_tokens=manifest.generation.max_output_tokens,
+                temperature=manifest.generation.temperature,
+                timeout_seconds=manifest.retry.timeout_seconds,
+                policy=policy,
+                reasoning_effort=manifest.generation.reasoning_effort,
+                text_verbosity=manifest.generation.text_verbosity,
+            )
+        else:
+            request = GenerationRequest(
+                case_id=row.case_id,
+                arm=row.arm,
+                repetition=row.repetition,
+                model=manifest.provider.model,
+                instructions=arm.instruction,
+                prompt=case.prompt,
+                max_output_tokens=manifest.generation.max_output_tokens,
+                temperature=manifest.generation.temperature,
+                timeout_seconds=manifest.retry.timeout_seconds,
+            )
         return _CapturedRequest(row, case, arm.instruction, request)
     except Exception:
         raise ResumeError("captured_request_mismatch") from None
@@ -1785,6 +2449,21 @@ def _raw_attempt(
             provider=context.manifest.provider.kind,
             model=context.manifest.provider.model,
             response_model=evidence.response_model,
+            requested_model_id=evidence.requested_model_id,
+            returned_model_id=evidence.returned_model_id,
+            returned_model_source_sha256=evidence.returned_model_source_sha256,
+            requested_service_tier=evidence.requested_service_tier,
+            returned_service_tier=evidence.returned_service_tier,
+            service_tier_status=evidence.service_tier_status,
+            service_tier_source_sha256=evidence.service_tier_source_sha256,
+            applied_prompt_cache_mode=evidence.applied_prompt_cache_mode,
+            applied_prompt_cache_ttl=evidence.applied_prompt_cache_ttl,
+            applied_cache_control_status=evidence.applied_cache_control_status,
+            applied_cache_control_source_sha256=(evidence.applied_cache_control_source_sha256),
+            cache_read_source_sha256=evidence.cache_read_source_sha256,
+            cache_write_source_sha256=evidence.cache_write_source_sha256,
+            usage_source_sha256=evidence.usage_source_sha256,
+            reasoning_tokens_source_sha256=evidence.reasoning_tokens_source_sha256,
             started_at=started_at,
             elapsed_ms=elapsed_ms,
             output_text=output_text,
@@ -1980,6 +2659,7 @@ def _execute_provider_ready(
     authored_input_byte_count: int,
     provider_factory: ProviderFactory,
     seams: _ExecutionSeams,
+    checkpoint_dispatch: _ExecutionCheckpointDispatch,
 ) -> _ResumeOutcome:
     _require_fresh_execution_guard(seams)
     pair = _pair(session.transaction, session.history_context)
@@ -2032,12 +2712,13 @@ def _execute_provider_ready(
 
     try:
         _install_execution_guard(authority.policy, seams)
-        _complete_execution_checkpoint(
+        checkpoint_dispatch.complete(
             session,
             authority,
             context,
             authored_input_byte_count=authored_input_byte_count,
             seams=seams,
+            dispatch=checkpoint_dispatch,
         )
     except KeyboardInterrupt:
         return _append_interruption(
@@ -2108,12 +2789,13 @@ def _execute_provider_ready(
         )
 
     try:
-        _complete_execution_checkpoint(
+        checkpoint_dispatch.complete(
             session,
             authority,
             context,
             authored_input_byte_count=authored_input_byte_count,
             seams=seams,
+            dispatch=checkpoint_dispatch,
         )
     except KeyboardInterrupt:
         return _append_interruption(
@@ -2239,12 +2921,13 @@ def _execute_provider_ready(
                     seams=seams,
                 )
             try:
-                _complete_execution_checkpoint(
+                checkpoint_dispatch.complete(
                     session,
                     authority,
                     context,
                     authored_input_byte_count=authored_input_byte_count,
                     seams=seams,
+                    dispatch=checkpoint_dispatch,
                 )
                 captured = _captured_request(context, row)
             except KeyboardInterrupt:
@@ -2322,12 +3005,13 @@ def _execute_provider_ready(
                 start_ns = seams.monotonic_ns()
                 if type(start_ns) is not int:
                     _fail("invalid_clock")
-                _complete_execution_checkpoint(
+                checkpoint_dispatch.complete(
                     session,
                     authority,
                     context,
                     authored_input_byte_count=authored_input_byte_count,
                     seams=seams,
+                    dispatch=checkpoint_dispatch,
                 )
             except Exception:
                 return _ambiguous_after_durable_start(
@@ -2335,35 +3019,93 @@ def _execute_provider_ready(
                     context=context,
                 )
 
+            # A test seam may keep counters in its runtime-checkpoint closure. Renew the
+            # full seals only after the final trusted pre-call invocation, immediately
+            # before provider code gains control; provider-side changes then cannot be
+            # accepted as legitimate dispatch state.
+            checkpoint_dispatch.complete_seal = checkpoint_dispatch.seal(
+                checkpoint_dispatch.complete
+            )
+            checkpoint_dispatch.runtime_seal = checkpoint_dispatch.seal(checkpoint_dispatch.runtime)
+            checkpoint_dispatch.revalidate_seal = checkpoint_dispatch.seal(
+                checkpoint_dispatch.revalidate
+            )
             outcome: object
             try:
-                outcome = binding.provider.generate(captured.request)
+                benchmark_request = type(captured.request) is PublicBenchmarkRequestV1
+                if benchmark_request:
+                    captured_benchmark_request = cast(
+                        PublicBenchmarkRequestV1,
+                        captured.request,
+                    )
+                    requested_service_tier: ServiceTier | None = (
+                        captured_benchmark_request.policy.service_tier
+                    )
+                    benchmark_provider = cast(PublicBenchmarkProvider, binding.provider)
+                    outcome = benchmark_provider.generate_benchmark(captured_benchmark_request)
+                else:
+                    requested_service_tier = None
+                    legacy_provider = cast(Provider, binding.provider)
+                    outcome = legacy_provider.generate(cast(GenerationRequest, captured.request))
             except ProviderError as error:
                 outcome = error
             except Exception as error:
                 outcome = error
             try:
-                _complete_execution_checkpoint(
+                if (
+                    _complete_execution_checkpoint is not checkpoint_dispatch.complete
+                    or _runtime_checkpoint is not checkpoint_dispatch.runtime
+                    or _revalidate_mutator_session_v1 is not checkpoint_dispatch.revalidate
+                    or not checkpoint_dispatch.matches(
+                        checkpoint_dispatch.integrity,
+                        checkpoint_dispatch.integrity_seal,
+                    )
+                    or not checkpoint_dispatch.matches(
+                        checkpoint_dispatch.complete,
+                        checkpoint_dispatch.complete_seal,
+                    )
+                    or not checkpoint_dispatch.matches(
+                        checkpoint_dispatch.runtime,
+                        checkpoint_dispatch.runtime_seal,
+                    )
+                    or not checkpoint_dispatch.matches(
+                        checkpoint_dispatch.revalidate,
+                        checkpoint_dispatch.revalidate_seal,
+                    )
+                ):
+                    raise ResumeError("producer_runtime_differs")
+                checkpoint_dispatch.complete(
                     session,
                     authority,
                     context,
                     authored_input_byte_count=authored_input_byte_count,
                     seams=seams,
+                    dispatch=checkpoint_dispatch,
                 )
                 end_ns = seams.monotonic_ns()
                 if type(end_ns) is not int:
                     _fail("invalid_clock")
                 elapsed_ms = max(0, end_ns - start_ns) // 1_000_000
-                evidence = normalize_provider_outcome(
-                    cast(GenerationResult | ProviderError, outcome),
-                    patterns=patterns,
-                )
-                _complete_execution_checkpoint(
+                if benchmark_request:
+                    if requested_service_tier is None:
+                        _fail("invalid_provider_evidence")
+                    evidence = normalize_public_benchmark_outcome(
+                        cast(PublicBenchmarkProviderOutcomeV1, outcome),
+                        requested_service_tier=requested_service_tier,
+                        patterns=patterns,
+                    )
+                else:
+                    evidence = normalize_provider_outcome(
+                        cast(GenerationResult | ProviderError, outcome),
+                        patterns=patterns,
+                    )
+                checkpoint_dispatch.complete(
                     session,
                     authority,
                     context,
                     authored_input_byte_count=authored_input_byte_count,
                     seams=seams,
+                    dispatch=checkpoint_dispatch,
                 )
             except Exception:
                 return _ambiguous_after_durable_start(
@@ -2499,6 +3241,7 @@ def _resume_locked(
     provider_factory: ProviderFactory,
     on_target_known: Callable[[Path], None] | None,
     seams: _ExecutionSeams,
+    checkpoint_dispatch: _ExecutionCheckpointDispatch,
 ) -> _ResumeOutcome:
     context = _verified_context(session)
     recovery_plan = _plan_mutator_session_v1(session)
@@ -2562,6 +3305,7 @@ def _resume_locked(
         authored_input_byte_count=authored_bytes,
         provider_factory=provider_factory,
         seams=seams,
+        checkpoint_dispatch=checkpoint_dispatch,
     )
 
 
@@ -2579,6 +3323,145 @@ def _resume_capsule(
 ) -> _ResumeOutcome:
     """Private wrapper exposing clocks/provider seams and the target-known callback."""
 
+    type_of = type
+    id_of = id
+    len_of = len
+    raw_getattribute = object.__getattribute__
+    function_type = FunctionType
+    function_seal_type = _FunctionSeal
+    tuple_type = tuple
+    dict_type = dict
+    str_type = str
+    int_type = int
+    ordinary_exception = Exception
+
+    def sequence_identity_matches(actual: object, expected: object) -> bool:
+        if expected is None:
+            return actual is None
+        if type_of(actual) is not tuple_type or type_of(expected) is not tuple_type:
+            return False
+        actual_items: tuple[object, ...] = actual  # type: ignore[assignment]
+        expected_parts: tuple[object, ...] = expected  # type: ignore[assignment]
+        if len_of(expected_parts) != 2 or type_of(expected_parts[1]) is not tuple_type:
+            return False
+        expected_items: tuple[object, ...] = expected_parts[1]  # type: ignore[assignment]
+        if (
+            type_of(expected_parts[0]) is not int_type
+            or id_of(actual_items) != expected_parts[0]
+            or len_of(actual_items) != len_of(expected_items)
+        ):
+            return False
+        for index in range(len_of(actual_items)):
+            if type_of(expected_items[index]) is not int_type:
+                return False
+            if id_of(actual_items[index]) != expected_items[index]:
+                return False
+        return True
+
+    def kwdefault_identity_matches(actual: object, expected: object) -> bool:
+        if expected is None:
+            return actual is None
+        if type_of(actual) is not dict_type or type_of(expected) is not tuple_type:
+            return False
+        actual_mapping: dict[object, object] = actual  # type: ignore[assignment]
+        expected_parts: tuple[object, ...] = expected  # type: ignore[assignment]
+        if len_of(expected_parts) != 2 or type_of(expected_parts[1]) is not tuple_type:
+            return False
+        expected_items: tuple[object, ...] = expected_parts[1]  # type: ignore[assignment]
+        if (
+            type_of(expected_parts[0]) is not int_type
+            or id_of(actual_mapping) != expected_parts[0]
+            or len_of(actual_mapping) != len_of(expected_items)
+        ):
+            return False
+        for item in expected_items:
+            if type_of(item) is not tuple_type:
+                return False
+            item_parts: tuple[object, ...] = item  # type: ignore[assignment]
+            if (
+                len_of(item_parts) != 2
+                or type_of(item_parts[0]) is not str_type
+                or type_of(item_parts[1]) is not int_type
+                or item_parts[0] not in actual_mapping
+                or id_of(actual_mapping[item_parts[0]]) != item_parts[1]
+            ):
+                return False
+        return True
+
+    def closure_identity_matches(actual: object, expected: object) -> bool:
+        if expected is None:
+            return actual is None
+        if type_of(actual) is not tuple_type or type_of(expected) is not tuple_type:
+            return False
+        actual_cells: tuple[object, ...] = actual  # type: ignore[assignment]
+        expected_parts: tuple[object, ...] = expected  # type: ignore[assignment]
+        if len_of(expected_parts) != 2 or type_of(expected_parts[1]) is not tuple_type:
+            return False
+        expected_items: tuple[object, ...] = expected_parts[1]  # type: ignore[assignment]
+        if (
+            type_of(expected_parts[0]) is not int_type
+            or id_of(actual_cells) != expected_parts[0]
+            or len_of(actual_cells) != len_of(expected_items)
+        ):
+            return False
+        for index in range(len_of(actual_cells)):
+            item = expected_items[index]
+            if type_of(item) is not tuple_type:
+                return False
+            item_parts: tuple[object, ...] = item  # type: ignore[assignment]
+            if (
+                len_of(item_parts) != 2
+                or type_of(item_parts[0]) is not int_type
+                or type_of(item_parts[1]) is not int_type
+                or id_of(actual_cells[index]) != item_parts[0]
+                or id_of(raw_getattribute(actual_cells[index], "cell_contents")) != item_parts[1]
+            ):
+                return False
+        return True
+
+    def raw_function_matches(value: object, seal: _FunctionSeal) -> bool:
+        try:
+            return (
+                type_of(value) is function_type
+                and type_of(seal) is function_seal_type
+                and value is raw_getattribute(seal, "function")
+                and raw_getattribute(value, "__code__") is raw_getattribute(seal, "code")
+                and sequence_identity_matches(
+                    raw_getattribute(value, "__defaults__"),
+                    raw_getattribute(seal, "defaults"),
+                )
+                and kwdefault_identity_matches(
+                    raw_getattribute(value, "__kwdefaults__"),
+                    raw_getattribute(seal, "kwdefaults"),
+                )
+                and closure_identity_matches(
+                    raw_getattribute(value, "__closure__"),
+                    raw_getattribute(seal, "closure"),
+                )
+                and id_of(raw_getattribute(value, "__globals__"))
+                == raw_getattribute(seal, "globals_id")
+                and id_of(raw_getattribute(value, "__builtins__"))
+                == raw_getattribute(seal, "builtins_id")
+            )
+        except ordinary_exception:
+            return False
+
+    complete_execution_checkpoint = _complete_execution_checkpoint
+    runtime_checkpoint = _runtime_checkpoint
+    revalidate_mutator_session = _revalidate_mutator_session_v1
+    runtime_integrity_check = cast(FunctionType, _runtime_integrity_check)
+    checkpoint_dispatch = _ExecutionCheckpointDispatch(
+        complete_execution_checkpoint,
+        _seal_function(complete_execution_checkpoint),
+        runtime_checkpoint,
+        _seal_function(runtime_checkpoint),
+        revalidate_mutator_session,
+        _seal_function(revalidate_mutator_session),
+        runtime_integrity_check,
+        _seal_function(runtime_integrity_check),
+        raw_function_matches,
+        _seal_function,
+    )
     execution_seams = _ExecutionSeams() if seams is None else seams
     if (
         type(provider_factory) is not ProviderFactory
@@ -2646,6 +3529,7 @@ def _resume_capsule(
                 provider_factory=provider_factory,
                 on_target_known=on_target_known,
                 seams=execution_seams,
+                checkpoint_dispatch=checkpoint_dispatch,
             )
     except UnsupportedFilesystemError:
         outcome = _ResumeOutcome(_unsupported_result(), 2, "unsupported_filesystem")

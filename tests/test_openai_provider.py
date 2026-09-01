@@ -18,6 +18,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from laconian_eval.capsule.attempts import normalize_provider_outcome
 from laconian_eval.capsule.sanitizer import SanitizerPatterns
@@ -40,6 +41,19 @@ class _IntSubclass(int):
 class _EqualitySpoof:
     def __eq__(self, other: object) -> bool:
         return True
+
+
+class _SDKModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class _BenchmarkResponse:
+    def __init__(self, **values: object) -> None:
+        self.__dict__.update(values)
+
+    @property
+    def output_text(self) -> object:
+        raise AssertionError("benchmark adapter must not read response.output_text")
 
 
 _EXPECTED_LOCK_DEPENDENCIES = (
@@ -1602,6 +1616,120 @@ def response(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
+def benchmark_request(**overrides: object) -> object:
+    from laconian_eval.providers.base import (
+        PublicBenchmarkRequestPolicyV1,
+        PublicBenchmarkRequestV1,
+    )
+
+    values: dict[str, object] = {
+        "case_id": "case-en",
+        "arm": "if",
+        "repetition": 0,
+        "requested_model_id": "gpt-5.6-sol",
+        "instructions": "instruction",
+        "prompt": "prompt",
+        "max_output_tokens": 1024,
+        "temperature": None,
+        "timeout_seconds": 60.0,
+        "reasoning_effort": "medium",
+        "text_verbosity": "medium",
+        "policy": PublicBenchmarkRequestPolicyV1(
+            schema_version="PublicBenchmarkRequestPolicyV1",
+            reasoning_mode="omitted",
+            prompt_cache_mode="explicit",
+            prompt_cache_ttl="30m",
+            service_tier="default",
+            input_token_bound_version="openai-utf8-envelope-v1",
+            max_input_tokens=272000,
+        ),
+    }
+    values.update(overrides)
+    return PublicBenchmarkRequestV1(**values)  # type: ignore[arg-type]
+
+
+_ABSENT = object()
+
+
+def _sdk_node(**values: object) -> _SDKModel:
+    return _SDKModel.model_construct(**values)
+
+
+def _benchmark_output(text: object = "Complete answer.") -> list[object]:
+    return [
+        _sdk_node(
+            type="message",
+            content=[_sdk_node(type="output_text", text=text)],
+        )
+    ]
+
+
+def benchmark_usage(
+    *,
+    input_tokens: object = 10,
+    cached_tokens: object = 2,
+    cache_write_tokens: object = 0,
+    output_tokens: object = 4,
+    reasoning_tokens: object = 1,
+    total_tokens: object = 14,
+) -> SimpleNamespace:
+    input_details: dict[str, object] = {}
+    if cached_tokens is not _ABSENT:
+        input_details["cached_tokens"] = cached_tokens
+    if cache_write_tokens is not _ABSENT:
+        input_details["cache_write_tokens"] = cache_write_tokens
+    output_details: dict[str, object] = {}
+    if reasoning_tokens is not _ABSENT:
+        output_details["reasoning_tokens"] = reasoning_tokens
+    values: dict[str, object] = {
+        "input_tokens_details": SimpleNamespace(**input_details),
+        "output_tokens_details": SimpleNamespace(**output_details),
+    }
+    for name, value in (
+        ("input_tokens", input_tokens),
+        ("output_tokens", output_tokens),
+        ("total_tokens", total_tokens),
+    ):
+        if value is not _ABSENT:
+            values[name] = value
+    return SimpleNamespace(**values)
+
+
+def benchmark_response(**overrides: object) -> _BenchmarkResponse:
+    values: dict[str, object] = {
+        "id": "resp_123",
+        "_request_id": "req_123",
+        "status": "completed",
+        "error": None,
+        "output": _benchmark_output(),
+        "model": "gpt-5.6-sol-2026-08-01",
+        "service_tier": "default",
+        "prompt_cache_options": SimpleNamespace(mode="explicit", ttl="30m"),
+        "usage": benchmark_usage(),
+    }
+    for name, value in overrides.items():
+        if value is _ABSENT:
+            values.pop(name, None)
+        else:
+            values[name] = value
+    return _BenchmarkResponse(**values)
+
+
+def _stub_benchmark_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    result: object,
+) -> None:
+    from laconian_eval.providers import openai as provider_openai
+
+    monkeypatch.setattr(
+        provider_openai,
+        "_parse_benchmark_response",
+        lambda _response, _request: result,
+        raising=False,
+    )
+
+
 _HUGE_INTEGER = 10**10_000
 
 
@@ -1633,6 +1761,1112 @@ def sdk_error_type(name: str) -> type[Exception]:
     if name == "APITimeoutError":
         return type(name, (api_connection_error,), {"__module__": "openai"})
     return type(name, (api_status_error,), {"__module__": "openai"})
+
+
+def test_confirmatory_request_sends_exact_reasoning_verbosity_cache_and_service_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.providers.base import PublicBenchmarkRequestPolicyV1
+
+    parsed = object()
+    _stub_benchmark_parser(monkeypatch, result=parsed)
+    monkeypatch.setenv("OPENAI_SERVICE_TIER", "priority")
+    client = StubClient(response())
+    provider = OpenAIProvider(client=client)
+
+    assert provider.generate_benchmark(benchmark_request()) is parsed
+    assert client.responses.calls == [
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "instruction",
+            "input": "prompt",
+            "max_output_tokens": 1024,
+            "store": False,
+            "reasoning": {"effort": "medium"},
+            "text": {"verbosity": "medium"},
+            "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+            "service_tier": "default",
+        }
+    ]
+    forbidden = {
+        "reasoning_mode",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "prompt_cache_breakpoint",
+        "tools",
+        "previous_response_id",
+        "temperature",
+    }
+    assert forbidden.isdisjoint(client.responses.calls[0])
+
+    without_nested = StubClient(response())
+    assert (
+        OpenAIProvider(client=without_nested).generate_benchmark(
+            benchmark_request(reasoning_effort=None, text_verbosity=None)
+        )
+        is parsed
+    )
+    assert without_nested.responses.calls == [
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "instruction",
+            "input": "prompt",
+            "max_output_tokens": 1024,
+            "store": False,
+            "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+            "service_tier": "default",
+        }
+    ]
+
+    for invalid_tier in (None, True, 1, object(), "auto", "flex", "priority", "ultrafast"):
+        policy = PublicBenchmarkRequestPolicyV1.model_construct(
+            schema_version="PublicBenchmarkRequestPolicyV1",
+            reasoning_mode="omitted",
+            prompt_cache_mode="explicit",
+            prompt_cache_ttl="30m",
+            service_tier=invalid_tier,
+            input_token_bound_version="openai-utf8-envelope-v1",
+            max_input_tokens=272000,
+        )
+        rejected_client = StubClient(response())
+        with pytest.raises(ProviderError, match="service_tier") as caught:
+            OpenAIProvider(client=rejected_client).generate_benchmark(
+                benchmark_request(policy=policy)
+            )
+        assert caught.value.kind == "configuration"
+        assert caught.value.delivery_certainty == "definitely_not_sent"
+        assert rejected_client.responses.calls == []
+
+
+@pytest.mark.parametrize("temperature", [0.0, 0.25, -0.25])
+def test_nonnull_benchmark_temperature_rejects_before_responses_call(
+    monkeypatch: pytest.MonkeyPatch,
+    temperature: float,
+) -> None:
+    network_calls: list[object] = []
+
+    def reject_network(*args: object, **kwargs: object) -> object:
+        network_calls.append((args, kwargs))
+        raise AssertionError("benchmark request crossed the network boundary")
+
+    monkeypatch.setattr(socket, "create_connection", reject_network)
+    client = StubClient(response())
+
+    with pytest.raises(ProviderError, match="temperature") as caught:
+        OpenAIProvider(client=client).generate_benchmark(benchmark_request(temperature=temperature))
+
+    assert caught.value.kind == "configuration"
+    assert caught.value.delivery_certainty == "definitely_not_sent"
+    assert client.responses.calls == []
+    assert network_calls == []
+
+
+def test_benchmark_request_bytes_provider_kwargs_and_capture_projection_are_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval import benchmark
+    from laconian_eval.benchmark import attachments
+    from laconian_eval.providers import openai as provider_openai
+
+    assert benchmark.CanonicalJSONV1Error is attachments.CanonicalJSONV1Error
+    assert benchmark.canonical_json_v1 is attachments.canonical_json_v1
+    assert benchmark.parse_canonical_json_v1 is attachments.parse_canonical_json_v1
+    assert provider_openai._canonical_json_v1 is attachments.canonical_json_v1
+
+    expected_projection = {
+        "model": "gpt-5.6-sol",
+        "instructions": "instruction",
+        "input": "prompt",
+        "max_output_tokens": 1024,
+        "store": False,
+        "reasoning": {"effort": "medium"},
+        "text": {"verbosity": "medium"},
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "service_tier": "default",
+    }
+    expected_bytes = (
+        b'{"input":"prompt","instructions":"instruction","max_output_tokens":1024,'
+        b'"model":"gpt-5.6-sol","prompt_cache_options":{"mode":"explicit","ttl":"30m"},'
+        b'"reasoning":{"effort":"medium"},"service_tier":"default","store":false,'
+        b'"text":{"verbosity":"medium"}}'
+    )
+    expected_sha256 = hashlib.sha256(expected_bytes).hexdigest()
+    assert benchmark.canonical_json_v1(expected_projection) == expected_bytes
+
+    original_builder = provider_openai._public_benchmark_responses_kwargs
+    original_canonicalizer = provider_openai._canonical_json_v1
+    original_sha256 = hashlib.sha256
+    builder_results: list[dict[str, object]] = []
+    canonicalized: list[object] = []
+    hashed: list[bytes] = []
+
+    def capture_builder(value: object) -> dict[str, object]:
+        result = original_builder(value)  # type: ignore[arg-type]
+        builder_results.append(result)
+        return result
+
+    def capture_canonical(value: object) -> bytes:
+        canonicalized.append(value)
+        return original_canonicalizer(value)
+
+    def capture_sha256(data: bytes = b"") -> Any:
+        hashed.append(data)
+        return original_sha256(data)
+
+    monkeypatch.setattr(provider_openai, "_public_benchmark_responses_kwargs", capture_builder)
+    monkeypatch.setattr(provider_openai, "_canonical_json_v1", capture_canonical)
+    monkeypatch.setattr(provider_openai.hashlib, "sha256", capture_sha256)
+    parsed = object()
+    _stub_benchmark_parser(monkeypatch, result=parsed)
+    client = StubClient(response())
+
+    assert OpenAIProvider(client=client).generate_benchmark(benchmark_request()) is parsed
+
+    assert len(builder_results) == 1
+    assert tuple(builder_results[0]) == (
+        "model",
+        "instructions",
+        "input",
+        "max_output_tokens",
+        "store",
+        "reasoning",
+        "text",
+        "prompt_cache_options",
+        "service_tier",
+    )
+    assert builder_results[0] == expected_projection
+    assert canonicalized == [builder_results[0]]
+    assert canonicalized[0] is builder_results[0]
+    assert hashed == [expected_bytes]
+    assert original_sha256(hashed[0]).hexdigest() == expected_sha256
+    assert client.responses.calls == [expected_projection]
+
+
+def test_recursive_cache_control_helper_rejects_synthetic_trees_without_widening_request_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import types
+
+    from laconian_eval.providers import openai as provider_openai
+    from laconian_eval.providers.base import PublicBenchmarkRequestV1
+
+    forbidden_keys = (
+        "prompt_cache_breakpoint",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "prompt_cache_options",
+        "prompt_cache_unknown",
+    )
+    for key in forbidden_keys:
+        for tree in (
+            {key: None},
+            {"outer": [{key: None}]},
+            {"outer": ({"middle": ({key: None},)},)},
+        ):
+            with pytest.raises(ProviderError, match="prompt_cache_") as caught:
+                provider_openai._assert_no_public_benchmark_cache_control(tree)
+            assert caught.value.kind == "configuration"
+            assert caught.value.delivery_certainty == "definitely_not_sent"
+
+    for tree in ({1: "value"}, {_StrSubclass("safe"): "value"}):
+        with pytest.raises(ProviderError, match="mapping key"):
+            provider_openai._assert_no_public_benchmark_cache_control(tree)
+
+    provider_openai._assert_no_public_benchmark_cache_control("instruction")
+    provider_openai._assert_no_public_benchmark_cache_control("prompt")
+
+    annotations = typing.get_type_hints(PublicBenchmarkRequestV1)
+    assert annotations["instructions"] == (str | None)
+    assert annotations["prompt"] is str
+    checked = benchmark_request()
+    assert type(checked.instructions) is str
+    assert type(checked.prompt) is str
+
+    parsed = object()
+    _stub_benchmark_parser(monkeypatch, result=parsed)
+    client = StubClient(response())
+    synthetic_request = benchmark_request()
+    object.__setattr__(synthetic_request, "prompt", {"safe": "value"})
+    with pytest.raises(ProviderError, match="prompt"):
+        OpenAIProvider(client=client).generate_benchmark(synthetic_request)
+    assert client.responses.calls == []
+
+    provider_openai._assert_no_public_benchmark_cache_control(
+        types.MappingProxyType({"safe": ["leaf", ("leaf",)]})
+    )
+
+
+def test_standard_tier_bound_rejects_before_client_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.providers.base import (
+        OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE,
+        OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS,
+        conservative_input_token_bound,
+    )
+
+    assert conservative_input_token_bound(instruction_utf8_bytes=2, prompt_utf8_bytes=1) == (
+        OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE + 3
+    )
+    assert len("é".encode()) == 2
+    exact_payload_bytes = (
+        OPENAI_STANDARD_TIER_MAX_INPUT_TOKENS - OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE
+    )
+    exact = benchmark_request(instructions=None, prompt="a" * exact_payload_bytes)
+    over = benchmark_request(instructions=None, prompt="a" * (exact_payload_bytes + 1))
+    parsed = object()
+    _stub_benchmark_parser(monkeypatch, result=parsed)
+
+    accepted_client = StubClient(response())
+    assert OpenAIProvider(client=accepted_client).generate_benchmark(exact) is parsed
+    assert len(accepted_client.responses.calls) == 1
+
+    rejected_client = StubClient(response())
+    with pytest.raises(ProviderError, match="272000") as caught:
+        OpenAIProvider(client=rejected_client).generate_benchmark(over)
+    assert caught.value.kind == "configuration"
+    assert caught.value.delivery_certainty == "definitely_not_sent"
+    assert rejected_client.responses.calls == []
+
+    for invalid in (True, -1):
+        with pytest.raises(ValueError, match="nonnegative"):
+            conservative_input_token_bound(
+                instruction_utf8_bytes=invalid,  # type: ignore[arg-type]
+                prompt_utf8_bytes=0,
+            )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("case_id", _StrSubclass("case-en"), "case_id"),
+        ("arm", _StrSubclass("if"), "arm"),
+        ("arm", "unknown", "arm"),
+        ("repetition", True, "repetition"),
+        ("repetition", -1, "repetition"),
+        ("requested_model_id", _StrSubclass("gpt-5.6-sol"), "requested_model_id"),
+        ("requested_model_id", "gpt-5.6-unknown", "requested_model_id"),
+        ("instructions", _StrSubclass("instruction"), "instructions"),
+        ("instructions", "\ud800", "UTF-8"),
+        ("prompt", _StrSubclass("prompt"), "prompt"),
+        ("prompt", "e\u0301", "canonical"),
+        ("prompt", "\ud800", "UTF-8"),
+        ("max_output_tokens", True, "max_output_tokens"),
+        ("max_output_tokens", 0, "max_output_tokens"),
+        ("reasoning_effort", _StrSubclass("medium"), "reasoning_effort"),
+        ("reasoning_effort", "extreme", "reasoning_effort"),
+        ("text_verbosity", _StrSubclass("medium"), "text_verbosity"),
+        ("text_verbosity", "extreme", "text_verbosity"),
+        ("timeout_seconds", True, "timeout_seconds"),
+        ("timeout_seconds", 30.0, "does not match"),
+    ],
+)
+def test_benchmark_request_validation_is_exact_and_preclient(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    client = StubClient(benchmark_response())
+    candidate = benchmark_request()
+    object.__setattr__(candidate, field, value)
+
+    with pytest.raises(ProviderError, match=message) as caught:
+        OpenAIProvider(client=client).generate_benchmark(candidate)
+
+    assert caught.value.kind == "configuration"
+    assert caught.value.delivery_certainty == "definitely_not_sent"
+    assert client.responses.calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", _StrSubclass("PublicBenchmarkRequestPolicyV1")),
+        ("reasoning_mode", _StrSubclass("omitted")),
+        ("reasoning_mode", "explicit"),
+        ("prompt_cache_mode", _StrSubclass("explicit")),
+        ("prompt_cache_mode", "auto"),
+        ("prompt_cache_ttl", _StrSubclass("30m")),
+        ("prompt_cache_ttl", "1h"),
+        ("input_token_bound_version", _StrSubclass("openai-utf8-envelope-v1")),
+        ("input_token_bound_version", "unknown"),
+        ("max_input_tokens", True),
+        ("max_input_tokens", 271999),
+    ],
+)
+def test_benchmark_policy_validation_is_exact_and_preclient(field: str, value: object) -> None:
+    from laconian_eval.providers.base import PublicBenchmarkRequestPolicyV1
+
+    policy_values: dict[str, object] = {
+        "schema_version": "PublicBenchmarkRequestPolicyV1",
+        "reasoning_mode": "omitted",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+        "service_tier": "default",
+        "input_token_bound_version": "openai-utf8-envelope-v1",
+        "max_input_tokens": 272000,
+    }
+    policy_values[field] = value
+    policy = PublicBenchmarkRequestPolicyV1.model_construct(**policy_values)
+    client = StubClient(benchmark_response())
+
+    with pytest.raises(ProviderError) as caught:
+        OpenAIProvider(client=client).generate_benchmark(benchmark_request(policy=policy))
+
+    assert caught.value.kind == "configuration"
+    assert caught.value.delivery_certainty == "definitely_not_sent"
+    assert client.responses.calls == []
+
+
+_BENCHMARK_RAW_RESPONSE_PATHS = (
+    "response.id",
+    "response.status",
+    "response.error",
+    "response.output",
+    "response.model",
+    "response.service_tier",
+    "response.prompt_cache_options.mode",
+    "response.prompt_cache_options.ttl",
+    "response.usage.input_tokens",
+    "response.usage.input_tokens_details.cached_tokens",
+    "response.usage.input_tokens_details.cache_write_tokens",
+    "response.usage.output_tokens",
+    "response.usage.output_tokens_details.reasoning_tokens",
+    "response.usage.total_tokens",
+)
+
+
+def test_openai_benchmark_response_binds_exact_raw_source_output_and_accounting() -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkResponseEvidenceV1,
+        public_benchmark_raw_response_sha256,
+    )
+
+    result = OpenAIProvider(client=StubClient(benchmark_response())).generate_benchmark(
+        benchmark_request()
+    )
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert tuple(type(result).model_fields) == (
+        "schema_version",
+        "response_id",
+        "raw_response_sha256",
+        "output_text",
+        "raw_response_source",
+        "usage",
+        "requested_model_id",
+        "returned_model_id",
+        "returned_model_source_sha256",
+        "requested_service_tier",
+        "returned_service_tier",
+        "service_tier_status",
+        "service_tier_source_sha256",
+        "applied_prompt_cache_mode",
+        "applied_prompt_cache_ttl",
+        "applied_cache_control_status",
+        "applied_cache_control_source_sha256",
+        "cache_read_source_sha256",
+        "cache_write_source_sha256",
+        "usage_source_sha256",
+        "reasoning_tokens_source_sha256",
+    )
+    assert result.response_id == "resp_123"
+    assert result.output_text == "Complete answer."
+    assert result.requested_model_id == "gpt-5.6-sol"
+    assert result.returned_model_id == "gpt-5.6-sol-2026-08-01"
+    assert result.requested_service_tier == "default"
+    assert result.returned_service_tier == "default"
+    assert result.service_tier_status == "reported_default"
+    assert result.applied_prompt_cache_mode == "explicit"
+    assert result.applied_prompt_cache_ttl == "30m"
+    assert result.applied_cache_control_status == "reported_exact"
+    assert result.usage.model_dump(mode="json") == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "total_tokens": 14,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 0,
+        "ordinary_uncached_input_tokens": 8,
+        "reasoning_tokens": 1,
+        "availability": "complete",
+        "source": "provider",
+        "cache_read_status": "reported_nonzero",
+        "cache_write_status": "reported_zero",
+        "reasoning_token_accounting": "reported",
+    }
+    source = result.raw_response_source
+    assert tuple(entry.path for entry in source.entries) == _BENCHMARK_RAW_RESPONSE_PATHS
+    assert tuple(entry.present for entry in source.entries) == (True,) * 14
+    assert tuple(entry.value for entry in source.entries) == (
+        "resp_123",
+        "completed",
+        None,
+        [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Complete answer."}],
+            }
+        ],
+        "gpt-5.6-sol-2026-08-01",
+        "default",
+        "explicit",
+        "30m",
+        10,
+        2,
+        0,
+        4,
+        1,
+        14,
+    )
+    assert result.raw_response_sha256 == public_benchmark_raw_response_sha256(source)
+    assert not hasattr(result, "output_text_source_sha256")
+    assert (
+        result.returned_model_source_sha256
+        == result.service_tier_source_sha256
+        == result.applied_cache_control_source_sha256
+        == result.cache_read_source_sha256
+        == result.cache_write_source_sha256
+        == result.usage_source_sha256
+        == result.reasoning_tokens_source_sha256
+        == result.raw_response_sha256
+    )
+
+
+def test_generate_benchmark_has_the_attempts_owned_outcome_annotation() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderOutcomeV1
+    from laconian_eval.providers.base import PublicBenchmarkRequestV1
+
+    annotations = typing.get_type_hints(OpenAIProvider.generate_benchmark)
+
+    assert annotations["request"] is PublicBenchmarkRequestV1
+    assert annotations["return"] is PublicBenchmarkProviderOutcomeV1
+
+
+def test_openai_benchmark_ignores_every_alternate_accounting_and_model_path() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    raw_usage = SimpleNamespace(
+        input_tokens=10,
+        output_tokens=4,
+        total_tokens=14,
+        input_tokens_details=SimpleNamespace(
+            cached_input_tokens=2,
+            cache_write_input_tokens=1,
+        ),
+        output_tokens_details=SimpleNamespace(reasoning_output_tokens=1),
+        cached_tokens=2,
+        cache_write_tokens=1,
+        reasoning_tokens=1,
+    )
+    response_object = benchmark_response(
+        model=_ABSENT,
+        service_tier=_ABSENT,
+        prompt_cache_options=_ABSENT,
+        usage=raw_usage,
+    )
+    response_object.response_model = "gpt-5.6-sol-alternate"
+    response_object.tier = "default"
+    response_object.applied_prompt_cache_options = SimpleNamespace(
+        mode="explicit",
+        ttl="30m",
+    )
+
+    result = OpenAIProvider(client=StubClient(response_object)).generate_benchmark(
+        benchmark_request()
+    )
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.returned_model_id is None
+    assert result.returned_service_tier is None
+    assert result.service_tier_status == "missing"
+    assert result.applied_prompt_cache_mode is None
+    assert result.applied_prompt_cache_ttl is None
+    assert result.applied_cache_control_status == "missing"
+    assert result.usage.cache_read_tokens is None
+    assert result.usage.cache_read_status == "missing"
+    assert result.usage.cache_write_tokens is None
+    assert result.usage.cache_write_status == "missing"
+    assert result.usage.reasoning_tokens is None
+    assert result.usage.reasoning_token_accounting == "not_reported"
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 4
+    assert result.usage.total_tokens == 14
+
+
+@pytest.mark.parametrize(
+    (
+        "cached_tokens",
+        "cache_write_tokens",
+        "expected_read",
+        "expected_read_status",
+        "expected_write",
+        "expected_write_status",
+        "ordinary_uncached",
+    ),
+    [
+        (0, 0, 0, "reported_zero", 0, "reported_zero", 10),
+        (2, 0, 2, "reported_nonzero", 0, "reported_zero", 8),
+        (0, 2, 0, "reported_zero", 2, "reported_nonzero", 8),
+        (2, 3, 2, "reported_nonzero", 3, "reported_nonzero", 5),
+        (_ABSENT, 0, None, "missing", 0, "reported_zero", 10),
+        (2, _ABSENT, 2, "reported_nonzero", None, "missing", 8),
+        (True, 0, None, "invalid", 0, "reported_zero", 10),
+        (-1, 0, None, "invalid", 0, "reported_zero", 10),
+        (11, 0, None, "invalid", 0, "reported_zero", 10),
+        (2, True, 2, "reported_nonzero", None, "invalid", 8),
+        (2, -1, 2, "reported_nonzero", None, "invalid", 8),
+        (2, 11, 2, "reported_nonzero", None, "invalid", 8),
+        (8, 3, None, "invalid", None, "invalid", 10),
+    ],
+)
+def test_openai_cache_read_and_cache_write_tokens_degrade_independently(
+    cached_tokens: object,
+    cache_write_tokens: object,
+    expected_read: int | None,
+    expected_read_status: str,
+    expected_write: int | None,
+    expected_write_status: str,
+    ordinary_uncached: int,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    raw_usage = benchmark_usage(
+        cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(usage=raw_usage))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+    assert result.usage.cache_read_tokens == expected_read
+    assert result.usage.cache_read_status == expected_read_status
+    assert result.usage.cache_write_tokens == expected_write
+    assert result.usage.cache_write_status == expected_write_status
+    assert result.usage.ordinary_uncached_input_tokens == ordinary_uncached
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 4
+    assert result.usage.total_tokens == 14
+    assert result.usage.reasoning_tokens == 1
+    assert result.usage.reasoning_token_accounting == "reported"
+    assert result.response_id == "resp_123"
+    assert result.requested_model_id == "gpt-5.6-sol"
+    assert result.returned_model_id == "gpt-5.6-sol-2026-08-01"
+    assert result.requested_service_tier == "default"
+    assert result.returned_service_tier == "default"
+    assert result.service_tier_status == "reported_default"
+    assert result.applied_prompt_cache_mode == "explicit"
+    assert result.applied_prompt_cache_ttl == "30m"
+    assert result.applied_cache_control_status == "reported_exact"
+
+
+@pytest.mark.parametrize(
+    ("raw_reasoning", "expected_count", "expected_accounting"),
+    [
+        (7, 7, "reported"),
+        (0, 0, "reported"),
+        (_ABSENT, None, "not_reported"),
+        (None, None, "not_reported"),
+        (-1, None, "invalid"),
+        (True, None, "invalid"),
+        (11, None, "invalid"),
+    ],
+)
+def test_openai_reasoning_tokens_preserve_valid_response_evidence(
+    raw_reasoning: object,
+    expected_count: int | None,
+    expected_accounting: str,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(
+            benchmark_response(
+                usage=benchmark_usage(
+                    output_tokens=10,
+                    reasoning_tokens=raw_reasoning,
+                    total_tokens=20,
+                )
+            )
+        )
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+    assert result.usage.output_tokens == 10
+    assert result.usage.total_tokens == 20
+    assert result.usage.reasoning_tokens == expected_count
+    assert result.usage.reasoning_token_accounting == expected_accounting
+    assert result.usage.cache_read_tokens == 2
+    assert result.usage.cache_write_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("raw_tier", "expected_tier", "expected_status"),
+    [
+        ("default", "default", "reported_default"),
+        ("priority", "priority", "mismatch"),
+        (_ABSENT, None, "missing"),
+        (None, None, "missing"),
+        ("", None, "missing"),
+        (True, None, "missing"),
+        (_sdk_node(unexpected="tree"), None, "missing"),
+        ("x" * 1025, None, "missing"),
+    ],
+)
+def test_openai_returned_service_tier_is_preserved_and_classified(
+    raw_tier: object,
+    expected_tier: str | None,
+    expected_status: str,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(service_tier=raw_tier))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+    assert result.requested_service_tier == "default"
+    assert result.returned_service_tier == expected_tier
+    assert result.service_tier_status == expected_status
+    assert result.usage.cache_read_tokens == 2
+    assert result.usage.cache_write_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "ttl", "expected_mode", "expected_ttl", "expected_status"),
+    [
+        ("explicit", "30m", "explicit", "30m", "reported_exact"),
+        ("auto", "30m", "auto", "30m", "mismatch"),
+        ("explicit", "1h", "explicit", "1h", "mismatch"),
+        (_ABSENT, "30m", None, "30m", "missing"),
+        ("explicit", _ABSENT, "explicit", None, "missing"),
+        (None, None, None, None, "missing"),
+        (True, "30m", None, "30m", "invalid"),
+        ("explicit", _sdk_node(value="bad"), "explicit", None, "invalid"),
+        ("", "30m", None, "30m", "invalid"),
+    ],
+)
+def test_openai_applied_cache_policy_is_derived_from_exact_paths(
+    mode: object,
+    ttl: object,
+    expected_mode: str | None,
+    expected_ttl: str | None,
+    expected_status: str,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    options: dict[str, object] = {}
+    if mode is not _ABSENT:
+        options["mode"] = mode
+    if ttl is not _ABSENT:
+        options["ttl"] = ttl
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(prompt_cache_options=SimpleNamespace(**options)))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+    assert result.applied_prompt_cache_mode == expected_mode
+    assert result.applied_prompt_cache_ttl == expected_ttl
+    assert result.applied_cache_control_status == expected_status
+    assert result.usage.cache_read_tokens == 2
+    assert result.usage.cache_write_tokens == 0
+
+
+def test_openai_committed_output_uses_ordered_response_output_only() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    output = [
+        _sdk_node(
+            type="message",
+            content=[
+                _sdk_node(type="output_text", text="A"),
+                _sdk_node(type="refusal", refusal="ignored"),
+                _sdk_node(type="output_text", text="B"),
+            ],
+        ),
+        _sdk_node(type="computer_call", id="ignored"),
+        _sdk_node(
+            type="message",
+            content=[
+                _sdk_node(type="input_text", text="ignored"),
+                _sdk_node(type="output_text", text="C"),
+            ],
+        ),
+    ]
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(output=output))
+    ).generate_benchmark(benchmark_request())
+    reordered = OpenAIProvider(
+        client=StubClient(benchmark_response(output=list(reversed(output))))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert type(reordered) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "ABC"
+    assert reordered.output_text == "CAB"
+    assert result.raw_response_source.entries[3].value == [
+        item.model_dump(mode="json") for item in output
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad_output",
+    [
+        _ABSENT,
+        None,
+        b"bytes",
+        True,
+        object(),
+        [],
+        [_sdk_node(content=[_sdk_node(type="output_text", text="missing message discriminator")])],
+        [_sdk_node(type="message", content=[])],
+        [_sdk_node(type=_StrSubclass("message"), content=_benchmark_output())],
+        [_sdk_node(type="message")],
+        [_sdk_node(type="message", content=b"bad")],
+        [_sdk_node(type="message", content=[_sdk_node(text="bad")])],
+        [_sdk_node(type="message", content=[_sdk_node(type="output_text")])],
+        [_sdk_node(type="message", content=[_sdk_node(type="output_text", text=b"bad")])],
+        [
+            _sdk_node(
+                type="message",
+                content=[_sdk_node(type="output_text", text=_StrSubclass("bad"))],
+            )
+        ],
+        [_sdk_node(type="message", content=[_sdk_node(type="output_text", text=" \n\t")])],
+    ],
+)
+def test_openai_malformed_or_blank_committed_output_returns_output_free_error(
+    bad_output: object,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(output=bad_output))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == "response_received"
+    assert not hasattr(result, "output_text")
+
+
+@pytest.mark.parametrize(
+    "bad_text",
+    (b"bad", _StrSubclass("bad")),
+)
+def test_openai_nonfaithful_output_projection_becomes_projection_failure(
+    bad_text: object,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(output=_benchmark_output(bad_text)))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == "response_received"
+    assert result.raw_response_source is None
+    assert result.raw_response_sha256 is None
+    assert result.response_id is None
+    assert result.returned_model_id is None
+    assert result.returned_service_tier is None
+    assert result.usage.availability == "unavailable"
+    assert not hasattr(result, "output_text")
+
+
+def test_openai_completed_output_accepts_absent_error_member() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkResponseEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(error=_ABSENT))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+
+
+def test_openai_missing_response_id_preserves_source_tier_and_usage_error_evidence() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(id=_ABSENT, service_tier="priority"))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.response_id is None
+    assert result.raw_response_source is not None
+    assert result.returned_service_tier == "priority"
+    assert result.service_tier_status == "mismatch"
+    assert result.usage.availability == "complete"
+
+
+def test_openai_output_bound_and_ephemeral_exact_text_are_enforced() -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        PublicBenchmarkResponseEvidenceV1,
+    )
+    from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
+
+    accepted_text = "A\x00e\u0301"
+    accepted = OpenAIProvider(
+        client=StubClient(benchmark_response(output=_benchmark_output(accepted_text)))
+    ).generate_benchmark(benchmark_request())
+    over_limit = "x" * (RESOURCE_LIMITS_V1.output_utf8_bytes + 1)
+    rejected = OpenAIProvider(
+        client=StubClient(benchmark_response(output=_benchmark_output(over_limit)))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(accepted) is PublicBenchmarkResponseEvidenceV1
+    assert accepted.output_text == accepted_text
+    assert type(rejected) is PublicBenchmarkProviderErrorEvidenceV1
+    assert not hasattr(rejected, "output_text")
+
+
+def test_raw_response_source_projection_distinguishes_missing_null_and_sdk_models() -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkResponseEvidenceV1,
+        public_benchmark_raw_response_sha256,
+    )
+
+    error_model = _sdk_node(code="synthetic", message="bound")
+    response_object = benchmark_response(error=error_model, service_tier=_ABSENT)
+    response_object.status = "failed"
+    result = OpenAIProvider(client=StubClient(response_object)).generate_benchmark(
+        benchmark_request()
+    )
+
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert type(result) is not PublicBenchmarkResponseEvidenceV1
+    assert result.raw_response_source is not None
+    entries = result.raw_response_source.entries
+    assert entries[2].present is True
+    assert entries[2].value == {"code": "synthetic", "message": "bound"}
+    assert entries[5].present is False
+    assert entries[5].value is None
+    assert result.raw_response_sha256 == public_benchmark_raw_response_sha256(
+        result.raw_response_source
+    )
+
+
+def test_unrepresentable_raw_response_projection_returns_closed_error_evidence() -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        public_benchmark_provider_error_source_sha256,
+    )
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(service_tier=object()))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == "response_received"
+    assert result.response_id is None
+    assert result.raw_response_source is None
+    assert result.raw_response_sha256 is None
+    assert result.returned_model_id is None
+    assert result.returned_service_tier is None
+    assert result.service_tier_status == "missing"
+    assert result.applied_prompt_cache_mode is None
+    assert result.applied_prompt_cache_ttl is None
+    assert result.applied_cache_control_status == "invalid"
+    assert result.usage.availability == "unavailable"
+    assert result.usage.cache_read_status == "invalid"
+    assert result.usage.cache_write_status == "invalid"
+    assert result.usage.reasoning_token_accounting == "invalid"
+    assert result.error_source_sha256 == public_benchmark_provider_error_source_sha256(result)
+    assert (
+        result.returned_model_source_sha256
+        == result.service_tier_source_sha256
+        == result.applied_cache_control_source_sha256
+        == result.cache_read_source_sha256
+        == result.cache_write_source_sha256
+        == result.usage_source_sha256
+        == result.reasoning_tokens_source_sha256
+        == result.error_source_sha256
+    )
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    [
+        "unsupported",
+        "nonfinite",
+        "nonstring-key",
+        "cycle",
+        "model-dump",
+        "too-deep",
+        "over-bound",
+    ],
+)
+def test_raw_response_projection_failures_never_retain_partial_source_or_output(
+    failure_kind: str,
+) -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+    from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
+
+    if failure_kind == "unsupported":
+        bad_value: object = object()
+    elif failure_kind == "nonfinite":
+        bad_value = float("nan")
+    elif failure_kind == "nonstring-key":
+        bad_value = {1: "not canonical"}
+    elif failure_kind == "cycle":
+        cycle: list[object] = []
+        cycle.append(cycle)
+        bad_value = cycle
+    elif failure_kind == "model-dump":
+        bad_value = _sdk_node(value=object())
+    elif failure_kind == "too-deep":
+        nested: object = "leaf"
+        for _ in range(RESOURCE_LIMITS_V1.nesting_depth + 2):
+            nested = [nested]
+        bad_value = nested
+    else:
+        bad_value = "x" * (RESOURCE_LIMITS_V1.raw_jsonl_row_bytes + 1)
+
+    result = OpenAIProvider(
+        client=StubClient(benchmark_response(service_tier=bad_value))
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == "response_received"
+    assert result.provider_request_id == "req_123"
+    assert result.raw_response_source is None
+    assert result.raw_response_sha256 is None
+    assert result.response_id is None
+    assert result.returned_model_id is None
+    assert result.returned_service_tier is None
+    assert result.usage.availability == "unavailable"
+    assert result.usage.cache_read_status == "invalid"
+    assert result.usage.cache_write_status == "invalid"
+    assert result.usage.reasoning_token_accounting == "invalid"
+    assert not hasattr(result, "output_text")
+
+
+@pytest.mark.parametrize("projection_failure", [False, True])
+def test_benchmark_response_request_id_accessor_failure_is_fail_closed(
+    projection_failure: bool,
+) -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        PublicBenchmarkResponseEvidenceV1,
+    )
+
+    class RequestIdTrapResponse(_BenchmarkResponse):
+        @property
+        def _request_id(self) -> object:
+            raise RuntimeError("request ID accessor failed")
+
+    values = dict(benchmark_response().__dict__)
+    values.pop("_request_id")
+    if projection_failure:
+        values["service_tier"] = object()
+    response_object = RequestIdTrapResponse(**values)
+
+    result = OpenAIProvider(client=StubClient(response_object)).generate_benchmark(
+        benchmark_request()
+    )
+
+    if projection_failure:
+        assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+        assert result.delivery_certainty == "response_received"
+        assert result.provider_request_id is None
+        assert result.raw_response_source is None
+    else:
+        assert type(result) is PublicBenchmarkResponseEvidenceV1
+        assert result.response_id == "resp_123"
+
+
+@pytest.mark.parametrize(
+    ("error_name", "status", "expected_delivery", "expected_not_applicable"),
+    [
+        (
+            "RateLimitError",
+            429,
+            "definitely_rejected",
+            "not_applicable_definitely_rejected",
+        ),
+        (
+            "AuthenticationError",
+            401,
+            "definitely_rejected",
+            "not_applicable_definitely_rejected",
+        ),
+        ("APITimeoutError", None, "unknown", "missing"),
+    ],
+)
+def test_benchmark_sdk_errors_return_source_bound_no_response_evidence(
+    error_name: str,
+    status: int | None,
+    expected_delivery: str,
+    expected_not_applicable: str,
+) -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        public_benchmark_provider_error_source_sha256,
+    )
+
+    exception = sdk_error_type(error_name)("provider-controlled diagnostic")
+    if status is not None:
+        exception.status_code = status  # type: ignore[attr-defined]
+    exception.request_id = "req-safe"  # type: ignore[attr-defined]
+
+    result = OpenAIProvider(client=StubClient(exception)).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == expected_delivery
+    assert result.provider_request_id == "req-safe"
+    assert result.response_id is None
+    assert result.raw_response_source is None
+    assert result.raw_response_sha256 is None
+    assert result.structured_status == status
+    assert result.returned_service_tier is None
+    assert result.service_tier_status == expected_not_applicable
+    assert result.applied_cache_control_status == expected_not_applicable
+    assert result.usage.availability == "unavailable"
+    assert result.usage.cache_read_status == expected_not_applicable
+    assert result.usage.cache_write_status == expected_not_applicable
+    assert result.error_source_sha256 == public_benchmark_provider_error_source_sha256(result)
+
+
+def test_invalid_completed_output_preserves_safe_tier_model_usage_and_common_raw_source() -> None:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderErrorEvidenceV1
+
+    result = OpenAIProvider(
+        client=StubClient(
+            benchmark_response(
+                output=[],
+                service_tier="priority",
+                model="gpt-5.6-sol-other",
+            )
+        )
+    ).generate_benchmark(benchmark_request())
+
+    assert type(result) is PublicBenchmarkProviderErrorEvidenceV1
+    assert result.delivery_certainty == "response_received"
+    assert result.response_id == "resp_123"
+    assert result.returned_model_id == "gpt-5.6-sol-other"
+    assert result.returned_service_tier == "priority"
+    assert result.service_tier_status == "mismatch"
+    assert result.usage.input_tokens == 10
+    assert result.usage.cache_read_tokens == 2
+    assert result.usage.cache_write_tokens == 0
+    assert result.raw_response_source is not None
+    assert (
+        result.returned_model_source_sha256
+        == result.service_tier_source_sha256
+        == result.applied_cache_control_source_sha256
+        == result.cache_read_source_sha256
+        == result.cache_write_source_sha256
+        == result.usage_source_sha256
+        == result.reasoning_tokens_source_sha256
+        == result.raw_response_sha256
+    )
 
 
 def test_injected_client_uses_exact_responses_contract_and_maps_public_fields(

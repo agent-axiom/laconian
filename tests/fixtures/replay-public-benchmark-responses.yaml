@@ -1,0 +1,49 @@
+description: Synthetic strict public-benchmark replay evidence; not a live benchmark result.
+case-en:if:0:
+  requested_model_id: gpt-5.6-sol
+  response:
+    id: replay-benchmark-response-1
+    status: completed
+    error: null
+    output:
+      - type: message
+        content:
+          - type: output_text
+            text: Done.
+    model: gpt-5.6-sol-2026-08-07
+    service_tier: default
+    prompt_cache_options:
+      mode: explicit
+      ttl: 30m
+    usage:
+      input_tokens: 10
+      input_tokens_details:
+        cached_tokens: 0
+        cache_write_tokens: 0
+      output_tokens: 5
+      output_tokens_details:
+        reasoning_tokens: 2
+      total_tokens: 15
+case-en:baseline:0:
+  requested_model_id: gpt-5.6-sol
+  response:
+    id: replay-benchmark-response-2
+    status: failed
+    error:
+      code: synthetic_failure
+      message: Synthetic benchmark replay failure.
+    output: []
+    model: gpt-5.6-sol-2026-08-07
+    service_tier: default
+    prompt_cache_options:
+      mode: explicit
+      ttl: 30m
+    usage:
+      input_tokens: 7
+      input_tokens_details:
+        cached_tokens: 0
+        cache_write_tokens: 0
+      output_tokens: 0
+      output_tokens_details:
+        reasoning_tokens: 0
+      total_tokens: 7

@@ -66,6 +66,38 @@ DeliveryCertainty: TypeAlias = Literal[
     "response_received",
     "unknown",
 ]
+ReasoningTokenAccounting: TypeAlias = Literal["reported", "not_reported", "invalid"]
+ServiceTierStatus: TypeAlias = Literal[
+    "reported_default",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "mismatch",
+]
+AppliedCacheControlStatus: TypeAlias = Literal[
+    "reported_exact",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "mismatch",
+    "invalid",
+]
+CacheReadStatus: TypeAlias = Literal[
+    "reported_zero",
+    "reported_nonzero",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "invalid",
+]
+CacheWriteStatus: TypeAlias = Literal[
+    "reported_zero",
+    "reported_nonzero",
+    "not_applicable_definitely_not_sent",
+    "not_applicable_definitely_rejected",
+    "missing",
+    "invalid",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,12 +113,57 @@ class GenerationRequest:
     timeout_seconds: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class TokenUsage:
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    cached_input_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    reasoning_token_accounting: ReasoningTokenAccounting = "not_reported"
+
+    def __init__(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        cached_input_tokens: int | None = None,
+        *,
+        cache_read_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        reasoning_token_accounting: ReasoningTokenAccounting = "not_reported",
+    ) -> None:
+        """Keep the legacy fourth argument while exposing benchmark accounting."""
+
+        if (
+            cached_input_tokens is not None
+            and cache_read_tokens is not None
+            and cached_input_tokens != cache_read_tokens
+        ):
+            raise ValueError("conflicting cache-read token counts")
+        object.__setattr__(self, "input_tokens", input_tokens)
+        object.__setattr__(self, "output_tokens", output_tokens)
+        object.__setattr__(self, "total_tokens", total_tokens)
+        object.__setattr__(
+            self,
+            "cache_read_tokens",
+            cache_read_tokens if cache_read_tokens is not None else cached_input_tokens,
+        )
+        object.__setattr__(self, "cache_write_tokens", cache_write_tokens)
+        object.__setattr__(self, "reasoning_tokens", reasoning_tokens)
+        object.__setattr__(
+            self,
+            "reasoning_token_accounting",
+            reasoning_token_accounting,
+        )
+
+    @property
+    def cached_input_tokens(self) -> int | None:
+        """Legacy read-only spelling retained for runner and report compatibility."""
+
+        return self.cache_read_tokens
 
 
 @dataclass(frozen=True, slots=True)
