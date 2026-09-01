@@ -19,7 +19,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, NoReturn, TypeVar, cast
 from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ValidationError
@@ -97,7 +97,13 @@ from laconian_eval.capsule.record_models import (
     VerifyResultV1,
 )
 from laconian_eval.capsule.schema import validate_relative_posix_path
-from laconian_eval.capsule.seal_models import SealFileV1
+from laconian_eval.capsule.seal_models import (
+    SealFileV1,
+    SealModelError,
+    SealV1,
+    derive_seal_v1,
+    seal_bytes,
+)
 from laconian_eval.capsule.sharding import (
     ShardPlanError,
     materialize_shard_projection,
@@ -141,6 +147,7 @@ class _Inventory:
     root_identity: _Identity
     directories: dict[str, _Identity]
     files: dict[str, _Identity]
+    ignored_lock_identity: _Identity | None = field(default=None, compare=False, repr=False)
 
 
 def _strict_inventory(value: object) -> _Inventory:
@@ -176,6 +183,9 @@ def _strict_inventory(value: object) -> _Inventory:
         strict_identity(value.root_identity),
         strict_entries(value.directories),
         strict_entries(value.files),
+        None
+        if value.ignored_lock_identity is None
+        else strict_identity(value.ignored_lock_identity),
     )
 
 
@@ -1432,7 +1442,21 @@ def _close_owned(
     return primary
 
 
-def _scan_inventory(root_fd: int) -> _Inventory:
+def _scan_inventory(
+    root_fd: int,
+    *,
+    require_lock: bool = True,
+    ignore_lock: bool = False,
+    expected_inventory: _Inventory | None = None,
+) -> _Inventory:
+    if (
+        type(require_lock) is not bool
+        or type(ignore_lock) is not bool
+        or (require_lock and ignore_lock)
+    ):
+        raise _Failure("invalid_model", None)
+    if expected_inventory is not None:
+        expected_inventory = _strict_inventory(expected_inventory)
     try:
         root_before = _identity(os.fstat(root_fd))
     except OSError:
@@ -1442,8 +1466,17 @@ def _scan_inventory(root_fd: int) -> _Inventory:
     directories: dict[str, _Identity] = {}
     files: dict[str, _Identity] = {}
     structural: tuple[bytes, _Failure] | None = None
+    proven_movement: tuple[bytes, _Failure] | None = None
     teardown: BaseException | None = None
     entry_count = 0
+    ignored_lock_identity: _Identity | None = None
+
+    def note_movement(path: str | None) -> None:
+        nonlocal proven_movement
+        key = path.encode("utf-8") if path is not None else b"\xff"
+        failure = _Failure("unstable_snapshot", path)
+        if proven_movement is None or key < proven_movement[0]:
+            proven_movement = (key, failure)
 
     def note_structure(failure: _Failure, *, sort_path: str | None = None) -> None:
         nonlocal structural
@@ -1451,9 +1484,20 @@ def _scan_inventory(root_fd: int) -> _Inventory:
         key = selected_path.encode("utf-8") if selected_path is not None else b"\xff"
         if structural is None or key < structural[0]:
             structural = (key, failure)
+        if expected_inventory is not None and failure.code in {
+            "missing_path",
+            "unexpected_path",
+            "unsafe_path_type",
+            "resource_limit",
+            "unstable_snapshot",
+        }:
+            note_movement(failure.path)
+
+    if expected_inventory is not None and root_before != expected_inventory.root_identity:
+        note_movement(None)
 
     def walk(directory_fd: int, prefix: str) -> None:
-        nonlocal entry_count, teardown
+        nonlocal entry_count, ignored_lock_identity, teardown
         normalized: list[tuple[bytes, str, Any]] = []
         try:
             with os.scandir(directory_fd) as iterator:
@@ -1474,6 +1518,20 @@ def _scan_inventory(root_fd: int) -> _Inventory:
         except _Failure:
             raise
         except OSError:
+            if expected_inventory is not None:
+                try:
+                    opened_directory = _identity(os.fstat(directory_fd))
+                except OSError:
+                    opened_directory = None
+                expected_directory = (
+                    expected_inventory.root_identity
+                    if not prefix
+                    else expected_inventory.directories.get(prefix)
+                )
+                if opened_directory is not None and opened_directory != expected_directory:
+                    note_movement(prefix or None)
+                if proven_movement is not None:
+                    raise proven_movement[1] from None
             raise _Failure("io_error", prefix or None) from None
         for _encoded, raw_name, entry in sorted(normalized, key=lambda item: item[0]):
             try:
@@ -1487,9 +1545,49 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                 continue
             try:
                 current = _identity(entry.stat(follow_symlinks=False))
-            except OSError:
-                note_structure(_Failure("io_error", relative))
+            except OSError as error:
+                code = (
+                    "unstable_snapshot"
+                    if expected_inventory is not None
+                    and error.errno
+                    in {
+                        errno.ENOENT,
+                        errno.ELOOP,
+                        errno.ENOTDIR,
+                        getattr(errno, "ESTALE", -1),
+                    }
+                    else "io_error"
+                )
+                note_structure(_Failure(code, relative))
                 continue
+            if ignore_lock and relative == ".laconian.lock":
+                if not stat.S_ISREG(current.mode):
+                    note_structure(_Failure("unsafe_path_type", relative))
+                else:
+                    ignored_lock_identity = current
+                continue
+            if expected_inventory is not None:
+                expected_identity = expected_inventory.directories.get(relative)
+                if expected_identity is None:
+                    expected_identity = expected_inventory.files.get(relative)
+                if current != expected_identity:
+                    # Record the changed ancestor before descent so a consequent EACCES/EPERM/EIO
+                    # cannot mask movement.  If the same inode and file type remains, continue the
+                    # scan to identify a more precise changed descendant.
+                    note_movement(relative)
+                    if expected_identity is None:
+                        note_structure(_Failure("unstable_snapshot", relative))
+                        continue
+                    if (
+                        current.device,
+                        current.inode,
+                        stat.S_IFMT(current.mode),
+                    ) != (
+                        expected_identity.device,
+                        expected_identity.inode,
+                        stat.S_IFMT(expected_identity.mode),
+                    ):
+                        continue
             if stat.S_ISLNK(current.mode):
                 note_structure(_Failure("unsafe_path_type", relative))
                 continue
@@ -1506,7 +1604,11 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                 try:
                     child_fd = os.open(name, _directory_flags(), dir_fd=directory_fd)
                     opened = _identity(os.fstat(child_fd))
-                    if not stat.S_ISDIR(opened.mode) or not _same_leaf(current, opened):
+                    if (
+                        not stat.S_ISDIR(opened.mode)
+                        or not _same_leaf(current, opened)
+                        or (expected_inventory is not None and opened != current)
+                    ):
                         raise _Failure("unstable_snapshot", relative)
                     directories[relative] = opened
                     walk(child_fd, relative)
@@ -1514,7 +1616,11 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                     path_after = _identity(
                         os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     )
-                    if opened != after or not _same_leaf(opened, path_after):
+                    if (
+                        opened != after
+                        or not _same_leaf(opened, path_after)
+                        or (expected_inventory is not None and path_after != opened)
+                    ):
                         raise _Failure("unstable_snapshot", relative)
                 except BaseException as error:
                     operation_error = error
@@ -1523,6 +1629,29 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                     close_error = _close_owned(child_fd, path=relative)
                 if operation_error is not None:
                     if isinstance(operation_error, OSError):
+                        if expected_inventory is not None:
+                            try:
+                                path_identity = _identity(
+                                    os.stat(
+                                        name,
+                                        dir_fd=directory_fd,
+                                        follow_symlinks=False,
+                                    )
+                                )
+                            except OSError as probe_error:
+                                path_identity = None
+                                if probe_error.errno in {
+                                    errno.ENOENT,
+                                    errno.ELOOP,
+                                    errno.ENOTDIR,
+                                    getattr(errno, "ESTALE", -1),
+                                }:
+                                    note_movement(relative)
+                            expected_directory = expected_inventory.directories.get(relative)
+                            if path_identity is not None and path_identity != expected_directory:
+                                note_movement(relative)
+                            if proven_movement is not None:
+                                raise proven_movement[1] from None
                         code = (
                             "unsafe_path_type"
                             if operation_error.errno in {errno.ELOOP, errno.ENOTDIR}
@@ -1530,6 +1659,11 @@ def _scan_inventory(root_fd: int) -> _Inventory:
                         )
                         raise _Failure(code, relative) from None
                     if isinstance(operation_error, _Failure):
+                        if expected_inventory is not None:
+                            if operation_error.code == "unstable_snapshot":
+                                note_movement(operation_error.path)
+                            if proven_movement is not None:
+                                raise proven_movement[1] from None
                         raise operation_error
                     raise operation_error
                 if teardown is None and close_error is not None:
@@ -1543,22 +1677,55 @@ def _scan_inventory(root_fd: int) -> _Inventory:
             else:
                 note_structure(_Failure("unsafe_path_type", relative))
 
-    walk(root_fd, "")
-    for path in _REQUIRED_FILES - files.keys():
+    try:
+        walk(root_fd, "")
+    except _Failure as failure:
+        if expected_inventory is not None:
+            if failure.code in {"resource_limit", "unstable_snapshot"}:
+                note_movement(failure.path)
+            if proven_movement is not None:
+                raise proven_movement[1] from None
+        raise
+    required_files = _REQUIRED_FILES if require_lock else _REQUIRED_FILES - {".laconian.lock"}
+    for path in required_files - files.keys():
         note_structure(_Failure("missing_path", path))
     for path in _REQUIRED_DIRECTORIES - set(directories):
         note_structure(_Failure("missing_path", path))
     if structural is not None:
-        raise structural[1]
+        structural_failure = structural[1]
+        if (
+            expected_inventory is not None
+            and structural_failure.code == "io_error"
+            and proven_movement is not None
+        ):
+            raise proven_movement[1]
+        if expected_inventory is not None and structural_failure.code in {
+            "missing_path",
+            "unexpected_path",
+            "unsafe_path_type",
+            "resource_limit",
+        }:
+            raise _Failure("unstable_snapshot", structural_failure.path) from None
+        raise structural_failure
     if teardown is not None:
+        if expected_inventory is not None and proven_movement is not None:
+            raise proven_movement[1]
         raise teardown
     try:
         root_after = _identity(os.fstat(root_fd))
     except OSError:
+        if proven_movement is not None:
+            raise proven_movement[1] from None
         raise _Failure("io_error", None) from None
     if root_before != root_after:
         raise _Failure("unstable_snapshot", None)
-    return _Inventory(root_before, directories, files)
+    current_inventory = _Inventory(root_before, directories, files, ignored_lock_identity)
+    if expected_inventory is not None and current_inventory != expected_inventory:
+        raise _Failure(
+            "unstable_snapshot",
+            _inventory_difference_path(expected_inventory, current_inventory),
+        )
+    return current_inventory
 
 
 def _open_parent(
@@ -1698,6 +1865,91 @@ def _read_file(
         raise primary
     assert captured is not None
     return captured
+
+
+def _verify_file_exact(
+    root_fd: int,
+    path: str,
+    expected_identity: _Identity,
+    inventory: _Inventory,
+    teardown_errors: list[_Failure],
+    expected_bytes: bytes,
+    *,
+    mismatch_code: str,
+) -> None:
+    """Compare one regular file to trusted bytes without materializing attacker-sized input."""
+
+    if type(expected_bytes) is not bytes or mismatch_code not in {
+        "seal_mismatch",
+        "unstable_snapshot",
+    }:
+        raise _Failure("invalid_model", None)
+    parent_fd: int | None = None
+    descriptor: int | None = None
+    primary: BaseException | None = None
+    try:
+        parent_fd, name = _open_parent(root_fd, path, inventory, teardown_errors)
+        path_before = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        descriptor = os.open(name, _file_flags(), dir_fd=parent_fd)
+        before = _identity(os.fstat(descriptor))
+        if before != expected_identity or not _same_leaf(path_before, before):
+            raise _Failure("unstable_snapshot", path)
+        if not stat.S_ISREG(before.mode):
+            raise _Failure("unsafe_path_type", path)
+        offset = 0
+        matches = before.size == len(expected_bytes)
+        while offset < len(expected_bytes):
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK, len(expected_bytes) - offset))
+            except InterruptedError:
+                continue
+            if not chunk:
+                matches = False
+                break
+            if chunk != expected_bytes[offset : offset + len(chunk)]:
+                matches = False
+            offset += len(chunk)
+        if offset == len(expected_bytes):
+            while True:
+                try:
+                    extra = os.read(descriptor, 1)
+                    break
+                except InterruptedError:
+                    continue
+            if extra:
+                matches = False
+        after = _identity(os.fstat(descriptor))
+        path_after = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if before != after or not _same_leaf(after, path_after):
+            raise _Failure("unstable_snapshot", path)
+        if not matches:
+            raise _Failure(mismatch_code, path)
+    except BaseException as error:
+        primary = error
+    if descriptor is not None:
+        close_error = _close_owned(descriptor, path=path, primary=primary)
+        if primary is None and isinstance(close_error, _Failure):
+            teardown_errors.append(close_error)
+    if parent_fd is not None:
+        close_error = _close_owned(parent_fd, path=path, primary=primary)
+        if primary is None and isinstance(close_error, _Failure):
+            teardown_errors.append(close_error)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise primary
+        if isinstance(primary, OSError):
+            if primary.errno in {
+                errno.ENOENT,
+                errno.ELOOP,
+                errno.ENOTDIR,
+                getattr(errno, "ESTALE", -1),
+            }:
+                raise _Failure("unstable_snapshot", path) from None
+            code = (
+                "unsafe_path_type" if primary.errno in {errno.ELOOP, errno.ENOTDIR} else "io_error"
+            )
+            raise _Failure(code, path) from None
+        raise primary
 
 
 def _hash_inventory_file(
@@ -2424,8 +2676,11 @@ def _exact_tree(
     manifest: ResolvedManifestV2 | None = None,
     *,
     allow_finalization_artifacts: bool = False,
+    allow_omitted_lock: bool = False,
 ) -> None:
     expected_files = set(_REQUIRED_FILES)
+    if allow_omitted_lock and ".laconian.lock" not in inventory.files:
+        expected_files.discard(".laconian.lock")
     expected_files.update(record.capsule_path for record in index.files)
     if allow_finalization_artifacts:
         expected_files.update(_finalization_artifact_paths(inventory))
@@ -2468,9 +2723,9 @@ def _validate_finalization_artifacts(
             raise _Failure("seal_mismatch", artifacts[0])
         return
     expected_temporary = f".seal.{request.payload.seal_transaction_id}.tmp"
-    if len(temporaries) > 1 or (temporaries and temporaries != (expected_temporary,)):
-        first = temporaries[0] if temporaries else _SEAL_PATH
-        raise _Failure("seal_mismatch", first)
+    invalid_temporaries = tuple(path for path in temporaries if path != expected_temporary)
+    if invalid_temporaries:
+        raise _Failure("seal_mismatch", invalid_temporaries[0])
     if seal_present and request.payload.prior_event_sequence != request.sequence - 1:
         raise _Failure("seal_mismatch", _SEAL_PATH)
 
@@ -2946,6 +3201,38 @@ def _valid_result(
     )
 
 
+def _valid_sealed_result(
+    context: _VerifiedCapsuleContext,
+    seal: SealV1,
+    exact_seal_bytes: bytes,
+    *,
+    inventory: _Inventory,
+) -> VerifyResultV1:
+    """Project one fully rederived seal into the public verification result."""
+
+    inventory = _strict_inventory(inventory)
+    lock_omitted = (
+        ".laconian.lock" not in inventory.files and inventory.ignored_lock_identity is None
+    )
+    state = "SEALED_COMPLETE" if seal.generation_status == "complete" else "SEALED_BLOCKED"
+    return VerifyResultV1.model_validate(
+        {
+            "schema_version": "1",
+            "status": "valid",
+            "run_id": context.capsule.run_id,
+            "state": state,
+            "capsule_sha256": sha256_bytes(exact_seal_bytes),
+            "missing_plan_item_ids": seal.missing_plan_item_ids,
+            "operational_blocker_codes": seal.operational_blocker_codes,
+            "warnings": (
+                *context.warnings,
+                *(("lock_file_omitted_for_sealed_transport",) if lock_omitted else ()),
+            ),
+            "first_error": None,
+        }
+    )
+
+
 def _verify_capsule_context_descriptors_with_journal_policy(
     root_fd: int,
     inventory: _Inventory,
@@ -2953,10 +3240,18 @@ def _verify_capsule_context_descriptors_with_journal_policy(
     tail_policy: TailPolicy = "reject",
     reserved_operation_id: UUID | None = None,
     allow_finalization_artifacts: bool = False,
+    allow_omitted_lock: bool = False,
+    defer_finalization_artifact_validation: bool = False,
 ) -> _VerifiedCapsuleContext:
     """Validate one already-owned descriptor snapshot without acquiring any lock."""
 
-    if type(allow_finalization_artifacts) is not bool:
+    if (
+        type(allow_finalization_artifacts) is not bool
+        or type(allow_omitted_lock) is not bool
+        or type(defer_finalization_artifact_validation) is not bool
+        or (allow_omitted_lock and not allow_finalization_artifacts)
+        or (defer_finalization_artifact_validation and not allow_finalization_artifacts)
+    ):
         raise _Failure("invalid_model", None)
     inventory = _strict_inventory(inventory)
     teardown_errors: list[_Failure] = []
@@ -3038,6 +3333,7 @@ def _verify_capsule_context_descriptors_with_journal_policy(
             input_index,
             manifest,
             allow_finalization_artifacts=allow_finalization_artifacts,
+            allow_omitted_lock=allow_omitted_lock,
         )
     if manifest is not None and input_index is not None:
         try:
@@ -3226,7 +3522,7 @@ def _verify_capsule_context_descriptors_with_journal_policy(
         raw_expected.ctime_ns,
     ):
         raise _Failure("unstable_snapshot", "events.jsonl")
-    if allow_finalization_artifacts:
+    if allow_finalization_artifacts and not defer_finalization_artifact_validation:
         _validate_finalization_artifacts(inventory, journals.history)
     if teardown_errors:
         raise teardown_errors[0]
@@ -3406,6 +3702,22 @@ def _check_lock_identity(root_fd: int, descriptor: int) -> None:
         raise _Failure("unstable_snapshot", ".laconian.lock")
 
 
+def _top_level_entry_identity(root_fd: int, name: str) -> _Identity | None:
+    """Probe only one no-follow top-level name without recursively inspecting the capsule."""
+
+    try:
+        return _identity(os.stat(name, dir_fd=root_fd, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        code = "unsafe_path_type" if error.errno in {errno.ELOOP, errno.ENOTDIR} else "io_error"
+        raise _Failure(code, name) from None
+
+
+def _top_level_entry_present(root_fd: int, name: str) -> bool:
+    return _top_level_entry_identity(root_fd, name) is not None
+
+
 def _check_public_root_identity(
     path: Path,
     parent_fd: int,
@@ -3461,6 +3773,243 @@ def _verify_core(root_fd: int) -> VerifyResultV1:
     if final_inventory != inventory:
         raise _Failure("unstable_snapshot", None)
     return _valid_result(context, final_inventory)
+
+
+def _check_sealed_artifact_alias(inventory: _Inventory, artifact_path: str) -> None:
+    """Reject one finalization artifact sharing a leaf with any preseal member."""
+
+    if type(artifact_path) is not str or artifact_path not in _finalization_artifact_paths(
+        inventory
+    ):
+        raise _Failure("invalid_model", None)
+
+    preseal_leaves = {
+        (identity.device, identity.inode)
+        for path, identity in inventory.files.items()
+        if not _is_finalization_artifact(path)
+    }
+    if inventory.ignored_lock_identity is not None:
+        preseal_leaves.add(
+            (
+                inventory.ignored_lock_identity.device,
+                inventory.ignored_lock_identity.inode,
+            )
+        )
+    artifact_identity = inventory.files[artifact_path]
+    if (artifact_identity.device, artifact_identity.inode) in preseal_leaves:
+        raise _Failure("seal_mismatch", artifact_path)
+
+
+def _inventory_difference_path(expected: _Inventory, actual: _Inventory) -> str | None:
+    """Return the first UTF-8 path whose exact kind or identity changed."""
+
+    paths = (
+        set(expected.directories)
+        | set(expected.files)
+        | set(actual.directories)
+        | set(actual.files)
+    )
+    changed: list[str] = []
+    for path in paths:
+        expected_entry = (
+            ("directory", expected.directories[path])
+            if path in expected.directories
+            else ("file", expected.files.get(path))
+        )
+        actual_entry = (
+            ("directory", actual.directories[path])
+            if path in actual.directories
+            else ("file", actual.files.get(path))
+        )
+        if expected_entry != actual_entry:
+            changed.append(path)
+    shared_directories = set(expected.directories) & set(actual.directories)
+    precise = [
+        path
+        for path in changed
+        if path not in shared_directories
+        or not any(other.startswith(f"{path}/") for other in changed)
+    ]
+    candidates = precise or changed
+    return min(candidates, key=lambda item: item.encode("utf-8")) if candidates else None
+
+
+def _raise_sealed_stage_failure_after_rescan(
+    root_fd: int,
+    inventory: _Inventory,
+    failure: _Failure,
+    *,
+    allow_omitted_lock: bool,
+    ignore_lock: bool,
+) -> NoReturn:
+    """Prefer proven sealed-snapshot movement over a raced stage error."""
+
+    if failure.code == "unstable_snapshot":
+        raise failure
+    try:
+        current = _scan_inventory(
+            root_fd,
+            require_lock=not allow_omitted_lock,
+            ignore_lock=ignore_lock,
+            expected_inventory=inventory,
+        )
+    except _Failure as audit_failure:
+        if audit_failure.code == "unstable_snapshot":
+            raise audit_failure from None
+        # Diagnostic EIO cannot prove movement and must not overwrite the primary failure.
+        raise failure from None
+    if current != inventory:
+        raise _Failure(
+            "unstable_snapshot",
+            _inventory_difference_path(inventory, current),
+        ) from None
+    raise failure
+
+
+def _verify_sealed_core(
+    root_fd: int,
+    *,
+    inventory: _Inventory | None = None,
+    allow_omitted_lock: bool = False,
+    ignore_lock: bool = False,
+    selected_seal_identity: _Identity | None = None,
+) -> VerifyResultV1:
+    """Verify one exact sealed snapshot without trusting any field from the seal."""
+
+    if (
+        any(type(value) is not bool for value in (allow_omitted_lock, ignore_lock))
+        or (ignore_lock and not allow_omitted_lock)
+        or (selected_seal_identity is not None and type(selected_seal_identity) is not _Identity)
+    ):
+        raise _Failure("invalid_model", None)
+    if inventory is None:
+        try:
+            inventory = _scan_inventory(
+                root_fd,
+                require_lock=not allow_omitted_lock,
+                ignore_lock=ignore_lock,
+            )
+        except _Failure as failure:
+            if (
+                selected_seal_identity is not None
+                and stat.S_ISREG(selected_seal_identity.mode)
+                and failure.path == _SEAL_PATH
+                and failure.code
+                in {"missing_path", "unexpected_path", "unsafe_path_type", "io_error"}
+            ):
+                try:
+                    current_seal_identity = _top_level_entry_identity(root_fd, _SEAL_PATH)
+                except _Failure as probe_failure:
+                    if probe_failure.code == "io_error":
+                        raise probe_failure from None
+                    raise failure from None
+                if current_seal_identity != selected_seal_identity:
+                    raise _Failure("unstable_snapshot", _SEAL_PATH) from None
+            raise
+    teardown_errors: list[_Failure] = []
+    try:
+        seal_identity = inventory.files.get(_SEAL_PATH)
+        if selected_seal_identity is not None and seal_identity != selected_seal_identity:
+            raise _Failure("unstable_snapshot", _SEAL_PATH)
+        if seal_identity is None:
+            raise _Failure("seal_mismatch", _SEAL_PATH)
+        context = _verify_capsule_context_descriptors_with_journal_policy(
+            root_fd,
+            inventory,
+            tail_policy="reject",
+            reserved_operation_id=None,
+            allow_finalization_artifacts=True,
+            allow_omitted_lock=allow_omitted_lock,
+            defer_finalization_artifact_validation=True,
+        )
+        request = context.history.seal_requested
+        artifact_paths = _finalization_artifact_paths(inventory)
+        if request is None or context.lifecycle.state != "SEALING_INTERRUPTED":
+            raise _Failure(
+                "seal_mismatch",
+                artifact_paths[0] if artifact_paths else _SEAL_PATH,
+            )
+        files = _snapshot_preseal_files(root_fd, inventory)
+        try:
+            derived = derive_seal_v1(
+                capsule=context.capsule,
+                manifest=context.manifest,
+                environment=context.environment,
+                history=context.history,
+                lifecycle=context.lifecycle,
+                seal_requested=request,
+                files=files,
+            )
+            derived_bytes = seal_bytes(derived)
+        except SealModelError:
+            raise _Failure("seal_mismatch", _SEAL_PATH) from None
+        temporary_name = f".seal.{request.payload.seal_transaction_id}.tmp"
+        retained_artifacts = [(path, inventory.files[path]) for path in artifact_paths]
+        for artifact_path, artifact_identity in retained_artifacts:
+            if artifact_path not in {_SEAL_PATH, temporary_name}:
+                raise _Failure("seal_mismatch", artifact_path)
+            if (
+                artifact_path == _SEAL_PATH
+                and request.payload.prior_event_sequence != request.sequence - 1
+            ):
+                raise _Failure("seal_mismatch", artifact_path)
+            _check_sealed_artifact_alias(inventory, artifact_path)
+            _verify_file_exact(
+                root_fd,
+                artifact_path,
+                artifact_identity,
+                inventory,
+                teardown_errors,
+                derived_bytes,
+                mismatch_code="seal_mismatch",
+            )
+
+        final_inventory = _scan_inventory(
+            root_fd,
+            require_lock=not allow_omitted_lock,
+            ignore_lock=ignore_lock,
+            expected_inventory=inventory,
+        )
+        if final_inventory != inventory:
+            raise _Failure("unstable_snapshot", None)
+        for artifact_path, artifact_identity in retained_artifacts:
+            try:
+                _check_sealed_artifact_alias(final_inventory, artifact_path)
+            except _Failure as failure:
+                raise _Failure("unstable_snapshot", failure.path) from None
+            _verify_file_exact(
+                root_fd,
+                artifact_path,
+                artifact_identity,
+                inventory,
+                teardown_errors,
+                derived_bytes,
+                mismatch_code="unstable_snapshot",
+            )
+        if teardown_errors:
+            raise teardown_errors[0]
+        return _valid_sealed_result(
+            context,
+            derived,
+            derived_bytes,
+            inventory=final_inventory,
+        )
+    except KeyError:
+        _raise_sealed_stage_failure_after_rescan(
+            root_fd,
+            inventory,
+            _Failure("seal_mismatch", _SEAL_PATH),
+            allow_omitted_lock=allow_omitted_lock,
+            ignore_lock=ignore_lock,
+        )
+    except _Failure as failure:
+        _raise_sealed_stage_failure_after_rescan(
+            root_fd,
+            inventory,
+            failure,
+            allow_omitted_lock=allow_omitted_lock,
+            ignore_lock=ignore_lock,
+        )
 
 
 def _verify_prepared_capsule_descriptors(
@@ -3529,6 +4078,8 @@ def verify_capsule(path: Path, *, mode: VerificationMode) -> VerifyResultV1:
     visible_path: Path | None = None
     parent_before: _Identity | None = None
     root_before: _Identity | None = None
+    seal_selected: bool | None = None
+    selected_seal_identity: _Identity | None = None
     try:
         raw_path = os.fspath(path)
         if type(raw_path) is not str or not raw_path:
@@ -3543,6 +4094,8 @@ def verify_capsule(path: Path, *, mode: VerificationMode) -> VerifyResultV1:
             parent_fd,
             root_fd,
         )
+        selected_seal_identity = _top_level_entry_identity(root_fd, _SEAL_PATH)
+        seal_selected = selected_seal_identity is not None
     except _Failure as failure:
         result = _invalid_result(failure.code, failure.path, failure.sequence)
     except BoundedIOError:
@@ -3569,35 +4122,129 @@ def verify_capsule(path: Path, *, mode: VerificationMode) -> VerifyResultV1:
         if result is not None:
             raise StopIteration
         assert root_fd is not None
-        posix = cast(FilesystemPosixOps, PosixOps())
-        try:
-            classify_filesystem(root_fd, posix=posix)
-        except UnsupportedFilesystemError:
-            result = _unsupported_result()
-        else:
+        assert seal_selected is not None
+        lock_present = (
+            _top_level_entry_present(root_fd, ".laconian.lock") if seal_selected else None
+        )
+        if seal_selected and lock_present is False:
             try:
-                lock = try_acquire_shared_lock(root_fd, posix=posix)
-            except FileNotFoundError:
-                result = _invalid_result("missing_path", ".laconian.lock")
-            except OwnedStagingError:
-                result = _invalid_result("unsafe_path_type", ".laconian.lock")
-            except OSError as error:
-                code = (
-                    "unsafe_path_type"
-                    if error.errno in {errno.ELOOP, errno.ENOTDIR}
-                    else "io_error"
+                result = _verify_sealed_core(
+                    root_fd,
+                    allow_omitted_lock=True,
+                    selected_seal_identity=selected_seal_identity,
                 )
-                result = _invalid_result(code, ".laconian.lock")
-            if lock is None and result is None:
-                result = _busy_result()
-            elif lock is not None:
+            except _Failure as failure:
+                result = _invalid_result(failure.code, failure.path, failure.sequence)
+            except (OSError, TypeError, ValueError):
+                result = _invalid_result()
+        else:
+            posix = cast(FilesystemPosixOps, PosixOps())
+            try:
+                classify_filesystem(root_fd, posix=posix)
+            except UnsupportedFilesystemError:
+                if seal_selected:
+                    try:
+                        result = _verify_sealed_core(
+                            root_fd,
+                            allow_omitted_lock=True,
+                            ignore_lock=True,
+                            selected_seal_identity=selected_seal_identity,
+                        )
+                    except _Failure as failure:
+                        result = _invalid_result(failure.code, failure.path, failure.sequence)
+                    except (OSError, TypeError, ValueError):
+                        result = _invalid_result()
+                else:
+                    result = _unsupported_result()
+            else:
                 try:
-                    _check_lock_identity(root_fd, lock.descriptor)
-                    result = _verify_core(root_fd)
-                except _Failure as failure:
-                    result = _invalid_result(failure.code, failure.path, failure.sequence)
-                except (OSError, TypeError, ValueError):
-                    result = _invalid_result()
+                    lock = try_acquire_shared_lock(root_fd, posix=posix)
+                except FileNotFoundError:
+                    if seal_selected:
+                        try:
+                            result = _verify_sealed_core(
+                                root_fd,
+                                allow_omitted_lock=True,
+                                selected_seal_identity=selected_seal_identity,
+                            )
+                        except _Failure as failure:
+                            result = _invalid_result(
+                                failure.code,
+                                failure.path,
+                                failure.sequence,
+                            )
+                        except (OSError, TypeError, ValueError):
+                            result = _invalid_result()
+                    else:
+                        result = _invalid_result("missing_path", ".laconian.lock")
+                except OwnedStagingError:
+                    result = _invalid_result("unsafe_path_type", ".laconian.lock")
+                except OSError as error:
+                    code = (
+                        "unsafe_path_type"
+                        if error.errno in {errno.ELOOP, errno.ENOTDIR}
+                        else "io_error"
+                    )
+                    result = _invalid_result(code, ".laconian.lock")
+                if lock is None and result is None:
+                    result = _busy_result()
+                elif lock is not None:
+                    try:
+                        _check_lock_identity(root_fd, lock.descriptor)
+                        assert visible_path is not None and parent_fd is not None
+                        under_lock_seal_identity = _top_level_entry_identity(
+                            root_fd,
+                            _SEAL_PATH,
+                        )
+                        if seal_selected and (
+                            under_lock_seal_identity is None
+                            or selected_seal_identity is None
+                            or not _same_leaf(
+                                under_lock_seal_identity,
+                                selected_seal_identity,
+                            )
+                        ):
+                            raise _Failure("unstable_snapshot", _SEAL_PATH)
+                        first_under_lock_seal_identity = under_lock_seal_identity
+                        sealed_under_lock = seal_selected or under_lock_seal_identity is not None
+                        if sealed_under_lock:
+                            refreshed_parent, refreshed_root = _check_public_root_identity(
+                                visible_path,
+                                parent_fd,
+                                root_fd,
+                                recheck_visible_parent=True,
+                            )
+                            assert parent_before is not None and root_before is not None
+                            if not _same_leaf(
+                                refreshed_parent,
+                                parent_before,
+                            ) or not _same_leaf(refreshed_root, root_before):
+                                raise _Failure("unstable_snapshot", None)
+                            parent_before, root_before = refreshed_parent, refreshed_root
+                            under_lock_seal_identity = _top_level_entry_identity(
+                                root_fd,
+                                _SEAL_PATH,
+                            )
+                            pinned_seal_identity = first_under_lock_seal_identity
+                            if under_lock_seal_identity != pinned_seal_identity:
+                                raise _Failure("unstable_snapshot", _SEAL_PATH)
+                        selected_for_core = (
+                            under_lock_seal_identity
+                            if under_lock_seal_identity is not None
+                            else selected_seal_identity
+                        )
+                        result = (
+                            _verify_sealed_core(
+                                root_fd,
+                                selected_seal_identity=selected_for_core,
+                            )
+                            if sealed_under_lock
+                            else _verify_core(root_fd)
+                        )
+                    except _Failure as failure:
+                        result = _invalid_result(failure.code, failure.path, failure.sequence)
+                    except (OSError, TypeError, ValueError):
+                        result = _invalid_result()
     except StopIteration:
         pass
     except AssertionError:

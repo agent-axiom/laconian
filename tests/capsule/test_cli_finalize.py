@@ -1,14 +1,48 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import laconian_eval.cli as cli
-from laconian_eval.capsule.finalize import FinalizationError
+from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
+from laconian_eval.capsule.finalize import FinalizationError, finalize_capsule
+from laconian_eval.capsule.verify import VerificationMode, verify_capsule
 from laconian_eval.cli import main
+
+from .test_execution import _single_plan_capsule
+
+TreeSnapshot = dict[str, tuple[int, int, int, int, int, bytes | None]]
+
+
+@pytest.fixture
+def prepared_capsule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return _single_plan_capsule(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def sealed_capsule(prepared_capsule: Path) -> Path:
+    result = finalize_capsule(prepared_capsule, seal_incomplete=True)
+    assert result.state == "SEALED_BLOCKED"
+    return prepared_capsule
+
+
+def _snapshot_tree(root: Path) -> TreeSnapshot:
+    snapshot: TreeSnapshot = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        metadata = path.lstat()
+        snapshot[path.relative_to(root).as_posix() or "."] = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            path.read_bytes() if stat.S_ISREG(metadata.st_mode) else None,
+        )
+    return snapshot
 
 
 @pytest.mark.parametrize(
@@ -208,3 +242,47 @@ def test_finalize_postpublication_fsync_failure_announces_once_and_exits_one(
     captured = capsys.readouterr()
     assert captured.out == f"{target}\n"
     assert captured.err == "finalize failed: capsule finalization rejected\n"
+
+
+def test_verify_require_sealed_accepts_sealed_capsule_without_mutating_parent_tree(
+    sealed_capsule: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parent = sealed_capsule.parent
+    before = _snapshot_tree(parent)
+
+    direct = verify_capsule(sealed_capsule, mode=VerificationMode.PREPARED)
+
+    assert direct.status == "valid", direct
+    assert direct.state == "SEALED_BLOCKED"
+    assert direct.capsule_sha256 == sha256_bytes((sealed_capsule / "seal.json").read_bytes())
+    assert _snapshot_tree(parent) == before
+
+    assert main(["verify", str(sealed_capsule), "--require", "sealed"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out.encode("utf-8") == canonical_json(direct.model_dump(mode="json")) + b"\n"
+    assert captured.err == ""
+    assert _snapshot_tree(parent) == before
+
+
+def test_verify_require_sealed_preserves_valid_unsealed_json_and_parent_tree(
+    prepared_capsule: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parent = prepared_capsule.parent
+    before = _snapshot_tree(parent)
+
+    direct = verify_capsule(prepared_capsule, mode=VerificationMode.PREPARED)
+
+    assert direct.status == "valid"
+    assert direct.state == "PREPARED"
+    assert direct.capsule_sha256 is None
+    assert _snapshot_tree(parent) == before
+
+    assert main(["verify", str(prepared_capsule), "--require", "sealed"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out.encode("utf-8") == canonical_json(direct.model_dump(mode="json")) + b"\n"
+    assert captured.err == ""
+    assert _snapshot_tree(parent) == before
