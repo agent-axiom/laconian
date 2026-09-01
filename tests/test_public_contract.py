@@ -937,3 +937,50 @@ def test_replay_legacy_callable_annotations_remain_eager_owner_objects() -> None
         "request": GenerationRequest,
         "return": GenerationResult,
     }
+
+
+def test_slice1_final_capsule_public_names_are_stable() -> None:
+    from laconian_eval.capsule.finalize import FinalizeResultV1, finalize_capsule
+    from laconian_eval.capsule.scorable import ScoredAttemptV2
+    from laconian_eval.capsule.seal_models import SealV1, capsule_sha256
+    from laconian_eval.capsule.sharding import ShardPlanV1
+    from laconian_eval.capsule.sidecars import (
+        VerifiedScoredCapsuleV2,
+        load_verified_scored_capsule,
+    )
+
+    assert callable(capsule_sha256)
+    assert callable(finalize_capsule)
+    assert callable(load_verified_scored_capsule)
+    assert all(
+        isinstance(value, type)
+        for value in (
+            SealV1,
+            FinalizeResultV1,
+            ShardPlanV1,
+            ScoredAttemptV2,
+            VerifiedScoredCapsuleV2,
+        )
+    )
+    assert {
+        value.__name__: value.__module__
+        for value in (
+            SealV1,
+            capsule_sha256,
+            FinalizeResultV1,
+            finalize_capsule,
+            ShardPlanV1,
+            ScoredAttemptV2,
+            VerifiedScoredCapsuleV2,
+            load_verified_scored_capsule,
+        )
+    } == {
+        "SealV1": "laconian_eval.capsule.seal_models",
+        "capsule_sha256": "laconian_eval.capsule.seal_models",
+        "FinalizeResultV1": "laconian_eval.capsule.finalize",
+        "finalize_capsule": "laconian_eval.capsule.finalize",
+        "ShardPlanV1": "laconian_eval.capsule.sharding",
+        "ScoredAttemptV2": "laconian_eval.capsule.scorable",
+        "VerifiedScoredCapsuleV2": "laconian_eval.capsule.sidecars",
+        "load_verified_scored_capsule": "laconian_eval.capsule.sidecars",
+    }

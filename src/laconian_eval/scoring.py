@@ -381,6 +381,20 @@ def _sentence_checks(case: ResponseCase, output: str) -> list[CheckResult]:
     return checks
 
 
+def deterministic_hard_checks(case: ResponseCase, output: str) -> tuple[CheckResult, ...]:
+    """Return the ordered deterministic hard checks shared by all scoring paths."""
+
+    return tuple(
+        [
+            *_nonblank_checks(output),
+            *_literal_checks(case, output),
+            *_json_checks(case, output),
+            *_yaml_checks(case, output),
+            *_sentence_checks(case, output),
+        ]
+    )
+
+
 def score_attempt(case: ResponseCase, raw: RawAttempt) -> ScoredAttempt:
     _validate_raw_identity(case, raw)
     if raw.error is not None:
@@ -394,14 +408,7 @@ def score_attempt(case: ResponseCase, raw: RawAttempt) -> ScoredAttempt:
         return ScoredAttempt(raw=raw, checks=error_checks, hard_pass=False)
 
     assert raw.output_text is not None
-    check_list = [
-        *_nonblank_checks(raw.output_text),
-        *_literal_checks(case, raw.output_text),
-        *_json_checks(case, raw.output_text),
-        *_yaml_checks(case, raw.output_text),
-        *_sentence_checks(case, raw.output_text),
-    ]
-    checks = tuple(check_list)
+    checks = deterministic_hard_checks(case, raw.output_text)
     return ScoredAttempt(
         raw=raw,
         checks=checks,

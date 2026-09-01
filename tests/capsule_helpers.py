@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from typing import Any
+from uuid import UUID
 
 from laconian_eval import __version__
-from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
+from laconian_eval.capsule.attempts import derive_attempt_id
+from laconian_eval.capsule.canonical import canonical_json, sha256_bytes, stable_digest
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -283,6 +285,112 @@ def plan_row_v1_payload() -> dict[str, Any]:
         "instruction_sha256": "1" * 64,
         "request_config_sha256": "2" * 64,
         "input_token_bound": 65_578,
+    }
+
+
+def raw_attempt_v2_payload(
+    plan: dict[str, Any] | None = None,
+    *,
+    attempt: int = 1,
+    call_sequence: int = 0,
+    terminal_reason: str | None = "success",
+    output_text: str = "Done.",
+) -> dict[str, Any]:
+    """Return one valid attempt-v2 payload bound to a plan-row payload."""
+
+    row = dict(plan_row_v1_payload() if plan is None else plan)
+    run_id = UUID_A
+    attempt_id = derive_attempt_id(UUID(run_id), row["plan_item_id"], attempt)
+    terminal = terminal_reason is not None
+    retry_of_attempt = None if attempt == 1 else attempt - 1
+    retryable = terminal_reason in (None, "retry_exhausted")
+
+    if terminal_reason == "success":
+        output_sha256 = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        response_id = stable_digest(
+            "laconian-response-v1",
+            {
+                "run_id": UUID(run_id),
+                "plan_item_id": row["plan_item_id"],
+                "attempt_id": attempt_id,
+                "case_uid": row["case_uid"],
+                "instruction_sha256": row["instruction_sha256"],
+                "output_sha256": output_sha256,
+            },
+        )
+        delivery_certainty = "response_received"
+        error = None
+    else:
+        output_text = ""
+        output_sha256 = None
+        response_id = None
+        if terminal_reason == "ambiguous_delivery":
+            delivery_certainty = "unknown"
+            error_kind = "temporary"
+        elif terminal_reason == "authentication_stopped":
+            delivery_certainty = "definitely_rejected"
+            error_kind = "authentication"
+        elif terminal_reason in (None, "retry_exhausted"):
+            delivery_certainty = "definitely_not_sent"
+            error_kind = "temporary"
+        else:
+            delivery_certainty = "definitely_rejected"
+            error_kind = "invalid_request"
+        error = {
+            "kind": error_kind,
+            "message": "Provider request failed.",
+            "retryable": retryable,
+            "request_id": "fixture-request-error",
+        }
+
+    return {
+        "schema_version": "2",
+        "runner_version": __version__,
+        "run_id": run_id,
+        "manifest_sha256": "3" * 64,
+        "plan_item_id": row["plan_item_id"],
+        "attempt_id": attempt_id,
+        "scenario_uid": row["scenario_uid"],
+        "case_uid": row["case_uid"],
+        "case_id": row["case_id"],
+        "locale": row["locale"],
+        "case_definition_sha256": row["case_definition_sha256"],
+        "arm": row["arm"],
+        "repetition": row["repetition"],
+        "attempt": attempt,
+        "terminal": terminal,
+        "call_sequence": call_sequence,
+        "retry_of_attempt": retry_of_attempt,
+        "backoff_ms": 100 * 2 ** (attempt - 1) if terminal_reason is None else None,
+        "delivery_certainty": delivery_certainty,
+        "prompt_sha256": row["prompt_sha256"],
+        "instruction_sha256": row["instruction_sha256"],
+        "request_config_sha256": row["request_config_sha256"],
+        "provider": "replay",
+        "model": "fixture-v1",
+        "response_model": "replay-v1",
+        "started_at": CANONICAL_TIMESTAMP,
+        "elapsed_ms": 5,
+        "output_text": output_text if terminal_reason == "success" else None,
+        "output_sha256": output_sha256,
+        "response_id": response_id,
+        "output_was_redacted": False,
+        "output_redaction_count": 0,
+        "discarded_output_byte_length": None,
+        "discarded_output_sha256": None,
+        "usage": {
+            "input_tokens": 4,
+            "output_tokens": 1,
+            "total_tokens": 5,
+            "cached_input_tokens": 0,
+            "availability": "complete",
+            "source": "provider",
+            "cache_accounting": "reported",
+        },
+        "request_id": "fixture-request-1",
+        "finish_reason": "stop" if terminal_reason == "success" else None,
+        "error": error,
+        "terminal_reason": terminal_reason,
     }
 
 

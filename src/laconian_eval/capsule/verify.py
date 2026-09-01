@@ -15,10 +15,12 @@ import os
 import platform
 import re
 import stat
-from contextlib import suppress
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NoReturn, TypeVar, cast
 from uuid import RFC_4122, UUID
 
@@ -31,6 +33,7 @@ from laconian_eval.arms import (
     arm_member_specs,
     validate_caveman_snapshot,
 )
+from laconian_eval.capsule.attempts import RawAttemptV2, raw_attempt_bytes
 from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
 from laconian_eval.capsule.canonical import (
     canonical_json,
@@ -115,7 +118,7 @@ from laconian_eval.capsule.verification_scratch import (
     IdentityCollision,
     ScratchError,
 )
-from laconian_eval.cases import parse_response_case_bytes
+from laconian_eval.cases import parse_response_case_bytes, response_case_sha256
 from laconian_eval.models import ResponseCase
 
 
@@ -938,6 +941,244 @@ class _VerifiedFinalizationSnapshot:
     destination_name: str = field(repr=False)
 
 
+_SEALED_SOURCE_CONSTRUCTION_AUTHORITY = object()
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedSealedCapsuleSourceV1:
+    """Frozen, descriptor-verified evidence for one complete sealed capsule."""
+
+    result: VerifyResultV1
+    seal: SealV1
+    capsule: CapsuleV1
+    manifest: ResolvedManifestV2
+    manifest_bytes: bytes
+    case_index_bytes: bytes
+    plan_bytes: bytes
+    raw_bytes: bytes
+    case_index: tuple[CaseIndexRowV1, ...]
+    plan: tuple[PlanRowV1, ...]
+    raw_attempts: tuple[RawAttemptV2, ...]
+    cases_by_uid: Mapping[str, ResponseCase]
+    _retained_root_leaf: tuple[int, int, int] = field(repr=False)
+    _construction_authority: InitVar[object] = None
+
+    def __post_init__(self, _construction_authority: object) -> None:
+        try:
+            if _construction_authority is not _SEALED_SOURCE_CONSTRUCTION_AUTHORITY:
+                raise TypeError
+            result = _strict_model_copy(VerifyResultV1, self.result)
+            seal = _strict_model_copy(SealV1, self.seal)
+            capsule = _strict_model_copy(CapsuleV1, self.capsule)
+            manifest = _strict_model_copy(ResolvedManifestV2, self.manifest)
+            byte_fields = (
+                self.manifest_bytes,
+                self.case_index_bytes,
+                self.plan_bytes,
+                self.raw_bytes,
+            )
+            if (
+                any(type(value) is not bytes for value in byte_fields)
+                or type(self.case_index) is not tuple
+                or type(self.plan) is not tuple
+                or type(self.raw_attempts) is not tuple
+                or type(self.cases_by_uid) is not type(MappingProxyType({}))
+                or type(self._retained_root_leaf) is not tuple
+                or len(self._retained_root_leaf) != 3
+                or any(type(value) is not int for value in self._retained_root_leaf)
+                or self._retained_root_leaf[0] < 0
+                or self._retained_root_leaf[1] < 0
+                or self._retained_root_leaf[2] != stat.S_IFDIR
+            ):
+                raise TypeError
+            manifest_bytes, case_index_bytes, plan_bytes, raw_bytes = (
+                bytes(value) for value in byte_fields
+            )
+            case_index = tuple(_strict_model_copy(CaseIndexRowV1, row) for row in self.case_index)
+            plan = tuple(_strict_model_copy(PlanRowV1, row) for row in self.plan)
+            raw_attempts = tuple(_strict_model_copy(RawAttemptV2, row) for row in self.raw_attempts)
+            if (
+                result.status != "valid"
+                or result.state != "SEALED_COMPLETE"
+                or result.capsule_sha256 is None
+                or seal.generation_status != "complete"
+                or seal.run_id != capsule.run_id
+                or result.run_id != capsule.run_id
+                or result.capsule_sha256 != sha256_bytes(seal_bytes(seal))
+                or manifest_bytes
+                != canonical_json(manifest.model_dump(mode="json", round_trip=True))
+                or sha256_bytes(manifest_bytes) != capsule.manifest_sha256
+                or sha256_bytes(case_index_bytes) != capsule.case_index_sha256
+                or sha256_bytes(plan_bytes) != capsule.plan_sha256
+            ):
+                raise TypeError
+            seal_files = {item.path: item for item in seal.files}
+            exact_bytes = {
+                "manifest.json": manifest_bytes,
+                "case-index.jsonl": case_index_bytes,
+                "plan.jsonl": plan_bytes,
+                "raw.jsonl": raw_bytes,
+            }
+            if any(
+                path not in seal_files
+                or seal_files[path].byte_length != len(data)
+                or seal_files[path].sha256 != sha256_bytes(data)
+                for path, data in exact_bytes.items()
+            ):
+                raise TypeError
+            if case_index != _jsonl_models(
+                case_index_bytes,
+                "case-index.jsonl",
+                CaseIndexRowV1,
+                count_limit=RESOURCE_LIMITS_V1.case_records,
+                row_limit=_CASE_INDEX_ROW_CEILING,
+            ) or plan != _jsonl_models(
+                plan_bytes,
+                "plan.jsonl",
+                PlanRowV1,
+                count_limit=RESOURCE_LIMITS_V1.plan_rows,
+                row_limit=RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes,
+            ):
+                raise TypeError
+            if raw_attempts != _parse_committed_raw_attempts(raw_bytes):
+                raise TypeError
+
+            case_positions = tuple((row.source_ordinal, row.record_ordinal) for row in case_index)
+            case_uids = tuple(row.case_uid for row in case_index)
+            case_ids = tuple(row.case_id for row in case_index)
+            plan_ids = tuple(row.plan_item_id for row in plan)
+            if (
+                not case_index
+                or not plan
+                or not raw_attempts
+                or case_positions != tuple(sorted(case_positions))
+                or len(case_positions) != len(set(case_positions))
+                or len(case_uids) != len(set(case_uids))
+                or len(case_ids) != len(set(case_ids))
+                or tuple(row.ordinal for row in plan) != tuple(range(len(plan)))
+                or len(plan_ids) != len(set(plan_ids))
+                or tuple(row.call_sequence for row in raw_attempts)
+                != tuple(range(len(raw_attempts)))
+                or len({row.attempt_id for row in raw_attempts}) != len(raw_attempts)
+            ):
+                raise TypeError
+            index_by_uid = {row.case_uid: row for row in case_index}
+            plan_by_id = {row.plan_item_id: row for row in plan}
+            for row in plan:
+                index = index_by_uid[row.case_uid]
+                if (
+                    row.scenario_uid,
+                    row.case_uid,
+                    row.case_id,
+                    row.locale,
+                    row.case_definition_sha256,
+                    row.prompt_sha256,
+                ) != (
+                    index.scenario_uid,
+                    index.case_uid,
+                    index.case_id,
+                    index.locale,
+                    index.case_definition_sha256,
+                    index.prompt_sha256,
+                ):
+                    raise TypeError
+            terminal_plan_ids: list[str] = []
+            for raw in raw_attempts:
+                plan_row = plan_by_id[raw.plan_item_id]
+                if (
+                    raw.run_id != capsule.run_id
+                    or raw.runner_version != capsule.runner_version
+                    or raw.manifest_sha256 != capsule.manifest_sha256
+                    or raw.provider != manifest.provider.kind
+                    or raw.model != manifest.provider.model
+                    or (
+                        raw.scenario_uid,
+                        raw.case_uid,
+                        raw.case_id,
+                        raw.locale,
+                        raw.case_definition_sha256,
+                        raw.arm,
+                        raw.repetition,
+                        raw.prompt_sha256,
+                        raw.instruction_sha256,
+                        raw.request_config_sha256,
+                    )
+                    != (
+                        plan_row.scenario_uid,
+                        plan_row.case_uid,
+                        plan_row.case_id,
+                        plan_row.locale,
+                        plan_row.case_definition_sha256,
+                        plan_row.arm,
+                        plan_row.repetition,
+                        plan_row.prompt_sha256,
+                        plan_row.instruction_sha256,
+                        plan_row.request_config_sha256,
+                    )
+                ):
+                    raise TypeError
+                if raw.terminal:
+                    terminal_plan_ids.append(raw.plan_item_id)
+            if tuple(terminal_plan_ids) != plan_ids:
+                raise TypeError
+
+            ordered_case_uids = tuple(dict.fromkeys(row.case_uid for row in plan))
+            supplied_cases: dict[str, ResponseCase] = dict(self.cases_by_uid)
+            if tuple(supplied_cases) != ordered_case_uids:
+                raise TypeError
+            checked_cases: dict[str, ResponseCase] = {}
+            for case_uid in ordered_case_uids:
+                index_row = index_by_uid[case_uid]
+                case = _strict_model_copy(ResponseCase, supplied_cases[case_uid])
+                prompt_bytes = case.prompt.encode("utf-8", errors="strict")
+                if (
+                    case.id != index_row.case_id
+                    or case.scenario_id != index_row.scenario_id
+                    or case.locale != index_row.locale
+                    or case.category != index_row.category
+                    or response_case_sha256(case) != index_row.case_definition_sha256
+                    or sha256_bytes(prompt_bytes) != index_row.prompt_sha256
+                    or len(prompt_bytes) != index_row.prompt_utf8_bytes
+                ):
+                    raise TypeError
+                checked_cases[case_uid] = case
+            if any(
+                row.case_uid not in checked_cases or row.case_id != checked_cases[row.case_uid].id
+                for row in plan
+            ):
+                raise TypeError
+            object.__setattr__(self, "result", result)
+            object.__setattr__(self, "seal", seal)
+            object.__setattr__(self, "capsule", capsule)
+            object.__setattr__(self, "manifest", manifest)
+            object.__setattr__(self, "manifest_bytes", manifest_bytes)
+            object.__setattr__(self, "case_index_bytes", case_index_bytes)
+            object.__setattr__(self, "plan_bytes", plan_bytes)
+            object.__setattr__(self, "raw_bytes", raw_bytes)
+            object.__setattr__(self, "case_index", case_index)
+            object.__setattr__(self, "plan", plan)
+            object.__setattr__(self, "raw_attempts", raw_attempts)
+            object.__setattr__(self, "cases_by_uid", MappingProxyType(checked_cases))
+            object.__setattr__(
+                self,
+                "_retained_root_leaf",
+                tuple(self._retained_root_leaf),
+            )
+        except Exception:
+            raise _Failure("invalid_model", None) from None
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedSealedSnapshot:
+    result: VerifyResultV1
+    seal: SealV1
+    exact_seal_bytes: bytes = field(repr=False)
+    context: _VerifiedCapsuleContext = field(repr=False)
+    inventory: _Inventory = field(repr=False)
+    allow_omitted_lock: bool = field(repr=False)
+    ignore_lock: bool = field(repr=False)
+
+
 def _bound_recovery_root(
     root_fd: int,
     parent_fd: int,
@@ -1426,6 +1667,12 @@ def _file_allowed(path: str) -> bool:
 
 def _same_leaf(left: _Identity, right: _Identity) -> bool:
     return (left.device, left.inode, left.mode) == (right.device, right.inode, right.mode)
+
+
+def _directory_leaf_key(identity: _Identity) -> tuple[int, int, int]:
+    """Return the passive identity needed to recognize one retained directory."""
+
+    return (identity.device, identity.inode, stat.S_IFMT(identity.mode))
 
 
 def _close_owned(
@@ -2665,6 +2912,28 @@ def _jsonl_models(
     return tuple(models)
 
 
+def _parse_committed_raw_attempts(data: bytes) -> tuple[RawAttemptV2, ...]:
+    """Parse exact committed raw rows without accepting a tail or alternate encoding."""
+
+    values = _jsonl_values(
+        data,
+        "raw.jsonl",
+        count_limit=RESOURCE_LIMITS_V1.raw_rows,
+        row_limit=RESOURCE_LIMITS_V1.raw_jsonl_row_bytes,
+    )
+    raw_rows = data[:-1].split(b"\n")
+    attempts: list[RawAttemptV2] = []
+    for row_index, (encoded, value) in enumerate(zip(raw_rows, values, strict=True)):
+        try:
+            attempt = RawAttemptV2.model_validate(value, strict=True)
+            if raw_attempt_bytes(attempt) != encoded:
+                raise ValueError
+        except (TypeError, ValueError, ValidationError):
+            raise _Failure("invalid_model", "raw.jsonl", row_index) from None
+        attempts.append(attempt)
+    return tuple(attempts)
+
+
 def _parents(path: str) -> set[str]:
     components = path.split("/")
     return {"/".join(components[:end]) for end in range(1, len(components))}
@@ -3866,14 +4135,14 @@ def _raise_sealed_stage_failure_after_rescan(
     raise failure
 
 
-def _verify_sealed_core(
+def _verify_sealed_snapshot(
     root_fd: int,
     *,
     inventory: _Inventory | None = None,
     allow_omitted_lock: bool = False,
     ignore_lock: bool = False,
     selected_seal_identity: _Identity | None = None,
-) -> VerifyResultV1:
+) -> _VerifiedSealedSnapshot:
     """Verify one exact sealed snapshot without trusting any field from the seal."""
 
     if (
@@ -3988,11 +4257,20 @@ def _verify_sealed_core(
             )
         if teardown_errors:
             raise teardown_errors[0]
-        return _valid_sealed_result(
+        result = _valid_sealed_result(
             context,
             derived,
             derived_bytes,
             inventory=final_inventory,
+        )
+        return _VerifiedSealedSnapshot(
+            result,
+            derived,
+            derived_bytes,
+            context,
+            final_inventory,
+            allow_omitted_lock,
+            ignore_lock,
         )
     except KeyError:
         _raise_sealed_stage_failure_after_rescan(
@@ -4010,6 +4288,412 @@ def _verify_sealed_core(
             allow_omitted_lock=allow_omitted_lock,
             ignore_lock=ignore_lock,
         )
+
+
+def _verify_sealed_core(
+    root_fd: int,
+    *,
+    inventory: _Inventory | None = None,
+    allow_omitted_lock: bool = False,
+    ignore_lock: bool = False,
+    selected_seal_identity: _Identity | None = None,
+) -> VerifyResultV1:
+    """Preserve the Task 8 result-only sealed verifier interface."""
+
+    return _verify_sealed_snapshot(
+        root_fd,
+        inventory=inventory,
+        allow_omitted_lock=allow_omitted_lock,
+        ignore_lock=ignore_lock,
+        selected_seal_identity=selected_seal_identity,
+    ).result
+
+
+def _captured_cases_for_plan(
+    context: _VerifiedCapsuleContext,
+) -> Mapping[str, ResponseCase]:
+    """Project only current-plan cases from the already validated captured inputs."""
+
+    case_files = {item.source_ordinal: item for item in context.captured.case_files}
+    index_by_uid = {row.case_uid: row for row in context.case_index}
+    ordered_case_uids = tuple(dict.fromkeys(row.case_uid for row in context.plan))
+    projected: dict[str, ResponseCase] = {}
+    try:
+        for case_uid in ordered_case_uids:
+            index = index_by_uid[case_uid]
+            case_file = case_files[index.source_ordinal]
+            case = case_file.cases[index.record_ordinal]
+            projected[case_uid] = _strict_model_copy(ResponseCase, case)
+    except (IndexError, KeyError, TypeError, ValueError):
+        raise _Failure("invalid_model", None) from None
+    return MappingProxyType(projected)
+
+
+def _source_from_sealed_snapshot_once(
+    root_fd: int,
+    snapshot: _VerifiedSealedSnapshot,
+) -> VerifiedSealedCapsuleSourceV1:
+    """Read exact scored-source bytes relative to the retained verified root."""
+
+    paths = (
+        "case-index.jsonl",
+        "manifest.json",
+        "plan.jsonl",
+        "raw.jsonl",
+    )
+    teardown_errors: list[_Failure] = []
+    exact: dict[str, bytes] = {}
+    for path in paths:
+        try:
+            identity = snapshot.inventory.files[path]
+        except KeyError:
+            raise _Failure("missing_path", path) from None
+        exact[path] = _read_file(
+            root_fd,
+            path,
+            identity,
+            snapshot.inventory,
+            teardown_errors,
+            limit=_artifact_read_limit(path),
+            static_policy=_static_json_policy(path) if path in _STATIC_JSON_FILES else None,
+        )
+    if teardown_errors:
+        raise teardown_errors[0]
+    case_index = cast(
+        tuple[CaseIndexRowV1, ...],
+        _jsonl_models(
+            exact["case-index.jsonl"],
+            "case-index.jsonl",
+            CaseIndexRowV1,
+            count_limit=RESOURCE_LIMITS_V1.case_records,
+            row_limit=_CASE_INDEX_ROW_CEILING,
+        ),
+    )
+    plan = cast(
+        tuple[PlanRowV1, ...],
+        _jsonl_models(
+            exact["plan.jsonl"],
+            "plan.jsonl",
+            PlanRowV1,
+            count_limit=RESOURCE_LIMITS_V1.plan_rows,
+            row_limit=RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes,
+        ),
+    )
+    if case_index != snapshot.context.case_index:
+        raise _Failure("unstable_snapshot", "case-index.jsonl")
+    if plan != snapshot.context.plan:
+        raise _Failure("unstable_snapshot", "plan.jsonl")
+    manifest_bytes = exact["manifest.json"]
+    if manifest_bytes != snapshot.context.captured.resolved_manifest_bytes:
+        raise _Failure("unstable_snapshot", "manifest.json")
+    return VerifiedSealedCapsuleSourceV1(
+        result=snapshot.result,
+        seal=snapshot.seal,
+        capsule=snapshot.context.capsule,
+        manifest=snapshot.context.manifest,
+        manifest_bytes=manifest_bytes,
+        case_index_bytes=exact["case-index.jsonl"],
+        plan_bytes=exact["plan.jsonl"],
+        raw_bytes=exact["raw.jsonl"],
+        case_index=case_index,
+        plan=plan,
+        raw_attempts=_parse_committed_raw_attempts(exact["raw.jsonl"]),
+        cases_by_uid=_captured_cases_for_plan(snapshot.context),
+        _retained_root_leaf=_directory_leaf_key(snapshot.inventory.root_identity),
+        _construction_authority=_SEALED_SOURCE_CONSTRUCTION_AUTHORITY,
+    )
+
+
+def _source_from_sealed_snapshot(
+    root_fd: int,
+    snapshot: _VerifiedSealedSnapshot,
+) -> VerifiedSealedCapsuleSourceV1:
+    """Read evidence once and prefer only a proven post-snapshot namespace race."""
+
+    try:
+        return _source_from_sealed_snapshot_once(root_fd, snapshot)
+    except _Failure as failure:
+        _raise_sealed_stage_failure_after_rescan(
+            root_fd,
+            snapshot.inventory,
+            failure,
+            allow_omitted_lock=snapshot.allow_omitted_lock,
+            ignore_lock=snapshot.ignore_lock,
+        )
+
+
+def _recheck_sealed_source_evidence(
+    root_fd: int,
+    snapshot: _VerifiedSealedSnapshot,
+    source: VerifiedSealedCapsuleSourceV1,
+) -> None:
+    """Recheck the complete inventory and exact exposed evidence without path reopening."""
+
+    try:
+        retained_root_leaf = _directory_leaf_key(_identity(os.fstat(root_fd)))
+    except OSError:
+        raise _Failure("io_error", None) from None
+    if retained_root_leaf != source._retained_root_leaf:
+        raise _Failure("unstable_snapshot", None)
+
+    inventory = _scan_inventory(
+        root_fd,
+        require_lock=not snapshot.allow_omitted_lock,
+        ignore_lock=snapshot.ignore_lock,
+        expected_inventory=snapshot.inventory,
+    )
+    if inventory != snapshot.inventory:
+        raise _Failure(
+            "unstable_snapshot",
+            _inventory_difference_path(snapshot.inventory, inventory),
+        )
+    teardown_errors: list[_Failure] = []
+    exact_evidence = {
+        "case-index.jsonl": source.case_index_bytes,
+        "manifest.json": source.manifest_bytes,
+        "plan.jsonl": source.plan_bytes,
+        "raw.jsonl": source.raw_bytes,
+    }
+    for path in sorted(exact_evidence, key=lambda item: item.encode("utf-8")):
+        _verify_file_exact(
+            root_fd,
+            path,
+            snapshot.inventory.files[path],
+            snapshot.inventory,
+            teardown_errors,
+            exact_evidence[path],
+            mismatch_code="unstable_snapshot",
+        )
+    final_inventory = _scan_inventory(
+        root_fd,
+        require_lock=not snapshot.allow_omitted_lock,
+        ignore_lock=snapshot.ignore_lock,
+        expected_inventory=snapshot.inventory,
+    )
+    if final_inventory != snapshot.inventory:
+        raise _Failure(
+            "unstable_snapshot",
+            _inventory_difference_path(snapshot.inventory, final_inventory),
+        )
+    for artifact_path in _finalization_artifact_paths(snapshot.inventory):
+        try:
+            _check_sealed_artifact_alias(final_inventory, artifact_path)
+        except _Failure as failure:
+            raise _Failure("unstable_snapshot", failure.path) from None
+        _verify_file_exact(
+            root_fd,
+            artifact_path,
+            snapshot.inventory.files[artifact_path],
+            snapshot.inventory,
+            teardown_errors,
+            snapshot.exact_seal_bytes,
+            mismatch_code="unstable_snapshot",
+        )
+    if teardown_errors:
+        raise teardown_errors[0]
+
+
+def _source_boundary_failure(error: BaseException) -> BaseException:
+    """Map expected host-boundary failures while preserving cancellation and assertions."""
+
+    if isinstance(error, _Failure):
+        return error
+    if isinstance(error, BoundedIOError):
+        return _Failure("unsafe_path_type", None)
+    if isinstance(error, UnsupportedFilesystemError):
+        return _Failure("unsupported_filesystem", None)
+    if isinstance(error, OwnedStagingError):
+        return _Failure("unsafe_path_type", ".laconian.lock")
+    if isinstance(error, OSError):
+        code = "unsafe_path_type" if error.errno in {errno.ELOOP, errno.ENOTDIR} else "io_error"
+        return _Failure(code, None)
+    if isinstance(error, (RuntimeError, TypeError, ValueError)):
+        return _Failure("invalid_model", None)
+    return error
+
+
+def _prefer_source_failure(
+    primary: BaseException | None,
+    candidate: BaseException,
+) -> BaseException:
+    if primary is None or (isinstance(primary, Exception) and not isinstance(candidate, Exception)):
+        return candidate
+    return primary
+
+
+@contextmanager
+def verified_sealed_capsule_source(
+    path: Path,
+) -> Iterator[VerifiedSealedCapsuleSourceV1]:
+    """Yield exact parsed sealed evidence while retaining and rechecking root descriptors."""
+
+    parent_fd: int | None = None
+    root_fd: int | None = None
+    lock: LockHandle | None = None
+    visible_path: Path | None = None
+    parent_identity: _Identity | None = None
+    root_identity: _Identity | None = None
+    snapshot: _VerifiedSealedSnapshot | None = None
+    source: VerifiedSealedCapsuleSourceV1 | None = None
+    primary: BaseException | None = None
+    try:
+        raw_path = os.fspath(path)
+        if type(raw_path) is not str or not raw_path:
+            raise BoundedIOError("not_directory", "source root is not a directory")
+        visible_path = Path(os.path.abspath(raw_path))
+        if not visible_path.name:
+            raise BoundedIOError("not_directory", "source root is not a directory")
+        root_fd = open_directory_no_follow(visible_path)
+        parent_fd = open_directory_no_follow(visible_path.parent)
+        parent_identity, root_identity = _check_public_root_identity(
+            visible_path,
+            parent_fd,
+            root_fd,
+        )
+        selected_seal_identity = _top_level_entry_identity(root_fd, _SEAL_PATH)
+        seal_selected = selected_seal_identity is not None
+        lock_present = (
+            _top_level_entry_present(root_fd, ".laconian.lock") if seal_selected else None
+        )
+        if seal_selected and lock_present is False:
+            snapshot = _verify_sealed_snapshot(
+                root_fd,
+                allow_omitted_lock=True,
+                selected_seal_identity=selected_seal_identity,
+            )
+        else:
+            posix = cast(FilesystemPosixOps, PosixOps())
+            try:
+                classify_filesystem(root_fd, posix=posix)
+            except UnsupportedFilesystemError:
+                if not seal_selected:
+                    raise
+                snapshot = _verify_sealed_snapshot(
+                    root_fd,
+                    allow_omitted_lock=True,
+                    ignore_lock=True,
+                    selected_seal_identity=selected_seal_identity,
+                )
+            else:
+                try:
+                    lock = try_acquire_shared_lock(root_fd, posix=posix)
+                except FileNotFoundError:
+                    if not seal_selected:
+                        raise _Failure("missing_path", ".laconian.lock") from None
+                    snapshot = _verify_sealed_snapshot(
+                        root_fd,
+                        allow_omitted_lock=True,
+                        selected_seal_identity=selected_seal_identity,
+                    )
+                if lock is None and snapshot is None:
+                    raise _Failure("busy", ".laconian.lock")
+                if lock is not None:
+                    _check_lock_identity(root_fd, lock.descriptor)
+                    under_lock_seal_identity = _top_level_entry_identity(root_fd, _SEAL_PATH)
+                    if seal_selected and (
+                        under_lock_seal_identity is None
+                        or selected_seal_identity is None
+                        or not _same_leaf(under_lock_seal_identity, selected_seal_identity)
+                    ):
+                        raise _Failure("unstable_snapshot", _SEAL_PATH)
+                    first_under_lock_seal_identity = under_lock_seal_identity
+                    if not seal_selected and under_lock_seal_identity is None:
+                        raise _Failure("seal_mismatch", _SEAL_PATH)
+                    refreshed_parent, refreshed_root = _check_public_root_identity(
+                        visible_path,
+                        parent_fd,
+                        root_fd,
+                        recheck_visible_parent=True,
+                    )
+                    if not _same_leaf(
+                        refreshed_parent,
+                        parent_identity,
+                    ) or not _same_leaf(refreshed_root, root_identity):
+                        raise _Failure("unstable_snapshot", None)
+                    parent_identity, root_identity = refreshed_parent, refreshed_root
+                    under_lock_seal_identity = _top_level_entry_identity(root_fd, _SEAL_PATH)
+                    if under_lock_seal_identity != first_under_lock_seal_identity:
+                        raise _Failure("unstable_snapshot", _SEAL_PATH)
+                    snapshot = _verify_sealed_snapshot(
+                        root_fd,
+                        selected_seal_identity=under_lock_seal_identity,
+                    )
+        assert snapshot is not None
+        if (
+            snapshot.result.status != "valid"
+            or snapshot.result.state != "SEALED_COMPLETE"
+            or snapshot.result.capsule_sha256 is None
+            or snapshot.seal.generation_status != "complete"
+        ):
+            raise _Failure("seal_mismatch", _SEAL_PATH)
+        source = _source_from_sealed_snapshot(root_fd, snapshot)
+        if lock is not None:
+            _check_lock_identity(root_fd, lock.descriptor)
+        _recheck_sealed_source_evidence(root_fd, snapshot, source)
+        _check_public_root_identity(
+            visible_path,
+            parent_fd,
+            root_fd,
+            expected_parent=parent_identity,
+            expected_root=root_identity,
+            recheck_visible_parent=True,
+        )
+        if lock is not None:
+            _check_lock_identity(root_fd, lock.descriptor)
+    except BaseException as error:
+        primary = _source_boundary_failure(error)
+
+    if primary is None:
+        assert (
+            visible_path is not None
+            and parent_fd is not None
+            and root_fd is not None
+            and parent_identity is not None
+            and root_identity is not None
+            and snapshot is not None
+            and source is not None
+        )
+        try:
+            yield source
+        except BaseException as error:
+            primary = error
+        try:
+            if lock is not None:
+                _check_lock_identity(root_fd, lock.descriptor)
+            _recheck_sealed_source_evidence(root_fd, snapshot, source)
+            _check_public_root_identity(
+                visible_path,
+                parent_fd,
+                root_fd,
+                expected_parent=parent_identity,
+                expected_root=root_identity,
+                recheck_visible_parent=True,
+            )
+            if lock is not None:
+                _check_lock_identity(root_fd, lock.descriptor)
+        except BaseException as error:
+            primary = _prefer_source_failure(primary, _source_boundary_failure(error))
+
+    if lock is not None:
+        try:
+            lock.close()
+        except BaseException as error:
+            candidate = (
+                error
+                if not isinstance(error, Exception)
+                else _Failure("io_error", ".laconian.lock")
+            )
+            primary = _prefer_source_failure(primary, candidate)
+    for descriptor in (root_fd, parent_fd):
+        if descriptor is None:
+            continue
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            candidate = error if not isinstance(error, Exception) else _Failure("io_error", None)
+            primary = _prefer_source_failure(primary, candidate)
+    if primary is not None:
+        raise primary.with_traceback(primary.__traceback__)
 
 
 def _verify_prepared_capsule_descriptors(

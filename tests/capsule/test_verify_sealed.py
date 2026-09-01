@@ -6,6 +6,7 @@ import errno
 import json
 import shutil
 import stat
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -14,12 +15,17 @@ import pytest
 
 import laconian_eval.capsule.execution as execution_module
 import laconian_eval.capsule.verify as verify_module
-from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
+from laconian_eval.capsule.canonical import canonical_json, canonical_jsonl, sha256_bytes
 from laconian_eval.capsule.execution import ProviderFactory
 from laconian_eval.capsule.filesystem import UnsupportedFilesystemError
 from laconian_eval.capsule.finalize import finalize_capsule
-from laconian_eval.capsule.seal_models import SealV1
-from laconian_eval.capsule.verify import VerificationMode, verify_capsule
+from laconian_eval.capsule.seal_models import SealV1, seal_bytes
+from laconian_eval.capsule.verify import (
+    VerificationMode,
+    VerifiedSealedCapsuleSourceV1,
+    verified_sealed_capsule_source,
+    verify_capsule,
+)
 from laconian_eval.providers import GenerationResult
 
 from .test_execution import (
@@ -69,6 +75,301 @@ def test_seal_presence_selects_sealed_verification(
     assert blocked.status == "valid"
     assert blocked.state == "SEALED_BLOCKED"
     assert blocked.capsule_sha256 == sha256_bytes((blocked_path / "seal.json").read_bytes())
+
+
+def test_verified_sealed_capsule_source_exposes_exact_frozen_evidence(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+    before = _tree_snapshot(complete.parent)
+
+    with verified_sealed_capsule_source(complete) as source:
+        assert type(source) is VerifiedSealedCapsuleSourceV1
+        assert source.result.status == "valid"
+        assert source.result.state == "SEALED_COMPLETE"
+        assert source.result.capsule_sha256 == sha256_bytes((complete / "seal.json").read_bytes())
+        assert source.capsule.run_id == source.result.run_id
+        assert source.manifest_bytes == (complete / "manifest.json").read_bytes()
+        assert source.case_index_bytes == (complete / "case-index.jsonl").read_bytes()
+        assert source.plan_bytes == (complete / "plan.jsonl").read_bytes()
+        assert source.raw_bytes == (complete / "raw.jsonl").read_bytes()
+        root_metadata = complete.stat()
+        assert source._retained_root_leaf == (  # type: ignore[attr-defined]
+            root_metadata.st_dev,
+            root_metadata.st_ino,
+            stat.S_IFMT(root_metadata.st_mode),
+        )
+        assert tuple(row.plan_item_id for row in source.plan) == tuple(
+            row.plan_item_id for row in source.raw_attempts if row.terminal
+        )
+        expected_case_uids = tuple(dict.fromkeys(row.case_uid for row in source.plan))
+        assert tuple(source.cases_by_uid) == expected_case_uids
+        assert all(source.cases_by_uid[row.case_uid].id == row.case_id for row in source.plan)
+        with pytest.raises(TypeError):
+            source.cases_by_uid[expected_case_uids[0]] = source.cases_by_uid[  # type: ignore[index]
+                expected_case_uids[0]
+            ]
+        with pytest.raises(FrozenInstanceError):
+            source.raw_bytes = b"forged"  # type: ignore[misc]
+
+    assert _tree_snapshot(complete.parent) == before
+
+
+def test_verified_sealed_capsule_source_rejects_caller_construction(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+    with verified_sealed_capsule_source(complete) as source:
+        forged_payload = {item.name: getattr(source, item.name) for item in fields(source)}
+
+    with pytest.raises(verify_module._Failure) as caught:  # type: ignore[attr-defined]
+        VerifiedSealedCapsuleSourceV1(**forged_payload)
+
+    assert caught.value.code == "invalid_model"
+    assert caught.value.path is None
+
+
+def test_verified_sealed_capsule_source_revalidates_plan_case_joins(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+    with verified_sealed_capsule_source(complete) as source:
+        forged_plan = (
+            source.plan[0].model_copy(update={"scenario_uid": "f" * 64}),
+            *source.plan[1:],
+        )
+        forged_plan_bytes = canonical_jsonl(
+            row.model_dump(mode="json", round_trip=True) for row in forged_plan
+        )
+        forged_plan_sha256 = sha256_bytes(forged_plan_bytes)
+        forged_capsule = source.capsule.model_copy(update={"plan_sha256": forged_plan_sha256})
+        forged_files = tuple(
+            item.model_copy(
+                update={
+                    "byte_length": len(forged_plan_bytes),
+                    "sha256": forged_plan_sha256,
+                }
+            )
+            if item.path == "plan.jsonl"
+            else item
+            for item in source.seal.files
+        )
+        forged_seal = source.seal.model_copy(update={"files": forged_files})
+        forged_result = source.result.model_copy(
+            update={"capsule_sha256": sha256_bytes(seal_bytes(forged_seal))}
+        )
+        forged_payload = {item.name: getattr(source, item.name) for item in fields(source)}
+        forged_payload.update(
+            {
+                "result": forged_result,
+                "seal": forged_seal,
+                "capsule": forged_capsule,
+                "plan_bytes": forged_plan_bytes,
+                "plan": forged_plan,
+            }
+        )
+
+    with pytest.raises(verify_module._Failure) as caught:  # type: ignore[attr-defined]
+        VerifiedSealedCapsuleSourceV1(
+            **forged_payload,
+            _construction_authority=verify_module._SEALED_SOURCE_CONSTRUCTION_AUTHORITY,  # type: ignore[attr-defined]
+        )
+
+    assert caught.value.code == "invalid_model"
+
+
+def test_verified_sealed_capsule_source_rejects_blocked_capsules(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    _complete, blocked = sealed_capsules
+
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(blocked),
+    ):
+        pytest.fail("blocked capsule must not expose scored-source evidence")
+
+    assert caught.value.code == "seal_mismatch"
+    assert caught.value.path == "seal.json"
+
+
+def test_verified_sealed_capsule_source_supports_lockless_transport_without_posix(
+    sealed_capsules: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    complete, _blocked = sealed_capsules
+    transported = tmp_path / "source-lockless"
+    shutil.copytree(complete, transported)
+    (transported / ".laconian.lock").unlink()
+
+    def posix_bomb() -> object:
+        raise AssertionError("lockless sealed source must not construct POSIX lock ops")
+
+    monkeypatch.setattr(verify_module, "PosixOps", posix_bomb)
+    with verified_sealed_capsule_source(transported) as source:
+        assert source.result.state == "SEALED_COMPLETE"
+        assert source.result.warnings[-1] == "lock_file_omitted_for_sealed_transport"
+
+
+def test_verified_sealed_capsule_source_rechecks_exposed_bytes_on_exit(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(complete) as source,
+    ):
+        assert source.manifest_bytes == (complete / "manifest.json").read_bytes()
+        (complete / "manifest.json").write_bytes(b"{}")
+
+    assert caught.value.code == "unstable_snapshot"
+    assert caught.value.path == "manifest.json"
+
+
+def test_verified_sealed_capsule_source_retains_and_rechecks_shared_lock(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+    lock_path = complete / ".laconian.lock"
+
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(complete),
+    ):
+        lock_path.unlink()
+        lock_path.write_bytes(b"")
+
+    assert caught.value.code == "unstable_snapshot"
+    assert caught.value.path == ".laconian.lock"
+
+
+@pytest.mark.parametrize("mutation", ["delete", "type-swap"])
+def test_verified_sealed_capsule_source_normalizes_proven_source_read_races(
+    sealed_capsules: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    complete, _blocked = sealed_capsules
+    manifest_path = complete / "manifest.json"
+    real_snapshot = verify_module._verify_sealed_snapshot
+    real_read_file = verify_module._read_file
+    snapshot_complete = False
+    mutated = False
+
+    def tracked_snapshot(*args: Any, **kwargs: Any) -> object:
+        nonlocal snapshot_complete
+        snapshot = real_snapshot(*args, **kwargs)
+        snapshot_complete = True
+        return snapshot
+
+    def mutate_before_source_read(*args: Any, **kwargs: Any) -> bytes:
+        nonlocal mutated
+        if snapshot_complete and args[1] == "manifest.json" and not mutated:
+            manifest_path.unlink()
+            if mutation == "type-swap":
+                manifest_path.mkdir()
+            mutated = True
+        return real_read_file(*args, **kwargs)
+
+    monkeypatch.setattr(verify_module, "_verify_sealed_snapshot", tracked_snapshot)
+    monkeypatch.setattr(verify_module, "_read_file", mutate_before_source_read)
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(complete),
+    ):
+        pytest.fail("raced evidence must not be exposed")
+
+    assert mutated
+    assert caught.value.code == "unstable_snapshot"
+    assert caught.value.path == "manifest.json"
+
+
+def test_verified_sealed_capsule_source_preserves_stable_source_read_eio(
+    sealed_capsules: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    complete, _blocked = sealed_capsules
+    real_snapshot = verify_module._verify_sealed_snapshot
+    real_read_file = verify_module._read_file
+    snapshot_complete = False
+    injected = False
+
+    def tracked_snapshot(*args: Any, **kwargs: Any) -> object:
+        nonlocal snapshot_complete
+        snapshot = real_snapshot(*args, **kwargs)
+        snapshot_complete = True
+        return snapshot
+
+    def fail_source_read(*args: Any, **kwargs: Any) -> bytes:
+        nonlocal injected
+        if snapshot_complete and args[1] == "manifest.json" and not injected:
+            injected = True
+            raise verify_module._Failure("io_error", "manifest.json")  # type: ignore[attr-defined]
+        return real_read_file(*args, **kwargs)
+
+    monkeypatch.setattr(verify_module, "_verify_sealed_snapshot", tracked_snapshot)
+    monkeypatch.setattr(verify_module, "_read_file", fail_source_read)
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(complete),
+    ):
+        pytest.fail("stable EIO must not expose evidence")
+
+    assert injected
+    assert caught.value.code == "io_error"
+    assert caught.value.path == "manifest.json"
+
+
+def test_verified_sealed_capsule_source_never_reopens_capsule_public_path(
+    sealed_capsules: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    complete, _blocked = sealed_capsules
+    real_open_directory = verify_module.open_directory_no_follow
+    opened: list[Path] = []
+
+    def track_directory_open(path: Path) -> int:
+        opened.append(Path(path))
+        return real_open_directory(path)
+
+    monkeypatch.setattr(verify_module, "open_directory_no_follow", track_directory_open)
+    with verified_sealed_capsule_source(complete) as source:
+        assert source.result.state == "SEALED_COMPLETE"
+
+    assert opened.count(complete) == 1
+    assert opened and all(path in {complete, complete.parent} for path in opened)
+
+
+def test_verified_sealed_capsule_source_rechecks_visible_root_on_exit(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+    moved = complete.with_name(f"{complete.name}-moved")
+
+    with (
+        pytest.raises(verify_module._Failure) as caught,  # type: ignore[attr-defined]
+        verified_sealed_capsule_source(complete),
+    ):
+        complete.rename(moved)
+        shutil.copytree(moved, complete)
+
+    assert caught.value.code == "unstable_snapshot"
+    assert caught.value.path is None
+
+
+def test_verified_sealed_capsule_source_preserves_body_failure_over_exit_race(
+    sealed_capsules: tuple[Path, Path],
+) -> None:
+    complete, _blocked = sealed_capsules
+
+    class BodyFailure(Exception):
+        pass
+
+    with pytest.raises(BodyFailure), verified_sealed_capsule_source(complete):
+        (complete / "manifest.json").write_bytes(b"{}")
+        raise BodyFailure
 
 
 def test_lockless_sealed_transport_bypasses_local_filesystem_requirement(
