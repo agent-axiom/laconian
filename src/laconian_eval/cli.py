@@ -28,6 +28,7 @@ from laconian_eval.capsule.filesystem import (
     PostPublishSyncError,
     UnsupportedFilesystemError,
 )
+from laconian_eval.capsule.finalize import FinalizationError, _finalize_capsule
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, ResourceLimitError
 from laconian_eval.capsule.prepare import (
     PostPublishVerificationError,
@@ -103,6 +104,10 @@ def _parser() -> argparse.ArgumentParser:
         "resume", help="resume a prepared generation capsule", allow_abbrev=False
     )
     resume.add_argument("capsule", type=Path)
+
+    finalize = commands.add_parser("finalize", help="seal a generation capsule", allow_abbrev=False)
+    finalize.add_argument("capsule", type=Path)
+    finalize.add_argument("--seal-incomplete", action="store_true")
 
     run = commands.add_parser("run", help="execute a benchmark manifest", allow_abbrev=False)
     run.add_argument("manifest", type=Path)
@@ -719,6 +724,33 @@ def _resume(path: Path) -> int:
     return outcome.exit_code
 
 
+def _finalize(path: Path, *, seal_incomplete: bool) -> int:
+    target = Path(os.path.abspath(os.fspath(path)))
+    announced = False
+
+    def announce(known: Path) -> None:
+        nonlocal announced
+        if announced:
+            return
+        announced = True
+        print(known, flush=True)
+
+    try:
+        _finalize_capsule(
+            target,
+            seal_incomplete=seal_incomplete,
+            on_target_known=announce,
+            seams=None,
+        )
+    except FinalizationError as exc:
+        if exc.code == "post_publish_fsync_failed":
+            print(f"finalize failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     try:
@@ -745,6 +777,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif command == "resume":
             return _resume(cast(Path, args.capsule))
+        elif command == "finalize":
+            return _finalize(
+                cast(Path, args.capsule),
+                seal_incomplete=cast(bool, args.seal_incomplete),
+            )
         elif command == "run":
             _run(cast(Path, args.manifest), cast(Path, args.results_root))
         elif command == "score":

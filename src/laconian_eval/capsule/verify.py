@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar, cast
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ValidationError
 
@@ -39,8 +39,12 @@ from laconian_eval.capsule.canonical import (
     stable_digest,
 )
 from laconian_eval.capsule.events import (
+    EventError,
+    ExecutionStartedEventV1,
     RequestStartedEventV1,
     SealRequestedEventV1,
+    event_bytes,
+    parse_event,
 )
 from laconian_eval.capsule.filesystem import (
     FilesystemPosixOps,
@@ -93,12 +97,18 @@ from laconian_eval.capsule.record_models import (
     VerifyResultV1,
 )
 from laconian_eval.capsule.schema import validate_relative_posix_path
+from laconian_eval.capsule.seal_models import SealFileV1
 from laconian_eval.capsule.sharding import (
     ShardPlanError,
     materialize_shard_projection,
     parse_shard_plan_file_bytes,
 )
 from laconian_eval.capsule.tree_policy import capsule_path_kind
+from laconian_eval.capsule.verification_scratch import (
+    ExactIdentityRegistry,
+    IdentityCollision,
+    ScratchError,
+)
 from laconian_eval.cases import parse_response_case_bytes
 from laconian_eval.models import ResponseCase
 
@@ -906,6 +916,18 @@ class _VerifiedRecoveryContext:
     immutable_evidence_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedFinalizationSnapshot:
+    """One frozen post-request snapshot used only to derive/publish a seal."""
+
+    context: _VerifiedCapsuleContext
+    files: tuple[SealFileV1, ...]
+    inventory: _Inventory = field(repr=False)
+    root_identity: _Identity = field(repr=False)
+    parent_identity: _Identity = field(repr=False)
+    destination_name: str = field(repr=False)
+
+
 def _bound_recovery_root(
     root_fd: int,
     parent_fd: int,
@@ -939,13 +961,13 @@ def _immutable_inventory_commitment(inventory: _Inventory) -> tuple[str, int]:
 
     digest = hashlib.sha256(b"laconian-recovery-static-inventory-v1\x00")
     immutable_evidence_bytes = 0
-    excluded = {".laconian.lock", "events.jsonl", "raw.jsonl"}
+    excluded = {".laconian.lock", "events.jsonl", "raw.jsonl", _SEAL_PATH}
     entries = (
         (("directory", path, identity) for path, identity in inventory.directories.items()),
         (
             ("file", path, identity)
             for path, identity in inventory.files.items()
-            if path not in excluded
+            if path not in excluded and not _is_finalization_artifact(path)
         ),
     )
     flattened = sorted(
@@ -1007,6 +1029,8 @@ _STATIC_JSON_FILES = frozenset(
 _PLANNING_DIRECTORY = "inputs/planning"
 _PARENT_PLAN_PATH = "inputs/planning/parent-plan.jsonl"
 _SHARD_PLAN_PATH = "inputs/planning/shard-plan.json"
+_SEAL_PATH = "seal.json"
+_SEAL_TEMP_PREFIX = ".seal."
 _READ_CHUNK = 64 * 1024
 # Producer provenance counts every runner-subtree entry against ``dependency_files``; the source
 # YAML collection bound independently caps case files and protocol bindings at ``case_records``.
@@ -1031,6 +1055,21 @@ _CAVEMAN_PINS = {
         "f0abc56b6f49ab2e285bb6e6723f028abb7ebd4fe0e242bbdc2b4dded0ace8b9"
     ),
 }
+
+
+def _is_finalization_artifact(path: str) -> bool:
+    return path == _SEAL_PATH or (
+        path.startswith(_SEAL_TEMP_PREFIX) and capsule_path_kind(path) == "file"
+    )
+
+
+def _finalization_artifact_paths(inventory: _Inventory) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            (path for path in inventory.files if _is_finalization_artifact(path)),
+            key=lambda item: item.encode("utf-8"),
+        )
+    )
 
 
 def _artifact_read_limit(path: str) -> int:
@@ -1661,6 +1700,265 @@ def _read_file(
     return captured
 
 
+def _hash_inventory_file(
+    root_fd: int,
+    path: str,
+    expected: _Identity,
+    inventory: _Inventory,
+    teardown_errors: list[_Failure],
+) -> SealFileV1:
+    """Stream one exact same-descriptor preseal file into its seal projection."""
+
+    parent_fd: int | None = None
+    descriptor: int | None = None
+    primary: BaseException | None = None
+    byte_length: int | None = None
+    digest_hex: str | None = None
+    try:
+        parent_fd, name = _open_parent(root_fd, path, inventory, teardown_errors)
+        path_before = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        descriptor = os.open(name, _file_flags(), dir_fd=parent_fd)
+        before = _identity(os.fstat(descriptor))
+        if not stat.S_ISREG(before.mode):
+            raise _Failure("unsafe_path_type", path)
+        if before != expected or not _same_leaf(path_before, before):
+            raise _Failure("unstable_snapshot", path)
+        if before.size > _artifact_read_limit(path):
+            raise _Failure("resource_limit", path)
+        digest = hashlib.sha256()
+        consumed = 0
+        while consumed < before.size:
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK, before.size - consumed))
+            except InterruptedError:
+                continue
+            if not chunk:
+                raise _Failure("unstable_snapshot", path)
+            consumed += len(chunk)
+            digest.update(chunk)
+        while True:
+            try:
+                extra = os.read(descriptor, 1)
+                break
+            except InterruptedError:
+                continue
+        if extra:
+            raise _Failure("unstable_snapshot", path)
+        after = _identity(os.fstat(descriptor))
+        path_after = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if before != after or not _same_leaf(after, path_after):
+            raise _Failure("unstable_snapshot", path)
+        byte_length = consumed
+        digest_hex = digest.hexdigest()
+    except BaseException as error:
+        primary = error
+    if descriptor is not None:
+        close_error = _close_owned(descriptor, path=path, primary=primary)
+        if primary is None and isinstance(close_error, _Failure):
+            teardown_errors.append(close_error)
+    if parent_fd is not None:
+        close_error = _close_owned(parent_fd, path=path, primary=primary)
+        if primary is None and isinstance(close_error, _Failure):
+            teardown_errors.append(close_error)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise primary
+        if isinstance(primary, OSError):
+            code = (
+                "unsafe_path_type" if primary.errno in {errno.ELOOP, errno.ENOTDIR} else "io_error"
+            )
+            raise _Failure(code, path) from None
+        raise primary
+    assert byte_length is not None and digest_hex is not None
+    try:
+        return SealFileV1(path=path, byte_length=byte_length, sha256=digest_hex)
+    except Exception:
+        raise _Failure("invalid_model", path) from None
+
+
+def _snapshot_preseal_files(
+    root_fd: int,
+    inventory: _Inventory,
+) -> tuple[SealFileV1, ...]:
+    teardown_errors: list[_Failure] = []
+    projected: list[SealFileV1] = []
+    for path in sorted(inventory.files, key=lambda item: item.encode("utf-8")):
+        if path == ".laconian.lock" or _is_finalization_artifact(path):
+            continue
+        projected.append(
+            _hash_inventory_file(
+                root_fd,
+                path,
+                inventory.files[path],
+                inventory,
+                teardown_errors,
+            )
+        )
+    if teardown_errors:
+        raise teardown_errors[0]
+    return tuple(projected)
+
+
+def _seal_transaction_candidate_available(
+    root_fd: int,
+    candidate: UUID,
+    seal_operation: UUID,
+) -> bool:
+    """Prove a new seal UUID is disjoint from run/session identities, not prior operations."""
+
+    if (
+        type(candidate) is not UUID
+        or candidate.version != 4
+        or candidate.variant != RFC_4122
+        or type(seal_operation) is not UUID
+        or seal_operation.version != 4
+        or seal_operation.variant != RFC_4122
+    ):
+        raise _Failure("invalid_model", None)
+    inventory = _scan_inventory(root_fd)
+    expected = inventory.files.get("events.jsonl")
+    if expected is None:
+        raise _Failure("missing_path", "events.jsonl")
+    parent_fd: int | None = None
+    descriptor: int | None = None
+    primary: BaseException | None = None
+    available: bool | None = None
+    teardown_errors: list[_Failure] = []
+    try:
+        root = os.fstat(root_fd)
+        parent = os.stat("..", dir_fd=root_fd, follow_symlinks=False)
+        forbidden = frozenset(
+            {
+                (root.st_dev, root.st_ino),
+                (parent.st_dev, parent.st_ino),
+            }
+        )
+        parent_fd, name = _open_parent(
+            root_fd,
+            "events.jsonl",
+            inventory,
+            teardown_errors,
+        )
+        path_before = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        descriptor = os.open(name, _file_flags(), dir_fd=parent_fd)
+        before = _identity(os.fstat(descriptor))
+        if (
+            before != expected
+            or not stat.S_ISREG(before.mode)
+            or not _same_leaf(path_before, before)
+        ):
+            raise _Failure("unstable_snapshot", "events.jsonl")
+        if before.size > RESOURCE_LIMITS_V1.mutable_capsule_bytes:
+            raise _Failure("resource_limit", "events.jsonl")
+
+        pending = bytearray()
+        consumed = 0
+        row_index = 0
+        try:
+            with ExactIdentityRegistry(forbidden_namespace_identities=forbidden) as identities:
+                while consumed < before.size:
+                    try:
+                        chunk = os.read(
+                            descriptor,
+                            min(_READ_CHUNK, before.size - consumed),
+                        )
+                    except InterruptedError:
+                        continue
+                    if not chunk:
+                        raise _Failure("unstable_snapshot", "events.jsonl")
+                    consumed += len(chunk)
+                    start = 0
+                    while start < len(chunk):
+                        newline = chunk.find(b"\n", start)
+                        end = len(chunk) if newline < 0 else newline
+                        segment = chunk[start:end]
+                        if (
+                            len(pending) + len(segment)
+                            > RESOURCE_LIMITS_V1.plan_event_jsonl_row_bytes
+                        ):
+                            raise _Failure("resource_limit", "events.jsonl")
+                        pending.extend(segment)
+                        if newline < 0:
+                            break
+                        if not pending:
+                            raise _Failure("noncanonical_json", "events.jsonl")
+                        raw = bytes(pending)
+                        try:
+                            event = parse_event(_decode_json(raw, "events.jsonl"))
+                            if event_bytes(event) != raw:
+                                raise _Failure("noncanonical_json", "events.jsonl")
+                        except EventError:
+                            raise _Failure("invalid_model", "events.jsonl") from None
+                        if row_index == 0:
+                            if type(event) is not PreparedEventV1:
+                                raise _Failure("history_mismatch", "events.jsonl", 0)
+                            try:
+                                identities.declare_core(event.run_id, "run", 0)
+                            except IdentityCollision:
+                                raise _Failure(
+                                    "identity_mismatch", "events.jsonl", row_index
+                                ) from None
+                        elif type(event) is ExecutionStartedEventV1:
+                            try:
+                                identities.declare_core(
+                                    event.execution_session_id,
+                                    "session",
+                                    row_index,
+                                )
+                            except IdentityCollision:
+                                raise _Failure(
+                                    "identity_mismatch", "events.jsonl", row_index
+                                ) from None
+                        elif type(event) is SealRequestedEventV1:
+                            raise _Failure("lifecycle_mismatch", "events.jsonl", row_index)
+                        row_index += 1
+                        pending.clear()
+                        start = newline + 1
+                if pending or consumed != before.size or row_index == 0:
+                    raise _Failure("noncanonical_json", "events.jsonl")
+                try:
+                    identities.declare_seal(candidate, seal_operation, row_index)
+                except IdentityCollision:
+                    available = False
+                else:
+                    available = True
+        except ScratchError:
+            raise _Failure("io_error", None) from None
+
+        while True:
+            try:
+                extra = os.read(descriptor, 1)
+                break
+            except InterruptedError:
+                continue
+        after = _identity(os.fstat(descriptor))
+        path_after = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if extra or before != after or not _same_leaf(after, path_after):
+            raise _Failure("unstable_snapshot", "events.jsonl")
+    except BaseException as error:
+        primary = error
+    if descriptor is not None:
+        primary = _close_owned(descriptor, path="events.jsonl", primary=primary)
+    if parent_fd is not None:
+        primary = _close_owned(parent_fd, path="events.jsonl", primary=primary)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise primary
+        if isinstance(primary, OSError):
+            code = (
+                "unsafe_path_type" if primary.errno in {errno.ELOOP, errno.ENOTDIR} else "io_error"
+            )
+            raise _Failure(code, "events.jsonl") from None
+        raise primary
+    if teardown_errors:
+        raise teardown_errors[0]
+    final_inventory = _scan_inventory(root_fd)
+    if final_inventory != inventory:
+        raise _Failure("unstable_snapshot", None)
+    assert available is not None
+    return available
+
+
 def _read_jsonl_models_file(
     root_fd: int,
     path: str,
@@ -1818,7 +2116,11 @@ def _read_jsonl_models_file(
 
 
 def _resource_checks(inventory: _Inventory) -> None:
-    evidence = {path: item for path, item in inventory.files.items() if path != ".laconian.lock"}
+    evidence = {
+        path: item
+        for path, item in inventory.files.items()
+        if path != ".laconian.lock" and not _is_finalization_artifact(path)
+    }
     total = sum(item.size for item in evidence.values())
     if total > RESOURCE_LIMITS_V1.mutable_capsule_bytes:
         oversized = next(
@@ -1896,7 +2198,7 @@ def _load_artifacts(
     loaded: dict[str, bytes] = {}
     teardown_errors: list[_Failure] = []
     for path in sorted(inventory.files, key=lambda item: item.encode("utf-8")):
-        if path == ".laconian.lock":
+        if path == ".laconian.lock" or _is_finalization_artifact(path):
             continue
         loaded[path] = _read_file(
             root_fd,
@@ -2120,9 +2422,13 @@ def _exact_tree(
     inventory: _Inventory,
     index: InputIndexV1,
     manifest: ResolvedManifestV2 | None = None,
+    *,
+    allow_finalization_artifacts: bool = False,
 ) -> None:
     expected_files = set(_REQUIRED_FILES)
     expected_files.update(record.capsule_path for record in index.files)
+    if allow_finalization_artifacts:
+        expected_files.update(_finalization_artifact_paths(inventory))
     if manifest is not None:
         expected_files.update(manifest.case_files)
         expected_files.update(_declared_arm_paths(manifest))
@@ -2147,6 +2453,26 @@ def _exact_tree(
     candidates.extend((path.encode("utf-8"), 2, _Failure("missing_path", path)) for path in missing)
     if candidates:
         raise min(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def _validate_finalization_artifacts(
+    inventory: _Inventory,
+    history: ValidatedHistoryV1,
+) -> None:
+    artifacts = _finalization_artifact_paths(inventory)
+    seal_present = _SEAL_PATH in artifacts
+    temporaries = tuple(path for path in artifacts if path != _SEAL_PATH)
+    request = history.seal_requested
+    if request is None:
+        if artifacts:
+            raise _Failure("seal_mismatch", artifacts[0])
+        return
+    expected_temporary = f".seal.{request.payload.seal_transaction_id}.tmp"
+    if len(temporaries) > 1 or (temporaries and temporaries != (expected_temporary,)):
+        first = temporaries[0] if temporaries else _SEAL_PATH
+        raise _Failure("seal_mismatch", first)
+    if seal_present and request.payload.prior_event_sequence != request.sequence - 1:
+        raise _Failure("seal_mismatch", _SEAL_PATH)
 
 
 def _declared_arm_paths(manifest: ResolvedManifestV2) -> set[str]:
@@ -2626,9 +2952,12 @@ def _verify_capsule_context_descriptors_with_journal_policy(
     *,
     tail_policy: TailPolicy = "reject",
     reserved_operation_id: UUID | None = None,
+    allow_finalization_artifacts: bool = False,
 ) -> _VerifiedCapsuleContext:
     """Validate one already-owned descriptor snapshot without acquiring any lock."""
 
+    if type(allow_finalization_artifacts) is not bool:
+        raise _Failure("invalid_model", None)
     inventory = _strict_inventory(inventory)
     teardown_errors: list[_Failure] = []
     artifacts: dict[str, bytes] = {}
@@ -2704,7 +3033,12 @@ def _verify_capsule_context_descriptors_with_journal_policy(
     if input_index is not None:
         # Exact structure is stage 1 even though its dynamic allowlist is supplied by the safely
         # parsed index.  It therefore overrides every accumulated static-input failure.
-        _exact_tree(inventory, input_index, manifest)
+        _exact_tree(
+            inventory,
+            input_index,
+            manifest,
+            allow_finalization_artifacts=allow_finalization_artifacts,
+        )
     if manifest is not None and input_index is not None:
         try:
             _check_manifest_input_coverage(manifest, input_index)
@@ -2892,6 +3226,8 @@ def _verify_capsule_context_descriptors_with_journal_policy(
         raw_expected.ctime_ns,
     ):
         raise _Failure("unstable_snapshot", "events.jsonl")
+    if allow_finalization_artifacts:
+        _validate_finalization_artifacts(inventory, journals.history)
     if teardown_errors:
         raise teardown_errors[0]
     return _VerifiedCapsuleContext(
@@ -2930,9 +3266,12 @@ def _verify_recoverable_capsule_descriptors(
     parent_fd: int,
     destination_name: str,
     reserved_operation_id: UUID,
+    allow_finalization_artifacts: bool = False,
 ) -> _VerifiedRecoveryContext:
     """Verify one recoverable capsule without opening any writable descriptor."""
 
+    if type(allow_finalization_artifacts) is not bool:
+        raise _Failure("invalid_model", None)
     root_before, parent_before = _bound_recovery_root(root_fd, parent_fd, destination_name)
     inventory = _scan_inventory(root_fd)
     if inventory.root_identity != root_before:
@@ -2942,6 +3281,7 @@ def _verify_recoverable_capsule_descriptors(
         inventory,
         tail_policy="report",
         reserved_operation_id=reserved_operation_id,
+        allow_finalization_artifacts=allow_finalization_artifacts,
     )
     final_inventory = _scan_inventory(root_fd)
     root_after, parent_after = _bound_recovery_root(root_fd, parent_fd, destination_name)
@@ -2956,6 +3296,104 @@ def _verify_recoverable_capsule_descriptors(
         immutable_tree_sha256,
         immutable_evidence_bytes,
     )
+
+
+def _verify_finalization_snapshot_descriptors(
+    root_fd: int,
+    *,
+    parent_fd: int,
+    destination_name: str,
+) -> _VerifiedFinalizationSnapshot:
+    """Reverify and stream-hash the exact frozen post-request preseal tree."""
+
+    root_before, parent_before = _bound_recovery_root(root_fd, parent_fd, destination_name)
+    inventory = _scan_inventory(root_fd)
+    if inventory.root_identity != root_before:
+        raise _Failure("unstable_snapshot", None)
+    context = _verify_capsule_context_descriptors_with_journal_policy(
+        root_fd,
+        inventory,
+        tail_policy="reject",
+        reserved_operation_id=None,
+        allow_finalization_artifacts=True,
+    )
+    if context.history.seal_requested is None or context.lifecycle.state != "SEALING_INTERRUPTED":
+        raise _Failure("lifecycle_mismatch", "events.jsonl")
+    files = _snapshot_preseal_files(root_fd, inventory)
+    final_inventory = _scan_inventory(root_fd)
+    root_after, parent_after = _bound_recovery_root(root_fd, parent_fd, destination_name)
+    if root_after != root_before or parent_after != parent_before or final_inventory != inventory:
+        raise _Failure("unstable_snapshot", None)
+    return _VerifiedFinalizationSnapshot(
+        context,
+        files,
+        inventory,
+        root_before,
+        parent_before,
+        destination_name,
+    )
+
+
+def _check_finalization_namespace_descriptors(
+    root_fd: int,
+    snapshot: _VerifiedFinalizationSnapshot,
+    *,
+    seal_descriptor: int | None,
+    temporary_descriptor: int | None,
+) -> None:
+    """Bind every finalization namespace state to the frozen preseal snapshot."""
+
+    if (
+        type(snapshot) is not _VerifiedFinalizationSnapshot
+        or (seal_descriptor is not None and type(seal_descriptor) is not int)
+        or (temporary_descriptor is not None and type(temporary_descriptor) is not int)
+    ):
+        raise _Failure("invalid_model", None)
+    request = snapshot.context.history.seal_requested
+    if request is None:
+        raise _Failure("lifecycle_mismatch", "events.jsonl")
+    temporary_name = f".seal.{request.payload.seal_transaction_id}.tmp"
+    current = _scan_inventory(root_fd)
+    expected_preseal = {
+        path: identity
+        for path, identity in snapshot.inventory.files.items()
+        if not _is_finalization_artifact(path)
+    }
+    expected_names = set(expected_preseal)
+    if seal_descriptor is not None:
+        expected_names.add(_SEAL_PATH)
+    if temporary_descriptor is not None:
+        expected_names.add(temporary_name)
+    if current.directories != snapshot.inventory.directories:
+        raise _Failure("unstable_snapshot", None)
+    if set(current.files) != expected_names:
+        changed = set(current.files) ^ expected_names
+        path = min(changed, key=lambda item: item.encode("utf-8")) if changed else None
+        raise _Failure("unstable_snapshot", path)
+    for path, expected in expected_preseal.items():
+        if current.files[path] != expected:
+            raise _Failure("unstable_snapshot", path)
+
+    retained = (
+        (_SEAL_PATH, seal_descriptor),
+        (temporary_name, temporary_descriptor),
+    )
+    preseal_leaves = {(identity.device, identity.inode) for identity in expected_preseal.values()}
+    for path, descriptor in retained:
+        if descriptor is None:
+            continue
+        try:
+            opened = _identity(os.fstat(descriptor))
+        except OSError:
+            raise _Failure("unstable_snapshot", path) from None
+        if (
+            not stat.S_ISREG(opened.mode)
+            or current.files[path] != opened
+            or (opened.device, opened.inode) in preseal_leaves
+        ):
+            raise _Failure("unstable_snapshot", path)
+    if not _same_leaf(current.root_identity, snapshot.root_identity):
+        raise _Failure("unstable_snapshot", None)
 
 
 def _check_lock_identity(root_fd: int, descriptor: int) -> None:
