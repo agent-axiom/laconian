@@ -19,7 +19,7 @@ import laconian_eval.capsule.execution as execution_module
 import laconian_eval.capsule.finalize as finalize_module
 import laconian_eval.capsule.verify as verify_module
 from laconian_eval.capsule.bounded_io import open_directory_no_follow
-from laconian_eval.capsule.canonical import sha256_bytes
+from laconian_eval.capsule.canonical import canonical_json, sha256_bytes
 from laconian_eval.capsule.execution import ProviderFactory
 from laconian_eval.capsule.finalize import FinalizationError, finalize_capsule
 from laconian_eval.capsule.seal_models import SealV1
@@ -176,6 +176,294 @@ def test_finalize_crash_boundaries_retry_one_committed_request_and_exact_seal(
     if point == "during_temporary_write":
         assert temporary_before_retry is not None
         assert 0 < len(temporary_before_retry) < len(final_bytes)
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    [
+        "after_temporary_exclusive_creation",
+        "during_temporary_write",
+        "after_temporary_file_fsync",
+    ],
+)
+def test_public_verify_accepts_matching_temporary_before_seal_publication(
+    complete_capsule: Path,
+    crash_point: finalize_module.CrashPoint,
+) -> None:
+    generation_result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+    assert generation_result.status == "valid"
+    assert generation_result.state == "GENERATION_COMPLETE"
+
+    with pytest.raises(FinalizationError) as caught:
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams(crash_point),
+        )
+
+    assert caught.value.code == "io_error"
+    request = _seal_request(complete_capsule)
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    temporary = complete_capsule / f".seal.{payload['seal_transaction_id']}.tmp"
+    assert temporary.is_file()
+    assert not (complete_capsule / "seal.json").exists()
+    temporary_before = temporary.read_bytes()
+    metadata = temporary.stat()
+    identity_before = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+    events_before = (complete_capsule / "events.jsonl").read_bytes()
+    raw_before = (complete_capsule / "raw.jsonl").read_bytes()
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "valid"
+    assert result.run_id == generation_result.run_id
+    assert result.state == "SEALING_INTERRUPTED"
+    assert result.capsule_sha256 is None
+    assert result.missing_plan_item_ids == ()
+    assert result.operational_blocker_codes == ()
+    assert result.warnings == generation_result.warnings
+    assert result.first_error is None
+    metadata = temporary.stat()
+    assert (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    ) == identity_before
+    assert temporary.read_bytes() == temporary_before
+    assert (complete_capsule / "events.jsonl").read_bytes() == events_before
+    assert (complete_capsule / "raw.jsonl").read_bytes() == raw_before
+
+
+def test_public_verify_rejects_matching_temporary_aliased_to_preseal_evidence(
+    complete_capsule: Path,
+) -> None:
+    with pytest.raises(FinalizationError):
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_temporary_file_fsync"),
+        )
+    request = _seal_request(complete_capsule)
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    temporary = complete_capsule / f".seal.{payload['seal_transaction_id']}.tmp"
+    temporary.unlink()
+    temporary.hardlink_to(complete_capsule / "events.jsonl")
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "seal_mismatch"
+    assert result.first_error.path == temporary.name
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+
+
+def test_public_verify_reports_earlier_capsule_schema_failure_before_temporary_alias(
+    complete_capsule: Path,
+) -> None:
+    with pytest.raises(FinalizationError):
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_temporary_file_fsync"),
+        )
+    request = _seal_request(complete_capsule)
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    temporary = complete_capsule / f".seal.{payload['seal_transaction_id']}.tmp"
+    temporary.unlink()
+    temporary.hardlink_to(complete_capsule / "events.jsonl")
+    capsule_path = complete_capsule / "capsule.json"
+    capsule = json.loads(capsule_path.read_bytes())
+    assert isinstance(capsule, dict)
+    capsule["capsule_schema_version"] = "999"
+    capsule_path.write_bytes(canonical_json(capsule))
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "unsupported_schema"
+    assert result.first_error.path == "capsule.json"
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+
+
+def test_public_verify_reports_earlier_wrong_temporary_before_matching_alias(
+    complete_capsule: Path,
+) -> None:
+    with pytest.raises(FinalizationError):
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_temporary_file_fsync"),
+        )
+    request = _seal_request(complete_capsule)
+    payload = request["payload"]
+    assert isinstance(payload, dict)
+    matching = complete_capsule / f".seal.{payload['seal_transaction_id']}.tmp"
+    matching.unlink()
+    matching.hardlink_to(complete_capsule / "events.jsonl")
+    wrong = complete_capsule / ".seal.a23e4567-e89b-42d3-a456-426614174099.tmp"
+    assert wrong.name < matching.name
+    wrong.write_bytes(b"wrong-transaction-CANARY")
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "seal_mismatch"
+    assert result.first_error.path == wrong.name
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+    assert "CANARY" not in result.model_dump_json()
+
+
+def test_public_verify_rejects_seal_raced_into_selected_unsealed_snapshot(
+    complete_capsule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(FinalizationError) as caught:
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_seal_requested_fsync"),
+        )
+    assert caught.value.code == "io_error"
+    seal_path = complete_capsule / "seal.json"
+    assert not seal_path.exists()
+
+    real_top_level_identity = verify_module._top_level_entry_identity
+    seal_probes = 0
+
+    def race_seal_after_locked_selection(root_fd: int, name: str) -> object:
+        nonlocal seal_probes
+        identity = real_top_level_identity(root_fd, name)
+        if name == "seal.json":
+            seal_probes += 1
+            if seal_probes == 2:
+                assert identity is None
+                seal_path.write_bytes(b"raced-seal-CANARY")
+        return identity
+
+    monkeypatch.setattr(
+        verify_module,
+        "_top_level_entry_identity",
+        race_seal_after_locked_selection,
+    )
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert seal_probes >= 2
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "unstable_snapshot"
+    assert result.first_error.path == "seal.json"
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+    assert "CANARY" not in result.model_dump_json()
+
+
+def test_public_verify_rejects_finalization_temporary_without_seal_request(
+    prepared_capsule: Path,
+) -> None:
+    temporary = prepared_capsule / f".seal.{_SEAL_TRANSACTION}.tmp"
+    temporary.write_bytes(b"unauthorized-finalization-CANARY")
+
+    result = verify_module.verify_capsule(
+        prepared_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "seal_mismatch"
+    assert result.first_error.path == temporary.name
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+    assert "CANARY" not in result.model_dump_json()
+
+
+def test_public_verify_rejects_wrong_finalization_temporary_for_seal_request(
+    complete_capsule: Path,
+) -> None:
+    with pytest.raises(FinalizationError):
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_seal_requested_fsync"),
+        )
+    wrong_temporary = complete_capsule / ".seal.e23e4567-e89b-42d3-a456-426614174033.tmp"
+    wrong_temporary.write_bytes(b"wrong-transaction-CANARY")
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "seal_mismatch"
+    assert result.first_error.path == wrong_temporary.name
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
+    assert "CANARY" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("artifact_kind", ["directory", "symlink", "fifo"])
+def test_public_verify_rejects_unsafe_matching_finalization_temporary_type(
+    complete_capsule: Path,
+    artifact_kind: str,
+) -> None:
+    with pytest.raises(FinalizationError):
+        finalize_module._finalize_capsule(
+            complete_capsule,
+            seams=_crash_seams("after_seal_requested_fsync"),
+        )
+    temporary = complete_capsule / f".seal.{_SEAL_TRANSACTION}.tmp"
+    if artifact_kind == "directory":
+        temporary.mkdir()
+    elif artifact_kind == "symlink":
+        temporary.symlink_to("events.jsonl")
+    else:
+        os.mkfifo(temporary)
+
+    result = verify_module.verify_capsule(
+        complete_capsule,
+        mode=verify_module.VerificationMode.PREPARED,
+    )
+
+    assert result.status == "invalid"
+    assert result.first_error is not None
+    assert result.first_error.code == "unsafe_path_type"
+    assert result.first_error.path == temporary.name
+    assert result.first_error.sequence is None
+    assert result.first_error.explanation == "capsule verification failed"
 
 
 def test_ordinary_recovery_verifier_does_not_accept_finalization_artifacts(

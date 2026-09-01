@@ -4044,6 +4044,53 @@ def _verify_core(root_fd: int) -> VerifyResultV1:
     return _valid_result(context, final_inventory)
 
 
+def _top_level_finalization_artifact_present(root_fd: int) -> bool:
+    """Select the finalization-aware core without recursively scanning the tree twice."""
+
+    entry_count = 0
+    try:
+        with os.scandir(root_fd) as entries:
+            for entry in entries:
+                entry_count += 1
+                if entry_count > _TREE_ENTRY_CEILING:
+                    return False
+                name = getattr(entry, "name", None)
+                if type(name) is str and _is_finalization_artifact(name):
+                    return True
+    except OSError:
+        raise _Failure("io_error", None) from None
+    return False
+
+
+def _verify_public_unsealed_core(root_fd: int) -> VerifyResultV1:
+    """Accept only the sole requested seal temporary on the public unsealed path."""
+
+    inventory = _scan_inventory(root_fd)
+    artifact_paths = _finalization_artifact_paths(inventory)
+    if not artifact_paths:
+        raise _Failure("unstable_snapshot", None)
+    if _SEAL_PATH in inventory.files:
+        raise _Failure("unstable_snapshot", _SEAL_PATH)
+    context = _verify_capsule_context_descriptors_with_journal_policy(
+        root_fd,
+        inventory,
+        allow_finalization_artifacts=True,
+        defer_finalization_artifact_validation=True,
+    )
+    request = context.history.seal_requested
+    expected_temporary = (
+        None if request is None else f".seal.{request.payload.seal_transaction_id}.tmp"
+    )
+    for artifact_path in artifact_paths:
+        if artifact_path != expected_temporary:
+            raise _Failure("seal_mismatch", artifact_path)
+        _check_sealed_artifact_alias(inventory, artifact_path)
+    final_inventory = _scan_inventory(root_fd)
+    if final_inventory != inventory:
+        raise _Failure("unstable_snapshot", None)
+    return _valid_result(context, final_inventory)
+
+
 def _check_sealed_artifact_alias(inventory: _Inventory, artifact_path: str) -> None:
     """Reject one finalization artifact sharing a leaf with any preseal member."""
 
@@ -4923,7 +4970,11 @@ def verify_capsule(path: Path, *, mode: VerificationMode) -> VerifyResultV1:
                                 selected_seal_identity=selected_for_core,
                             )
                             if sealed_under_lock
-                            else _verify_core(root_fd)
+                            else (
+                                _verify_public_unsealed_core(root_fd)
+                                if _top_level_finalization_artifact_present(root_fd)
+                                else _verify_core(root_fd)
+                            )
                         )
                     except _Failure as failure:
                         result = _invalid_result(failure.code, failure.path, failure.sequence)
