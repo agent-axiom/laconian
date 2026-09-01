@@ -21,7 +21,7 @@ from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NoReturn, TypeVar, cast
+from typing import Any, Literal, NoReturn, TypeVar, cast
 from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ValidationError
@@ -109,6 +109,7 @@ from laconian_eval.capsule.seal_models import (
 )
 from laconian_eval.capsule.sharding import (
     ShardPlanError,
+    ShardPlanV1,
     materialize_shard_projection,
     parse_shard_plan_file_bytes,
 )
@@ -942,6 +943,113 @@ class _VerifiedFinalizationSnapshot:
 
 
 _SEALED_SOURCE_CONSTRUCTION_AUTHORITY = object()
+_CHECKPOINT_SOURCE_CONSTRUCTION_AUTHORITY = object()
+
+CheckpointMemberKind = Literal["directory", "file"]
+CheckpointInventoryRecord = tuple[str, CheckpointMemberKind, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointMemberIdentity:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    link_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedCheckpointSourceV1:
+    """Borrowed descriptor and frozen inventory for one verified shard capsule."""
+
+    root_descriptor: int
+    result: VerifyResultV1
+    manifest: ResolvedManifestV2
+    shard: ShardPlanV1
+    parent_plan_record: InputFileRecordV1
+    shard_plan_record: InputFileRecordV1
+    inventory: tuple[CheckpointInventoryRecord, ...]
+    _member_identities: Mapping[str, _CheckpointMemberIdentity] = field(repr=False)
+    _snapshot: _Inventory = field(repr=False)
+    _visible_path: Path = field(repr=False)
+    _parent_descriptor: int = field(repr=False)
+    _parent_identity: _Identity = field(repr=False)
+    _root_identity: _Identity = field(repr=False)
+    _lock_descriptor: int = field(repr=False)
+    _construction_authority: InitVar[object] = None
+
+    def __post_init__(self, _construction_authority: object) -> None:
+        try:
+            if _construction_authority is not _CHECKPOINT_SOURCE_CONSTRUCTION_AUTHORITY:
+                raise TypeError
+            if (
+                type(self.root_descriptor) is not int
+                or self.root_descriptor < 0
+                or type(self._parent_descriptor) is not int
+                or self._parent_descriptor < 0
+                or type(self._lock_descriptor) is not int
+                or self._lock_descriptor < 0
+                or type(self.inventory) is not tuple
+                or type(self._member_identities) is not type(MappingProxyType({}))
+                or type(self._snapshot) is not _Inventory
+                or not isinstance(self._visible_path, Path)
+                or type(self._parent_identity) is not _Identity
+                or type(self._root_identity) is not _Identity
+            ):
+                raise TypeError
+            result = _strict_model_copy(VerifyResultV1, self.result)
+            manifest = _strict_model_copy(ResolvedManifestV2, self.manifest)
+            shard = _strict_model_copy(ShardPlanV1, self.shard)
+            parent_record = _strict_model_copy(InputFileRecordV1, self.parent_plan_record)
+            shard_record = _strict_model_copy(InputFileRecordV1, self.shard_plan_record)
+            if (
+                result.status != "valid"
+                or parent_record.role != "parent_plan"
+                or shard_record.role != "shard_plan"
+                or shard.model_id != manifest.provider.model
+            ):
+                raise TypeError
+            records: list[CheckpointInventoryRecord] = []
+            prior: bytes | None = None
+            identities = cast(Mapping[str, _CheckpointMemberIdentity], self._member_identities)
+            for item in self.inventory:
+                if (
+                    type(item) is not tuple
+                    or len(item) != 4
+                    or type(item[0]) is not str
+                    or item[1] not in {"directory", "file"}
+                    or type(item[2]) is not int
+                    or not 0 <= item[2] <= 0o7777
+                    or type(item[3]) is not int
+                    or item[3] < 0
+                    or item[0] not in identities
+                ):
+                    raise TypeError
+                encoded = item[0].encode("utf-8", errors="strict")
+                if prior is not None and encoded <= prior:
+                    raise TypeError
+                prior = encoded
+                identity = identities[item[0]]
+                if type(identity) is not _CheckpointMemberIdentity:
+                    raise TypeError
+                if (
+                    stat.S_IMODE(identity.mode) != item[2]
+                    or (identity.size if item[1] == "file" else 0) != item[3]
+                ):
+                    raise TypeError
+                records.append(item)
+            if set(identities) != {item[0] for item in records}:
+                raise TypeError
+            object.__setattr__(self, "result", result)
+            object.__setattr__(self, "manifest", manifest)
+            object.__setattr__(self, "shard", shard)
+            object.__setattr__(self, "parent_plan_record", parent_record)
+            object.__setattr__(self, "shard_plan_record", shard_record)
+            object.__setattr__(self, "inventory", tuple(records))
+        except Exception:
+            raise _Failure("invalid_model", None) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1683,9 +1791,12 @@ def _close_owned(
 ) -> BaseException | None:
     try:
         os.close(descriptor)
-    except OSError:
-        if primary is None:
-            return _Failure("io_error", path)
+    except BaseException as error:
+        candidate = error if not isinstance(error, Exception) else _Failure("io_error", path)
+        if primary is None or (
+            isinstance(primary, Exception) and not isinstance(candidate, Exception)
+        ):
+            return candidate
     return primary
 
 
@@ -4740,6 +4851,396 @@ def verified_sealed_capsule_source(
             candidate = error if not isinstance(error, Exception) else _Failure("io_error", None)
             primary = _prefer_source_failure(primary, candidate)
     if primary is not None:
+        raise primary.with_traceback(primary.__traceback__)
+
+
+def _checkpoint_identity(metadata: os.stat_result) -> _CheckpointMemberIdentity:
+    return _CheckpointMemberIdentity(
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        metadata.st_nlink,
+    )
+
+
+def _checkpoint_member_identity(
+    root_fd: int,
+    path: str,
+    kind: CheckpointMemberKind,
+    inventory: _Inventory,
+) -> _CheckpointMemberIdentity:
+    teardown_errors: list[_Failure] = []
+    parent_fd: int | None = None
+    descriptor: int | None = None
+    primary: BaseException | None = None
+    identity: _CheckpointMemberIdentity | None = None
+    try:
+        parent_fd, name = _open_parent(root_fd, path, inventory, teardown_errors)
+        path_before = _checkpoint_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        flags = _directory_flags() if kind == "directory" else _file_flags()
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+        opened = _checkpoint_identity(os.fstat(descriptor))
+        expected = inventory.directories[path] if kind == "directory" else inventory.files[path]
+        expected_type = stat.S_IFDIR if kind == "directory" else stat.S_IFREG
+        if (
+            stat.S_IFMT(opened.mode) != expected_type
+            or opened != path_before
+            or _identity(os.fstat(descriptor)) != expected
+            or (kind == "file" and opened.link_count != 1)
+        ):
+            raise _Failure("unstable_snapshot", path)
+        identity = opened
+    except BaseException as error:
+        primary = error
+    for owned in (descriptor, parent_fd):
+        if owned is None:
+            continue
+        primary = _close_owned(owned, path=path, primary=primary)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise primary
+        if isinstance(primary, OSError):
+            code = (
+                "unsafe_path_type"
+                if primary.errno in {errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO}
+                else "io_error"
+            )
+            raise _Failure(code, path) from None
+        raise primary
+    if teardown_errors:
+        raise teardown_errors[0]
+    assert identity is not None
+    return identity
+
+
+def _checkpoint_shard_projection(
+    context: _VerifiedCapsuleContext,
+) -> tuple[InputFileRecordV1, InputFileRecordV1, ShardPlanV1]:
+    planning = _planning_record_pair(context.input_index)
+    if planning is None:
+        raise _Failure("plan_mismatch", _SHARD_PLAN_PATH)
+    parent_record, shard_record = planning
+    by_path = {item.record.capsule_path: item.data for item in context.captured.files}
+    try:
+        parent_bytes = by_path[parent_record.capsule_path]
+        shard_bytes = by_path[shard_record.capsule_path]
+        shard = parse_shard_plan_file_bytes(shard_bytes)
+    except (KeyError, ShardPlanError, TypeError, ValueError):
+        raise _Failure("plan_mismatch", _SHARD_PLAN_PATH) from None
+    if (
+        sha256_bytes(parent_bytes) != parent_record.sha256
+        or sha256_bytes(shard_bytes) != shard_record.sha256
+        or shard.parent_plan_sha256 != parent_record.sha256
+        or shard.parent_manifest_sha256 != context.capsule.manifest_sha256
+        or shard.model_id != context.manifest.provider.model
+        or tuple(row.plan_item_id for row in context.plan) != shard.ordered_plan_item_ids
+    ):
+        raise _Failure("plan_mismatch", _SHARD_PLAN_PATH)
+    return parent_record, shard_record, shard
+
+
+def _build_checkpoint_source(
+    *,
+    root_fd: int,
+    parent_fd: int,
+    lock_descriptor: int,
+    visible_path: Path,
+    parent_identity: _Identity,
+    root_identity: _Identity,
+    result: VerifyResultV1,
+    context: _VerifiedCapsuleContext,
+    inventory: _Inventory,
+) -> VerifiedCheckpointSourceV1:
+    parent_record, shard_record, shard = _checkpoint_shard_projection(context)
+    ordered_paths = sorted(
+        (*inventory.directories.keys(), *inventory.files.keys()),
+        key=lambda value: value.encode("utf-8"),
+    )
+    if len(ordered_paths) > RESOURCE_LIMITS_V1.checkpoint_members:
+        raise _Failure("resource_limit", None)
+    if len(inventory.directories) > RESOURCE_LIMITS_V1.checkpoint_directories:
+        raise _Failure("resource_limit", None)
+
+    records: list[CheckpointInventoryRecord] = []
+    identities: dict[str, _CheckpointMemberIdentity] = {}
+    aggregate_file_bytes = 0
+    projected_archive_bytes = 2 * 512
+    for path in ordered_paths:
+        kind: CheckpointMemberKind = "directory" if path in inventory.directories else "file"
+        if len(path.split("/")) > RESOURCE_LIMITS_V1.checkpoint_path_depth:
+            raise _Failure("resource_limit", path)
+        identity = _checkpoint_member_identity(root_fd, path, kind, inventory)
+        byte_length = identity.size if kind == "file" else 0
+        if kind == "file":
+            if byte_length > RESOURCE_LIMITS_V1.checkpoint_file_bytes:
+                raise _Failure("resource_limit", path)
+            aggregate_file_bytes += byte_length
+            if aggregate_file_bytes > RESOURCE_LIMITS_V1.checkpoint_aggregate_file_bytes:
+                raise _Failure("resource_limit", path)
+        projected_archive_bytes += 512 + ((byte_length + 511) // 512) * 512
+        if projected_archive_bytes > RESOURCE_LIMITS_V1.checkpoint_archive_bytes:
+            raise _Failure("resource_limit", path)
+        identities[path] = identity
+        records.append((path, kind, stat.S_IMODE(identity.mode), byte_length))
+    return VerifiedCheckpointSourceV1(
+        root_descriptor=root_fd,
+        result=result,
+        manifest=context.manifest,
+        shard=shard,
+        parent_plan_record=parent_record,
+        shard_plan_record=shard_record,
+        inventory=tuple(records),
+        _member_identities=MappingProxyType(identities),
+        _snapshot=inventory,
+        _visible_path=visible_path,
+        _parent_descriptor=parent_fd,
+        _parent_identity=parent_identity,
+        _root_identity=root_identity,
+        _lock_descriptor=lock_descriptor,
+        _construction_authority=_CHECKPOINT_SOURCE_CONSTRUCTION_AUTHORITY,
+    )
+
+
+def _recheck_checkpoint_source(source: VerifiedCheckpointSourceV1, *, full: bool) -> None:
+    if type(source) is not VerifiedCheckpointSourceV1 or type(full) is not bool:
+        raise _Failure("invalid_model", None)
+    _check_lock_identity(source.root_descriptor, source._lock_descriptor)
+    lock_identity = _checkpoint_identity(os.fstat(source._lock_descriptor))
+    expected_lock = source._member_identities.get(".laconian.lock")
+    if expected_lock is None or lock_identity != expected_lock or lock_identity.link_count != 1:
+        raise _Failure("unstable_snapshot", ".laconian.lock")
+    _check_public_root_identity(
+        source._visible_path,
+        source._parent_descriptor,
+        source.root_descriptor,
+        expected_parent=source._parent_identity,
+        expected_root=source._root_identity,
+        recheck_visible_parent=True,
+    )
+    if full:
+        current = _scan_inventory(
+            source.root_descriptor,
+            expected_inventory=source._snapshot,
+        )
+        if current != source._snapshot:
+            raise _Failure(
+                "unstable_snapshot",
+                _inventory_difference_path(source._snapshot, current),
+            )
+        for path, kind, _mode, _byte_length in source.inventory:
+            if (
+                _checkpoint_member_identity(
+                    source.root_descriptor,
+                    path,
+                    kind,
+                    source._snapshot,
+                )
+                != source._member_identities[path]
+            ):
+                raise _Failure("unstable_snapshot", path)
+
+
+@contextmanager
+def _checkpoint_source_member(
+    source: VerifiedCheckpointSourceV1,
+    record: CheckpointInventoryRecord,
+) -> Iterator[int]:
+    if type(source) is not VerifiedCheckpointSourceV1 or type(record) is not tuple:
+        raise _Failure("invalid_model", None)
+    try:
+        path, kind, mode, byte_length = record
+        expected = source._member_identities[path]
+    except (KeyError, TypeError, ValueError):
+        raise _Failure("invalid_model", None) from None
+    expected_kind: CheckpointMemberKind = (
+        "directory" if path in source._snapshot.directories else "file"
+    )
+    expected_record: CheckpointInventoryRecord = (
+        path,
+        expected_kind,
+        stat.S_IMODE(expected.mode),
+        expected.size if expected_kind == "file" else 0,
+    )
+    if record != expected_record:
+        raise _Failure("invalid_model", None)
+    parent_fd: int | None = None
+    descriptor: int | None = None
+    primary: BaseException | None = None
+    try:
+        _recheck_checkpoint_source(source, full=False)
+        teardown_errors: list[_Failure] = []
+        parent_fd, name = _open_parent(
+            source.root_descriptor,
+            path,
+            source._snapshot,
+            teardown_errors,
+        )
+        if teardown_errors:
+            raise teardown_errors[0]
+        before_path = _checkpoint_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        descriptor = os.open(
+            name,
+            _directory_flags() if kind == "directory" else _file_flags(),
+            dir_fd=parent_fd,
+        )
+        before = _checkpoint_identity(os.fstat(descriptor))
+        if (
+            before != expected
+            or before_path != expected
+            or stat.S_IMODE(before.mode) != mode
+            or (before.size if kind == "file" else 0) != byte_length
+            or (kind == "file" and before.link_count != 1)
+        ):
+            raise _Failure("unstable_snapshot", path)
+        try:
+            yield descriptor
+        except BaseException as error:
+            primary = error
+        after = _checkpoint_identity(os.fstat(descriptor))
+        after_path = _checkpoint_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if after != expected or after_path != expected:
+            primary = _prefer_source_failure(primary, _Failure("unstable_snapshot", path))
+        try:
+            _recheck_checkpoint_source(source, full=False)
+        except BaseException as error:
+            primary = _prefer_source_failure(primary, error)
+    except BaseException as error:
+        primary = _prefer_source_failure(primary, error)
+    for owned in (descriptor, parent_fd):
+        if owned is None:
+            continue
+        primary = _close_owned(owned, path=path, primary=primary)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise _Failure(primary.code, primary.path, primary.sequence) from None
+        raise primary.with_traceback(primary.__traceback__)
+
+
+@contextmanager
+def _verified_checkpoint_source_descriptors(
+    root_fd: int,
+    *,
+    parent_fd: int,
+    visible_path: Path,
+    lock_descriptor: int,
+) -> Iterator[VerifiedCheckpointSourceV1]:
+    """Borrow already-owned root/parent/lock descriptors for checkpoint verification."""
+
+    parent_identity, root_identity = _check_public_root_identity(
+        visible_path,
+        parent_fd,
+        root_fd,
+        recheck_visible_parent=True,
+    )
+    _check_lock_identity(root_fd, lock_descriptor)
+    selected_seal = _top_level_entry_identity(root_fd, _SEAL_PATH)
+    if selected_seal is None:
+        inventory = _scan_inventory(root_fd)
+        context = _verify_capsule_context_descriptors(root_fd, inventory)
+        final_inventory = _scan_inventory(root_fd, expected_inventory=inventory)
+        result = _valid_result(context, final_inventory)
+    else:
+        sealed = _verify_sealed_snapshot(
+            root_fd,
+            selected_seal_identity=selected_seal,
+        )
+        inventory = sealed.inventory
+        context = sealed.context
+        result = sealed.result
+    source = _build_checkpoint_source(
+        root_fd=root_fd,
+        parent_fd=parent_fd,
+        lock_descriptor=lock_descriptor,
+        visible_path=visible_path,
+        parent_identity=parent_identity,
+        root_identity=root_identity,
+        result=result,
+        context=context,
+        inventory=inventory,
+    )
+    _recheck_checkpoint_source(source, full=True)
+    primary: BaseException | None = None
+    try:
+        yield source
+    except BaseException as error:
+        primary = error
+    try:
+        _recheck_checkpoint_source(source, full=True)
+    except BaseException as error:
+        primary = _prefer_source_failure(primary, error)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise _Failure(primary.code, primary.path, primary.sequence) from None
+        raise primary.with_traceback(primary.__traceback__)
+
+
+@contextmanager
+def verified_checkpoint_source(path: Path) -> Iterator[VerifiedCheckpointSourceV1]:
+    """Yield a stable verified root descriptor and exact inventory under a shared lock."""
+
+    parent_fd: int | None = None
+    root_fd: int | None = None
+    lock: LockHandle | None = None
+    visible_path: Path | None = None
+    primary: BaseException | None = None
+    try:
+        raw_path = os.fspath(path)
+        if type(raw_path) is not str or not raw_path:
+            raise BoundedIOError("not_directory", "source root is not a directory")
+        visible_path = Path(os.path.abspath(raw_path))
+        if not visible_path.name:
+            raise BoundedIOError("not_directory", "source root is not a directory")
+        root_fd = open_directory_no_follow(visible_path)
+        parent_fd = open_directory_no_follow(visible_path.parent)
+        _check_public_root_identity(visible_path, parent_fd, root_fd)
+        posix = cast(FilesystemPosixOps, PosixOps())
+        classify_filesystem(root_fd, posix=posix)
+        try:
+            lock = try_acquire_shared_lock(root_fd, posix=posix)
+        except FileNotFoundError:
+            raise _Failure("missing_path", ".laconian.lock") from None
+        if lock is None:
+            raise _Failure("busy", ".laconian.lock")
+    except BaseException as error:
+        primary = _source_boundary_failure(error)
+
+    if primary is None:
+        assert visible_path is not None and root_fd is not None and parent_fd is not None
+        assert lock is not None
+        try:
+            with _verified_checkpoint_source_descriptors(
+                root_fd,
+                parent_fd=parent_fd,
+                visible_path=visible_path,
+                lock_descriptor=lock.descriptor,
+            ) as source:
+                yield source
+        except BaseException as error:
+            primary = error
+    if lock is not None:
+        try:
+            lock.close()
+        except BaseException as error:
+            candidate = (
+                error
+                if not isinstance(error, Exception)
+                else _Failure("io_error", ".laconian.lock")
+            )
+            primary = _prefer_source_failure(primary, candidate)
+    for descriptor in (root_fd, parent_fd):
+        if descriptor is None:
+            continue
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            candidate = error if not isinstance(error, Exception) else _Failure("io_error", None)
+            primary = _prefer_source_failure(primary, candidate)
+    if primary is not None:
+        if isinstance(primary, _Failure):
+            raise _Failure(primary.code, primary.path, primary.sequence) from None
         raise primary.with_traceback(primary.__traceback__)
 
 

@@ -50,12 +50,20 @@ def test_resource_limits_v1_contains_every_section_five_limit() -> None:
     assert limits.output_tokens_per_request == 65_536
     assert limits.output_tokens_plan == 10_000_000
     assert limits.mutable_capsule_bytes == 8 * GIB
+    assert limits.checkpoint_archive_bytes == 9 * GIB
+    assert limits.checkpoint_members == 120_064
+    assert limits.checkpoint_directories == 64
+    assert limits.checkpoint_file_bytes == 8 * GIB
+    assert limits.checkpoint_aggregate_file_bytes == 8 * GIB
+    assert limits.checkpoint_path_depth == 64
+    assert limits.checkpoint_restore_seconds == 300
     assert limits.diagnostic_bytes == 4 * KIB
     assert limits.bounded_string_bytes == 1 * KIB
     assert limits.nesting_depth == 64
 
 
 def test_resource_limits_v1_is_frozen() -> None:
+    assert not hasattr(RESOURCE_LIMITS_V1, "__dict__")
     with pytest.raises(FrozenInstanceError):
         RESOURCE_LIMITS_V1.plan_rows = 1  # type: ignore[misc]
 

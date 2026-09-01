@@ -51,6 +51,13 @@ class ResourceLimitsV1:
     output_tokens_per_request: int = 65_536
     output_tokens_plan: int = 10_000_000
     mutable_capsule_bytes: int = 8 * _GIB
+    checkpoint_archive_bytes: int = 9 * _GIB
+    checkpoint_members: int = 120_064
+    checkpoint_directories: int = 64
+    checkpoint_file_bytes: int = 8 * _GIB
+    checkpoint_aggregate_file_bytes: int = 8 * _GIB
+    checkpoint_path_depth: int = 64
+    checkpoint_restore_seconds: int = 300
     diagnostic_bytes: int = 4 * _KIB
     bounded_string_bytes: int = 1 * _KIB
     nesting_depth: int = 64
