@@ -678,6 +678,22 @@ def _create_owned_directory(
         descriptor_identity = _directory_identity(descriptor_metadata)
         if created_identity != descriptor_identity:
             raise OwnedStagingError("staging_identity_mismatch")
+        os.fchmod(descriptor, mode)
+        descriptor_metadata = os.fstat(descriptor)
+        descriptor_identity = _directory_identity(descriptor_metadata)
+        path_metadata = os.stat(
+            checked_name,
+            dir_fd=parent_directory_fd,
+            follow_symlinks=False,
+        )
+        path_identity = _directory_identity(path_metadata)
+        if (
+            created_identity != descriptor_identity
+            or created_identity != path_identity
+            or stat.S_IMODE(descriptor_metadata.st_mode) != mode
+            or stat.S_IMODE(path_metadata.st_mode) != mode
+        ):
+            raise OwnedStagingError("staging_identity_mismatch")
     except BaseException:
         try:
             os.close(descriptor)
@@ -790,13 +806,14 @@ def _empty_owned_directory(
     posix: FilesystemPosixOps,
     depth: int,
     entry_count: list[int],
+    entry_ceiling: int,
 ) -> None:
     if depth > _MAX_CLEANUP_DEPTH:
         raise OwnedStagingError("staging_cleanup_limit")
     with os.scandir(descriptor) as iterator:
         for entry in iterator:
             entry_count[0] += 1
-            if entry_count[0] > _MAX_CLEANUP_ENTRIES:
+            if entry_count[0] > entry_ceiling:
                 raise OwnedStagingError("staging_cleanup_limit")
             name = entry.name
             metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
@@ -814,6 +831,7 @@ def _empty_owned_directory(
                         posix=posix,
                         depth=depth + 1,
                         entry_count=entry_count,
+                        entry_ceiling=entry_ceiling,
                     )
                     posix.fsync(child_fd)
                 finally:
@@ -827,13 +845,22 @@ def _empty_owned_directory(
     posix.fsync(descriptor)
 
 
+def _resolve_cleanup_entry_ceiling(entry_ceiling: int | None) -> int:
+    resolved = _MAX_CLEANUP_ENTRIES if entry_ceiling is None else entry_ceiling
+    if type(resolved) is not int or resolved <= 0:
+        raise OwnedStagingError("invalid_cleanup_entry_ceiling")
+    return resolved
+
+
 def cleanup_owned_staging(
     staging: OwnedStaging,
     *,
     posix: FilesystemPosixOps,
+    entry_ceiling: int | None = None,
 ) -> None:
     """Remove only an identity-validated, still-owned staging directory and sync its parent."""
 
+    resolved_entry_ceiling = _resolve_cleanup_entry_ceiling(entry_ceiling)
     try:
         _validate_owned_directory(staging)
         root_identity = _cleanup_identity(staging, posix)
@@ -843,6 +870,7 @@ def cleanup_owned_staging(
             posix=posix,
             depth=0,
             entry_count=[0],
+            entry_ceiling=resolved_entry_ceiling,
         )
         _validate_owned_directory(staging)
         path_metadata = os.stat(

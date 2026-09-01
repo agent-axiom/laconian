@@ -644,8 +644,10 @@ def test_owned_staging_uses_exact_operation_name_private_mode_and_no_follow(
     operation_id = UUID("12345678-1234-4abc-9234-1234567890ab")
     real_open = os.open
     real_mkdir = os.mkdir
+    real_fchmod = os.fchmod
     opens: list[tuple[str, int, int | None]] = []
     mkdirs: list[tuple[str, int, int | None]] = []
+    fchmods: list[tuple[int, int]] = []
 
     def tracking_open(path: str, flags: int, *args: Any, dir_fd: int | None = None) -> int:
         opens.append((path, flags, dir_fd))
@@ -655,14 +657,24 @@ def test_owned_staging_uses_exact_operation_name_private_mode_and_no_follow(
         mkdirs.append((path, mode, dir_fd))
         real_mkdir(path, mode, dir_fd=dir_fd)
 
+    def tracking_fchmod(descriptor: int, mode: int) -> None:
+        fchmods.append((descriptor, mode))
+        real_fchmod(descriptor, mode)
+
     try:
         monkeypatch.setattr(filesystem.os, "open", tracking_open)
         monkeypatch.setattr(filesystem.os, "mkdir", tracking_mkdir)
-        staging = create_owned_staging(parent_fd, operation_id)
+        monkeypatch.setattr(filesystem.os, "fchmod", tracking_fchmod)
+        previous_umask = os.umask(0o200)
+        try:
+            staging = create_owned_staging(parent_fd, operation_id)
+        finally:
+            os.umask(previous_umask)
 
         assert staging.name == ".laconian-stage.12345678-1234-4abc-9234-1234567890ab"
         assert staging.state == "owned"
         assert mkdirs == [(staging.name, 0o700, parent_fd)]
+        assert fchmods == [(staging.descriptor, 0o700)]
         assert opens[0][0] == staging.name
         assert opens[0][1] & getattr(os, "O_DIRECTORY", 0)
         assert opens[0][1] & getattr(os, "O_NOFOLLOW", 0)
@@ -670,6 +682,96 @@ def test_owned_staging_uses_exact_operation_name_private_mode_and_no_follow(
         assert stat.S_IMODE(os.stat(tmp_path / staging.name).st_mode) == 0o700
 
         cleanup_owned_staging(staging, posix=_darwin_fake())
+    finally:
+        os.close(parent_fd)
+
+
+def test_owned_staging_fchmod_failure_closes_once_and_removes_only_created_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    operation_id = UUID("12345678-1234-4abc-9234-1234567890ab")
+    stage_name = f".laconian-stage.{operation_id}"
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"preserve")
+    real_close = os.close
+    stage_descriptor: int | None = None
+    stage_close_calls = 0
+
+    def fail_fchmod(descriptor: int, mode: int) -> None:
+        nonlocal stage_descriptor
+        stage_descriptor = descriptor
+        assert mode == 0o700
+        raise OSError(errno.EIO, "private fchmod failure")
+
+    def tracking_close(descriptor: int) -> None:
+        nonlocal stage_close_calls
+        if descriptor == stage_descriptor:
+            stage_close_calls += 1
+        real_close(descriptor)
+
+    try:
+        monkeypatch.setattr(filesystem.os, "fchmod", fail_fchmod)
+        monkeypatch.setattr(filesystem.os, "close", tracking_close)
+        with pytest.raises(OSError, match="private fchmod failure"):
+            create_owned_staging(parent_fd, operation_id)
+
+        assert stage_descriptor is not None
+        assert stage_close_calls == 1
+        assert not (tmp_path / stage_name).exists()
+        assert sentinel.read_bytes() == b"preserve"
+    finally:
+        real_close(parent_fd)
+
+
+def test_owned_staging_rechecks_path_identity_and_mode_after_fchmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    operation_id = UUID("12345678-1234-4abc-9234-1234567890ab")
+    stage_name = f".laconian-stage.{operation_id}"
+    moved_name = "moved-created-stage"
+    real_fchmod = os.fchmod
+
+    def replace_path_after_fchmod(descriptor: int, mode: int) -> None:
+        real_fchmod(descriptor, mode)
+        os.rename(stage_name, moved_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.mkdir(stage_name, 0o700, dir_fd=parent_fd)
+        (tmp_path / stage_name / "sentinel").write_bytes(b"replacement")
+
+    try:
+        monkeypatch.setattr(filesystem.os, "fchmod", replace_path_after_fchmod)
+        with pytest.raises(OwnedStagingError) as caught:
+            create_owned_staging(parent_fd, operation_id)
+
+        assert caught.value.code == "staging_identity_mismatch"
+        assert (tmp_path / stage_name / "sentinel").read_bytes() == b"replacement"
+        assert (tmp_path / moved_name).is_dir()
+    finally:
+        os.close(parent_fd)
+
+
+def test_owned_staging_rejects_a_nonexact_post_fchmod_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    operation_id = UUID("12345678-1234-4abc-9234-1234567890ab")
+    stage_name = f".laconian-stage.{operation_id}"
+    real_fchmod = os.fchmod
+
+    def establish_wrong_mode(descriptor: int, _mode: int) -> None:
+        real_fchmod(descriptor, 0o755)
+
+    try:
+        monkeypatch.setattr(filesystem.os, "fchmod", establish_wrong_mode)
+        with pytest.raises(OwnedStagingError) as caught:
+            create_owned_staging(parent_fd, operation_id)
+
+        assert caught.value.code == "staging_identity_mismatch"
+        assert not (tmp_path / stage_name).exists()
     finally:
         os.close(parent_fd)
 
@@ -1620,12 +1722,93 @@ def test_cleanup_entry_limit_stops_before_overrun_and_consumes_stage_descriptor(
     monkeypatch.setattr(filesystem, "_MAX_CLEANUP_ENTRIES", 1)
     try:
         with pytest.raises(OwnedStagingError) as caught:
-            cleanup_owned_staging(staging, posix=_darwin_fake())
+            cleanup_owned_staging(staging, posix=_darwin_fake(), entry_ceiling=None)
         assert caught.value.code == "staging_cleanup_limit"
         assert staging.state == "abandoned"
         assert len(list((tmp_path / staging.name).iterdir())) == 1
         with pytest.raises(OSError):
             os.fstat(staging.descriptor)
+    finally:
+        os.close(parent_fd)
+
+
+def test_cleanup_explicit_entry_ceiling_accepts_exact_recursive_bound(
+    tmp_path: Path,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    staging = create_owned_staging(
+        parent_fd,
+        UUID("12345678-1234-4abc-9234-1234567890ab"),
+    )
+    nested = tmp_path / staging.name / "nested"
+    nested.mkdir()
+    (nested / "entry").write_bytes(b"data")
+    try:
+        cleanup_owned_staging(staging, posix=_darwin_fake(), entry_ceiling=2)
+
+        assert staging.state == "removed"
+        assert not (tmp_path / staging.name).exists()
+    finally:
+        os.close(parent_fd)
+
+
+def test_cleanup_explicit_entry_ceiling_stops_at_recursive_bound_plus_one(
+    tmp_path: Path,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    staging = create_owned_staging(
+        parent_fd,
+        UUID("12345678-1234-4abc-9234-1234567890ab"),
+    )
+    nested = tmp_path / staging.name / "nested"
+    nested.mkdir()
+    (nested / "first").write_bytes(b"1")
+    (nested / "second").write_bytes(b"2")
+    try:
+        with pytest.raises(OwnedStagingError) as caught:
+            cleanup_owned_staging(staging, posix=_darwin_fake(), entry_ceiling=2)
+
+        assert caught.value.code == "staging_cleanup_limit"
+        assert staging.state == "abandoned"
+        assert len(list(nested.iterdir())) == 1
+        with pytest.raises(OSError):
+            os.fstat(staging.descriptor)
+    finally:
+        os.close(parent_fd)
+
+
+@pytest.mark.parametrize("invalid_ceiling", [True, False, 0, -1, 1.0, "1"])
+def test_cleanup_rejects_invalid_explicit_entry_ceiling_before_validation_or_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_ceiling: object,
+) -> None:
+    parent_fd = _directory_fd(tmp_path)
+    staging = create_owned_staging(
+        parent_fd,
+        UUID("12345678-1234-4abc-9234-1234567890ab"),
+    )
+    sentinel = tmp_path / staging.name / "sentinel"
+    sentinel.write_bytes(b"preserve")
+
+    def forbidden_validation(_staging: object) -> None:
+        raise AssertionError("invalid ceiling reached staging validation")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(filesystem, "_validate_owned_directory", forbidden_validation)
+            with pytest.raises(OwnedStagingError) as caught:
+                cleanup_owned_staging(
+                    staging,
+                    posix=_darwin_fake(),
+                    entry_ceiling=invalid_ceiling,  # type: ignore[arg-type]
+                )
+
+        assert caught.value.code == "invalid_cleanup_entry_ceiling"
+        assert staging.state == "owned"
+        assert sentinel.read_bytes() == b"preserve"
+        os.fstat(staging.descriptor)
+        cleanup_owned_staging(staging, posix=_darwin_fake())
     finally:
         os.close(parent_fd)
 
