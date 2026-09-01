@@ -20,11 +20,13 @@
 - Foundations' approved preflight amendment at
   `e67ad191623316f69523b051fba48ec2e7492493`, recorded by governance-only successor
   `6930b6e18b11d50a4df5b5fd18d37207e891a28c`, remains historical authority for its approved scope.
-  The shard-checkpoint authority and bounded-directory contract synchronized below is a proposed,
-  unapproved amendment. Runtime Task 6 checkpoint inventory authority, Task 7 checkpoint creation,
-  Task 9 checkpoint recovery, and Task 10 rehearsal may not be committed or merged as complete until
-  the exact amendment commit receives separate maintainer/user approval, a governance-only
-  successor records it, and that successor is recorded at handoff as `PLAN_BASE_SHA`.
+  On 2026-09-01 the maintainer/user explicitly approved the shard-checkpoint authority and
+  bounded-directory amendment at normative commit `36bdcf7467ddd68543a024a1fb9a058f6c865a0d`
+  with exact message `Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`.
+  This governance-only successor records that approval without changing normative behavior. Runtime
+  Task 6 checkpoint inventory authority, Task 7 checkpoint creation, Task 9 checkpoint recovery,
+  and Task 10 rehearsal may proceed only from a handoff that records this successor's future full
+  SHA as `PLAN_BASE_SHA`; the plan source does not invent or embed that SHA.
 - Milestone 0 is approved. Runtime implementation is unblocked only after this synchronized plan is
   reviewed and committed; pilot and publication gates remain closed until their named tests and
   reviews pass.

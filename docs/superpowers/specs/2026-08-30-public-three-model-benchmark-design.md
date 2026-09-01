@@ -2,12 +2,10 @@
 
 **Date:** 2026-08-30
 
-**Status:** Legacy-v1 price-migration and Foundations preflight-closure amendment approved;
-proposed shard-checkpoint authority and bounded-directory amendment is not approved. Foundations
-Tasks 10–12 and the affected Runtime checkpoint work may not be committed or merged as complete
-until the exact commit containing the proposed amendment receives separate maintainer/user approval,
-that approval is recorded by a governance-only successor, and the successor is recorded at handoff
-as `PLAN_BASE_SHA`.
+**Status:** Legacy-v1 price-migration, Foundations preflight-closure, and shard-checkpoint authority
+and bounded-directory amendments approved. Foundations Tasks 10–12 and the affected Runtime
+checkpoint work may proceed only from a handoff that records this governance-only successor's full
+SHA as `PLAN_BASE_SHA`.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -24,14 +22,20 @@ message `Одобряю amendment 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`. Gov
 `55b90582ae461cf7a3dc072d53d8b03e79fb3614` remains historical evidence for the prior approved
 design. That approval remains historical authority for the `05e3d7ba` baseline only.
 
-**Current amendment approval:** On 2026-08-31, the maintainer/user in this Codex task explicitly
+**Prior approved amendment:** On 2026-08-31, the maintainer/user in this Codex task explicitly
 approved the normative design at commit `e67ad191623316f69523b051fba48ec2e7492493` with the exact
 message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Governance-only successor
 `6930b6e18b11d50a4df5b5fd18d37207e891a28c` records that approval without changing normative
 behavior and synchronizes the Foundations plan. Amendment-dependent implementation in that approved
-scope may proceed only from a handoff that records that successor's full SHA as `PLAN_BASE_SHA`;
-the pending checkpoint amendment separately re-blocks its affected tasks until approved and
-governance-recorded.
+scope may proceed only from a handoff that records that successor's full SHA as `PLAN_BASE_SHA`.
+
+**Current checkpoint amendment approval:** On 2026-09-01, the maintainer/user in this Codex task
+explicitly approved the normative design at commit
+`36bdcf7467ddd68543a024a1fb9a058f6c865a0d` with the exact message
+`Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`. This governance-only successor
+records that approval without changing normative behavior. Foundations Tasks 10–12 and affected
+Runtime checkpoint work may proceed only from a handoff that records this successor's future full
+SHA as `PLAN_BASE_SHA`; the plan source does not invent or embed that SHA.
 
 **Prior approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
 exact-wire gaps without changing the benchmark estimand, workload, model set, statistical gates,
@@ -54,14 +58,11 @@ identity signatures plus complete prehash input-bound preflight. It does not cha
 workload, model set, wire keys, five-rate native-v2 price contract, replay command inventory,
 workflow inventory, or App inventory.
 
-**Pending checkpoint amendment scope:** The proposed revision narrows checkpoint transport to
+**Approved checkpoint amendment scope:** The approved revision narrows checkpoint transport to
 captured scenario shards, makes the authority-bound archive SHA-256 an explicit restore input,
 requires one canonical regular-file USTAR typeflag, and bounds retained directory descriptors
 independently of the total member limit. It does not change the estimand, workload, model set,
 provider wire, retry policy, spend caps, workflow inventory, App inventory, or publication rules.
-The approved `e67ad191623316f69523b051fba48ec2e7492493` behavior remains the implementation authority
-outside the affected checkpoint work; no approval of that ancestor is approval of these pending
-bytes.
 
 **Scope:** Publication-grade response benchmark for GPT-5.6 Sol, Terra, and Luna, executed through
 GitHub Actions with immutable generation, judging, human-audit, and publication evidence
@@ -10129,9 +10130,12 @@ exact message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493
 `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
 `46147ef62b5bb009421d58928e879d92247d84b5` remain historical evidence for their earlier normative
 designs. Amendment-dependent implementation in Foundations Tasks 2–5 may proceed only from a
-handoff that records `6930b6e18b11d50a4df5b5fd18d37207e891a28c` as `PLAN_BASE_SHA`; the pending
-checkpoint amendment repeats the same exact-commit approval and governance-recording process for
-its affected work.
+handoff that records `6930b6e18b11d50a4df5b5fd18d37207e891a28c` as `PLAN_BASE_SHA`. The
+shard-checkpoint authority and bounded-directory amendment was separately approved on 2026-09-01 at
+normative commit `36bdcf7467ddd68543a024a1fb9a058f6c865a0d` with exact message
+`Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`; this governance-only successor
+records that approval without changing normative behavior. Its future full SHA must be recorded as
+`PLAN_BASE_SHA` before Foundations Tasks 10–12 or affected Runtime checkpoint work proceeds.
 
 After that exact approval, governance recording, `PLAN_BASE_SHA` handoff, and the still-required
 implementation, the release sequence is:
@@ -10291,9 +10295,12 @@ The system is ready for the full campaign only when:
   `55b90582ae461cf7a3dc072d53d8b03e79fb3614`, and
   `46147ef62b5bb009421d58928e879d92247d84b5` remain historical; that synchronized Foundations plan
   must be recorded at handoff as `PLAN_BASE_SHA` before amendment-dependent Tasks 2–5 implementation
-  proceeds, and the pending checkpoint amendment must receive its own exact approval and
-  governance-only successor before Foundations Tasks 10–12 or affected Runtime work proceeds as
-  complete;
+  proceeds; the shard-checkpoint amendment at
+  `36bdcf7467ddd68543a024a1fb9a058f6c865a0d` is approved by the exact 2026-09-01 message
+  `Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`, this governance-only successor
+  records that approval without changing normative behavior, and its future full SHA must be
+  recorded at handoff as `PLAN_BASE_SHA` before Foundations Tasks 10–12 or affected Runtime work
+  proceeds;
 - every item in the automated verification section is fresh and green;
 - all three native-v2 manifests collectively yield exactly 1,440 parent-plan rows, and the 36
   hash-bound shard plans form an exact disjoint 36-by-40 partition;
