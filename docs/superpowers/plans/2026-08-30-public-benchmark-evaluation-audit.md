@@ -24,6 +24,15 @@ metadata is historical only and confers no authority on this amendment. Implemen
 from the synchronized five-plan `PLAN_BASE_SHA` recorded at handoff. Any later normative amendment
 re-blocks the affected tasks until separately approved.
 
+The source-backed protocol-signature evidence amendment synchronized below is proposed and
+unapproved. Evaluation Task 3's context and hard-score work may continue independently, but its
+protocol-review prefix/DAG/archive acceptance path and every downstream consumer of those verified
+capabilities may not be committed or merged as complete until the exact amendment commit receives
+separate maintainer/user approval, a governance-only successor records that approval, and the
+successor is recorded at handoff as `PLAN_BASE_SHA`.
+This amendment explicitly supersedes the former 64-hex OpenPGP alternative: every OpenPGP binding
+in this campaign uses the v4 40-hex primary-fingerprint profile below.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -557,7 +566,9 @@ This task owns the complete `protocol_review.py` and pre-judge `context.py` cont
 `WorkflowInventoryV1`, `ProtocolReviewStatementV1`, mode-discriminated
 `VerifiedProtocolAttestationV1`, `ProtocolAttestationBundleV1`,
 `ProtocolAttestationTagBindingV1`, stable REST/GraphQL/local projections and observation receipts,
-`GitObjectSHA256V1`, and `ProtocolReviewObjectArchiveV1` before the context imports them. Then implement:
+the source-bearing in-memory `ProtocolSignatureEvidenceSourceV1`, the C0-bound
+`ProtocolReviewSigningKeyV1`/`ProtocolReviewIdentityRegistryBundleV1`, `GitObjectSHA256V1`, and
+`ProtocolReviewObjectArchiveV1` before the context imports them. Then implement:
 `LayerKindV1`, both discriminated layer-member models, `LayerRootIndexV1`, both reviewer registries
 and canonical digest helpers, the complete `protocol_review.py` contract, `GenerationContextIndexV1`,
 `GenerationContextExpectationV1`, both verified context wrappers,
@@ -614,8 +625,15 @@ First create `tests/benchmark/test_context.py` with these exact pre-judge contra
 - `test_ruleset_observation_receipt_has_exact_ordered_fields_lf_digest_and_no_creation_claim`.
 - `test_t0_and_t1_creation_suites_are_unique_nonreplayable_and_bind_all_zero_before_exact_after`.
 - `test_stable_rest_graphql_and_local_projections_exclude_transport_metadata`.
+- `test_signature_source_derives_stable_projections_from_exact_rest_and_graphql_bytes`.
+- `test_signature_source_uses_rest_verified_at_and_never_observation_or_commit_time`.
+- `test_signature_source_rejects_synthetic_success_projection_receipt_or_local_verification`.
+- `test_keyed_signature_source_reruns_fixed_verifier_with_only_c0_bound_keyring`.
+- `test_protocol_identity_bundle_binds_exact_c0_keys_source_lock_and_tool_digest`.
+- `test_github_only_signature_uses_exact_closed_openpgp_armor_not_nonssh_fallback`.
 - `test_workflow_inventory_has_exact_three_fields_and_fifteen_ordered_members`.
 - `test_object_archive_contains_raw_bytes_for_every_closure_object_and_replays_without_network`.
+- `test_protocol_object_tuples_and_closure_root_require_strict_raw_oid_order`.
 - `test_archive_receipt_wrapper_has_exact_kind_order_paths_hash_binding_and_no_self_digest`.
 - `test_serial_git_dag_golden_bytes_oids_raw_sha256_paths_parents_deltas_headers_and_messages`.
 - `test_protocol_review_rejects_float_bool_numeric_string_non_nfc_duplicate_key_reordered_array_extra_or_missing_field`.
@@ -1028,6 +1046,31 @@ class LocalSignatureVerificationReceiptV1(CapsuleModel):
     signature_sha256: Sha256
     verifier_tool_sha256: Sha256
     verification_receipt_sha256: Sha256
+
+
+class ProtocolReviewSigningKeyV1(CapsuleModel):
+    role: ProtocolReviewRoleV1
+    reviewer_numeric_account_id: StrictPositiveInt
+    reviewer_login: BoundedNonBlankString
+    verification_mode: Literal["ssh_sha256", "openpgp_fingerprint"]
+    fingerprint: SigningFingerprintV1
+    public_key_encoding: Literal[
+        "openssh-ed25519-wire-v1",
+        "openpgp-v4-ed25519-transferable-public-key-v1",
+    ]
+    public_key_base64: StrictCanonicalBase64
+    public_key_sha256: Sha256
+
+
+class ProtocolReviewIdentityRegistryBundleV1(CapsuleModel):
+    schema_version: Literal["ProtocolReviewIdentityRegistryBundleV1"]
+    keys: tuple[ProtocolReviewSigningKeyV1, ...]
+    verifier_source_path: Literal["src/laconian_eval/benchmark/protocol_review.py"]
+    verifier_source_sha256: Sha256
+    dependency_lock_path: Literal["uv.lock"]
+    dependency_lock_sha256: Sha256
+    protocol_signature_verifier_tool_sha256: Sha256
+    identity_registry_bundle_sha256: Sha256
 ~~~
 
 `TagOperatorProjectionV1.tag_operator_sha256` uses
@@ -1043,6 +1086,111 @@ order and use domain `laconian-github-signature-observation-receipt-v1`; transpo
 stable projection, statement, envelope, bundle, tag binding, registry, seed, or plan. The local
 five-field record uses `laconian-local-signature-verification-receipt-v1` and omits exactly its self
 digest.
+
+The identity bundle is exact canonical JSON at
+`benchmark/security/protocol-review-identity-registry.json` in C0. `StrictCanonicalBase64` is
+standard padded RFC 4648 base64 with no whitespace, alternate alphabet, missing/excess padding, or
+noncanonical trailing bits and 1..65,536 decoded bytes. The key tuple contains exactly the keyed
+reviewers in registry role order and no GitHub-only reviewer; identity/mode/fingerprint fields
+byte-match that registry.
+`public_key_sha256` hashes the decoded bytes and is the exact envelope `keyring_sha256`. The bundle
+self digest uses domain `laconian-protocol-review-identity-registry-bundle-v1`, and the security
+statement's same-named subject must equal it.
+The verifier parses that exact C0 blob, class-bound revalidates it, recomputes every key/source/lock,
+tool, and self digest, and requires the self digest to equal the Rsecurity statement subject. No
+caller or statement scalar substitutes for the retained bundle.
+
+The SSH profile accepts one canonical `ssh-ed25519` wire blob and exact SSHSIG v1 with the same key,
+namespace `git`, empty reserved field, SHA-512, and `ssh-ed25519`; its selected principal is the
+reviewer login. Its armor uses exact begin/end lines, standard base64 wrapped at 70 characters
+except the nonempty final line, and one terminal LF with no comments, blanks, second block, or
+trailing decoded bytes. Recompute the OpenSSH fingerprint independently from the decoded key blob;
+never infer it from `public_key_sha256`. The OpenPGP profile accepts one strict v4 Ed25519 transferable public-key packet
+sequence, an uppercase 40-hex primary fingerprint, and an LF-only header-free armored detached
+EdDSA/SHA-256 signature by the valid primary key or one valid bound Ed25519 signing subkey at
+`statement.signed_at`. Ambiguity, unknown critical subpackets, revocation, expiration, wrong
+binding, algorithm, hash, namespace, key, or fingerprint rejects. Its exact armor has one blank
+line, standard 64-character wrapping except the nonempty final line, a required/verified CRC-24,
+and one decoded signature packet with no trailing bytes. The issuer must resolve to the primary or
+exactly one valid signing subkey bound to that primary fingerprint. Both profiles verify the exact
+raw Git signed-payload bytes in binary mode without newline/text canonicalization.
+The decoded SSHSIG bytes are exactly `"SSHSIG"`, big-endian version 1, SSH strings for the public
+key, `git`, empty reserved field, `sha512`, and the signature blob; that blob is SSH strings for
+`ssh-ed25519` and the 64-byte signature. The Ed25519 preimage is exactly `"SSHSIG"` plus SSH
+strings for `git`, empty, `sha512`, and `SHA512(exact raw Git signed-payload bytes)`. Every SSH
+string uses a four-byte unsigned big-endian length.
+
+The OpenPGP key packet order is one v4 Ed25519 primary key; one UTF-8 User ID equal to exact
+`author_name_ascii + " <" + author_email_ascii + ">"`; one v4 positive-certification self-signature
+with signing flags; then zero or more ascending-fingerprint pairs of v4 Ed25519 subkey and v4
+subkey-binding self-signature. A signing subkey also carries a valid embedded primary-key-binding
+signature. All OpenPGP signatures are v4 binary-document EdDSA/SHA-256 and bind an unambiguous
+issuer fingerprint to that primary or one valid subkey. Extra user IDs, packet kinds, unknown
+critical subpackets, issuer-key-ID-only matches, or inconsistent hashed/unhashed issuer data reject.
+
+The fixed in-process entrypoint is
+`laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1`; it uses only dependencies
+resolved by the exact C0 `uv.lock` and cannot invoke a subprocess, network, keychain, agent,
+configuration, or ambient keyring. Before key parsing, the running checkout's owner source and
+`uv.lock` bytes must hash to the C0 members and the installed verifier dependency inventory must
+exactly match the lock; executing different code/dependencies while hashing retained C0 bytes is
+forbidden. The secret-free Runtime launcher performs a retained-descriptor/no-follow pre-import
+check, imports only that verified checkout, and repeats source/lock identity and hashes afterward;
+path swaps and preloaded alternate modules reject. `protocol_signature_verifier_tool_sha256` is
+`protocol_review_digest("laconian-protocol-signature-verifier-tool-v1", value)` where `value` has
+exactly `algorithm_profile`, `dependency_lock_path`, `dependency_lock_sha256`, `entrypoint`,
+`verifier_source_path`, and `verifier_source_sha256`; their values are respectively the literal
+profile `ssh-ed25519-sshsig-git-sha512-or-openpgp-v4-ed25519-sha256-v1`, literal `uv.lock`, its C0
+byte hash, literal `laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1`, literal
+`src/laconian_eval/benchmark/protocol_review.py`, and its C0 byte hash. The identity-bundle self
+digest is `protocol_review_digest("laconian-protocol-review-identity-registry-bundle-v1",
+identity_bundle.model_dump(mode="json", exclude={"identity_registry_bundle_sha256"}))`; it omits
+only that field. Any source/lock/path/tool mismatch fails before cryptographic verification.
+
+The receipt is hash-only evidence and is never sufficient by itself to construct a stable
+projection. Each `ProtocolSignatureEvidenceSourceV1` carries that strict receipt, the exact
+mode-discriminated `SignatureEvidenceV1` it must reconstruct, and exact two-element immutable-byte
+tuples for raw and canonical REST/GraphQL responses, each member bounded to 1..1,048,576 bytes. The
+owner verifier class-bound revalidates all nested models, hashes all four byte strings against the receipt, parses raw JSON with duplicate-key
+and non-integer-number rejection, and derives the allowlisted REST and GraphQL projections. The REST
+body requires nonnull selected paths `sha` and
+`verification.{verified,reason,payload,signature,verified_at}`; `sha` equals the raw commit OID,
+while repository ID and fixed endpoint derive only from the receipt and C0 trust boundary. The
+`verified_at` instant is strictly parsed and normalized to `CanonicalTimestamp` without changing
+the instant. The GraphQL body has no top-level `errors` member and requires the exact nonnull
+selected shape
+`data.repository.{databaseId,object.{oid,signature.{isValid,state,signer.{databaseId,login}}}}`.
+Selected identities match C0, receipt, raw commit, and registry; unselected fields are ignored. The
+canonical byte at each ordinal is exactly
+`CanonicalJSONV1` of the reconstructed stable projection. Both projections and their self digests
+must byte-match the source evidence and observation receipt. `observed_at`, a request ID/ETag,
+commit/tag epoch, or local clock can never supply `verified_at` or any success field.
+Duplicate JSON keys reject at every depth. Selected numeric fields accept JSON integers only;
+floats, exponents, non-finite values, and booleans in integer positions reject. Provider fields
+outside the selected paths are allowed but ignored and cannot enter canonical identity; every
+selected field must be present, nonnull, and exact type.
+
+For a keyed mode, the same verifier resolves only the fingerprint-selected public key from the
+C0-bound identity-registry bundle, invokes the fixed hermetic owner verifier on the exact raw-commit
+payload/signature, and requires its generated keyring hash, primary fingerprint, five-field local
+receipt, and pinned verifier-tool hash to byte-match `signature_evidence`. There is no keyring,
+callback, trust Boolean, or replacement-verifier argument. A supplied local receipt is comparison
+evidence, not permission to skip cryptographic verification. GitHub-only mode forbids keyed fields.
+No implementation may synthesize GitHub success, signer identity, `verified_at`, or a local receipt.
+
+The source's `signature_evidence` and nested local receipt are expected-result bytes only. The owner
+first constructs fresh REST/GraphQL projections, fresh local receipt when keyed, complete
+mode-specific evidence, and attestation from raw Git/API/C0 inputs; only afterward may it
+canonical-byte compare the supplied evidence. No supplied success/signer/time/fingerprint/receipt
+field can select or skip a verification operation.
+
+GitHub-only raw commits use one exact LF-only, header-free OpenPGP ASCII-armored `gpgsig` containing
+one blank line after the begin delimiter, standard base64 wrapped at 64 characters except the
+nonempty final line, one required/verified CRC-24 line, the exact end delimiter, and one terminal
+LF. Its decoded body is exactly one signature packet with no trailing packet/byte. SSHSIG, S/MIME,
+multiple packets/blocks, CR, NUL, trailing text, or a generic "non-SSH means PGP" fallback rejects. This grammar validates the
+raw object; trust still comes only from the source-derived REST/GraphQL result and exact raw/stable
+signature equality, not an unregistered local key.
 
 `GITHUB_COMMIT_SIGNER_QUERY_V1` is the exact 357-byte LF-terminated owner query repeated by
 Publication Task 2's transport table, and `GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1` is literal
@@ -1120,10 +1268,10 @@ def verify_protocol_review_prefix(
     protocol_reviewer_registry: ProtocolReviewerRegistryV1,
     tag_operator_registry: TagOperatorRegistryV1,
     tag_ruleset_policy: TagRulesetPolicyV1,
-    signature_observations: tuple[
-        GitHubSignatureObservationReceiptV1,
-        GitHubSignatureObservationReceiptV1,
-        GitHubSignatureObservationReceiptV1,
+    signature_evidence_sources: tuple[
+        ProtocolSignatureEvidenceSourceV1,
+        ProtocolSignatureEvidenceSourceV1,
+        ProtocolSignatureEvidenceSourceV1,
     ],
     input_tag_creation_suite: TagCreationRuleSuiteReceiptV1,
 ) -> VerifiedProtocolReviewPrefixV1: ...
@@ -1137,7 +1285,7 @@ def verify_protocol_review_dag(
     protocol_reviewer_registry: ProtocolReviewerRegistryV1,
     tag_operator_registry: TagOperatorRegistryV1,
     tag_ruleset_policy: TagRulesetPolicyV1,
-    signature_observations: tuple[GitHubSignatureObservationReceiptV1, ...],
+    signature_evidence_sources: tuple[ProtocolSignatureEvidenceSourceV1, ...],
     tag_creation_suites: tuple[TagCreationRuleSuiteReceiptV1, TagCreationRuleSuiteReceiptV1],
 ) -> VerifiedProtocolReviewDagV1: ...
 
@@ -1167,11 +1315,12 @@ def load_verified_protocol_review_object_archive(
 ) -> VerifiedProtocolReviewDagV1: ...
 ~~~
 
-`ParsedProtocolGitObjectV1`, `VerifiedProtocolReviewPrefixV1`, and
+`ParsedProtocolGitObjectV1`, `ProtocolSignatureEvidenceSourceV1`,
+`VerifiedProtocolReviewPrefixV1`, and
 `VerifiedProtocolReviewDagV1` are frozen in-memory dataclasses, not additional serialized authority
 schemas. The parser recomputes both the raw Git SHA-1 OID and `GitObjectSHA256V1`. The prefix
 verifier accepts exactly the T0/C0/Rstat/Rjudge/Rsecurity closure, the one T0 creation suite, and
-the three signature observations; it forbids any B0/T1 object, companion-tag value, envelope,
+the three signature evidence sources; it forbids any B0/T1 object, companion-tag value, envelope,
 bundle, or future-object digest. Only that verified prefix can construct the three envelopes and
 `ProtocolAttestationBundleV1`, after which the deterministic B0 commit and operator-created T1 may
 be built. The complete DAG verifier internally repeats the prefix verification over its exact
@@ -1182,8 +1331,18 @@ constructs B0 from the prefix API while B0/T1 do not yet exist, plus negative ve
 future B0/T1 value smuggled into the prefix. `ArchivedApiBlobV1` contains one canonical relative archive
 path, byte length, SHA-256, and immutable bytes; its path and digest must match exactly one receipt
 wrapper. The archive importer repeats the same parser and DAG verification network-free rather than
-trusting the archive's stored roots. Tests inspect all signatures and assert package re-exports are
-the identical owner objects.
+trusting the archive's stored roots. Archive construction additionally requires its three
+`github_signature` receipt bindings and their raw/canonical blobs to byte-match the verified DAG's
+source objects one-for-one. The importer reconstructs the three sources from the archive blobs,
+B0's serialized evidence, receipts, and C0 key material, then reruns both source derivation and any
+keyed cryptographic verification. Hash equality alone is insufficient. Tests inspect all signatures
+and assert package re-exports are the identical owner objects.
+
+Every protocol object tuple uses one authority order: strict ascending order by decoded 20-byte
+SHA-1 OID (equivalent to lowercase ASCII OID order because all values have fixed width/case). Prefix,
+complete DAG, verified wrappers, archive `objects`, and closure-root projection all reject any other
+order. They never preserve or derive caller insertion, graph traversal, object-type, directory, or
+first-seen order.
 
 `LayerKindV1` is the closed literal `generation|hard-score|judge-request|judge`.
 `GenerationLayerRootMemberV1` binds ordinal, model, scenario, both canonical relative paths, the
@@ -1371,7 +1530,7 @@ def validate_signature_mode_fingerprint(
     elif mode == "ssh_sha256":
         if fingerprint is None or re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", fingerprint) is None:
             raise ValueError("SSH verification requires an exact SHA256 fingerprint")
-    elif fingerprint is None or re.fullmatch(r"(?:[0-9A-F]{40}|[0-9A-F]{64})", fingerprint) is None:
+    elif fingerprint is None or re.fullmatch(r"[0-9A-F]{40}", fingerprint) is None:
         raise ValueError("OpenPGP verification requires an uppercase primary-key fingerprint")
 
 
@@ -1382,7 +1541,7 @@ class ReviewerAccountBindingV1(BaseModel):
     reviewer_login: str
     verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
-        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
+        pattern=r"^(?:[0-9A-F]{40}|SHA256:[A-Za-z0-9+/]{43})$",
     )
     role: Literal["audit_reviewer"]
 
@@ -1422,7 +1581,7 @@ class ProtocolReviewerBindingV1(BaseModel):
     reviewer_login: str
     verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
-        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
+        pattern=r"^(?:[0-9A-F]{40}|SHA256:[A-Za-z0-9+/]{43})$",
     )
     author_name_ascii: str
     author_email_ascii: str
@@ -1586,7 +1745,7 @@ class OpenPGPVerifiedCommitEvidenceV1(BaseModel):
     statement_path: str
     github_rest_verification: GitHubCommitVerificationProjectionV1
     github_graphql_signature: GitHubSignatureProjectionV1
-    fingerprint: str = Field(pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64})$")
+    fingerprint: str = Field(pattern=r"^[0-9A-F]{40}$")
     keyring_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     local_signature_verification: LocalSignatureVerificationReceiptV1
 
@@ -1595,6 +1754,16 @@ SignatureEvidenceV1 = Annotated[
     GitHubVerifiedCommitEvidenceV1 | SSHVerifiedCommitEvidenceV1 | OpenPGPVerifiedCommitEvidenceV1,
     Field(discriminator="verification_mode"),
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolSignatureEvidenceSourceV1:
+    """Exact source bytes plus the evidence they must independently reconstruct."""
+
+    observation_receipt: GitHubSignatureObservationReceiptV1
+    signature_evidence: SignatureEvidenceV1
+    raw_response_bytes: tuple[bytes, bytes]
+    canonical_response_bytes: tuple[bytes, bytes]
 
 
 class ProtocolReviewStatementV1(BaseModel):
@@ -1606,7 +1775,7 @@ class ProtocolReviewStatementV1(BaseModel):
     reviewer_login: str
     verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
-        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
+        pattern=r"^(?:[0-9A-F]{40}|SHA256:[A-Za-z0-9+/]{43})$",
     )
     input_tag_ref: str
     input_tag_oid: str = Field(pattern="^[0-9a-f]{40}$")
@@ -2114,7 +2283,9 @@ environment value, attachment-under-test, or caller inference.
 Before GREEN, re-export the Task 3 owner objects from `laconian_eval.benchmark`, including
 `ProtocolSubjectKindV1`, `PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1`,
 `GitHubVerifiedCommitEvidenceV1`, `SSHVerifiedCommitEvidenceV1`,
-`OpenPGPVerifiedCommitEvidenceV1`, and `SignatureEvidenceV1`. Import each name directly from
+`OpenPGPVerifiedCommitEvidenceV1`, `SignatureEvidenceV1`, and
+`ProtocolSignatureEvidenceSourceV1`, `ProtocolReviewSigningKeyV1`, and
+`ProtocolReviewIdentityRegistryBundleV1`. Import each name directly from
 `protocol_review`; do not rebuild the Literal, mapping, or union in `__init__.py`.
 
 - [ ] **Step 6: Run GREEN and commit**
@@ -4631,7 +4802,7 @@ class ReviewerIdentityV1(BaseModel):
     verification_mode: SignatureVerificationModeV1
     signing_fingerprint: str | None = Field(
         default=None,
-        pattern=r"^(?:[0-9A-F]{40}|[0-9A-F]{64}|SHA256:[A-Za-z0-9+/]{43})$",
+        pattern=r"^(?:[0-9A-F]{40}|SHA256:[A-Za-z0-9+/]{43})$",
     )
     audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
@@ -6734,7 +6905,8 @@ LayerKindV1, GenerationLayerRootMemberV1, AttachmentLayerRootMemberV1,
 LayerRootMemberV1, LayerRootIndexV1, write_layer_root_index, load_layer_root_index,
 SignatureVerificationModeV1, GitHubVerifiedCommitEvidenceV1,
 SSHVerifiedCommitEvidenceV1, OpenPGPVerifiedCommitEvidenceV1,
-SignatureEvidenceV1, ProtocolReviewRoleV1, ProtocolSubjectKindV1,
+SignatureEvidenceV1, ProtocolSignatureEvidenceSourceV1,
+ProtocolReviewRoleV1, ProtocolSubjectKindV1,
 PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1,
 ReviewerAccountBindingV1, AuditReviewerRegistryV1,
 ProtocolReviewerBindingV1, ProtocolReviewerRegistryV1,
@@ -6752,6 +6924,7 @@ build_protocol_review_object_archive, load_verified_protocol_review_object_archi
 ProtocolReviewSubjectV1, ProtocolReviewStatementV1, VerifiedProtocolAttestationV1,
 GitHubCommitVerificationProjectionV1, GitHubSignatureProjectionV1,
 GitHubSignatureObservationReceiptV1, LocalSignatureVerificationReceiptV1,
+ProtocolReviewSigningKeyV1, ProtocolReviewIdentityRegistryBundleV1,
 ProtocolAttestationBundleV1, ProtocolAttestationTagBindingV1,
 ProtocolReviewObjectArchiveV1,
 canonical_reviewer_registry_bytes, compute_audit_reviewer_registry_sha256,
