@@ -24,12 +24,13 @@ metadata is historical only and confers no authority on this amendment. Implemen
 from the synchronized five-plan `PLAN_BASE_SHA` recorded at handoff. Any later normative amendment
 re-blocks the affected tasks until separately approved.
 
-The source-backed protocol-signature evidence amendment synchronized below is proposed and
-unapproved. Evaluation Task 3's context and hard-score work may continue independently, but its
-protocol-review prefix/DAG/archive acceptance path and every downstream consumer of those verified
-capabilities may not be committed or merged as complete until the exact amendment commit receives
-separate maintainer/user approval, a governance-only successor records that approval, and the
-successor is recorded at handoff as `PLAN_BASE_SHA`.
+On 2026-09-02 the maintainer/user explicitly approved the source-backed protocol-signature evidence
+amendment at normative commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with exact message
+`Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 3's protocol-review
+prefix/DAG/archive acceptance path and every downstream consumer may proceed only from a handoff
+that records this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or
+embed that SHA.
 This amendment explicitly supersedes the former 64-hex OpenPGP alternative: every OpenPGP binding
 in this campaign uses the v4 40-hex primary-fingerprint profile below.
 

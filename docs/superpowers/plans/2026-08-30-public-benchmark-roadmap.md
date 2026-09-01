@@ -16,7 +16,8 @@
   The general approved baseline is `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`; the approved
   Foundations preflight amendment is `e67ad191623316f69523b051fba48ec2e7492493`; and the approved
   shard-checkpoint authority and bounded-directory amendment is
-  `36bdcf7467ddd68543a024a1fb9a058f6c865a0d`.
+  `36bdcf7467ddd68543a024a1fb9a058f6c865a0d`. The approved source-backed protocol-signature
+  evidence amendment is `d58bac05483e448e4cfa9c4bb2b7186ff3243086`.
 - Approval metadata: governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad`
   records the exact approval of `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`; governance-only
   successor `6930b6e18b11d50a4df5b5fd18d37207e891a28c` records the exact approval of
@@ -28,11 +29,12 @@
   records that approval without changing normative behavior. Foundations Tasks 10–12 and affected
   Runtime Tasks 6, 7, 9, and 10 may proceed only from a handoff that records this successor's future
   full SHA as `PLAN_BASE_SHA`; the roadmap does not invent or embed that SHA.
-- Pending protocol-signature evidence amendment: receipt-hash-only prefix inputs are replaced by
-  exact source-bearing REST/GraphQL/local-verifier evidence and network-free replay of the same
-  derivation. Evaluation Task 3's protocol-review acceptance path and all downstream consumers of
-  its verified prefix/DAG/archive capabilities remain blocked from commit/merge as complete until
-  the exact amendment commit is separately approved and governance-recorded.
+- Protocol-signature evidence approval metadata: on 2026-09-02 the maintainer/user explicitly
+  approved normative commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with exact message
+  `Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086`. This governance-only successor
+  records that approval without changing normative behavior. Evaluation Task 3's protocol-review
+  acceptance path and downstream consumers may proceed only from a handoff that records this
+  successor's future full SHA as `PLAN_BASE_SHA`; the roadmap does not invent or embed that SHA.
 - Historical prior approvals: normative commits `55b90582ae461cf7a3dc072d53d8b03e79fb3614` and `46147ef62b5bb009421d58928e879d92247d84b5`, recorded respectively by `983471c1557a58a80065406e3a346e00c80f2aa3` and `0e2981e32b5d8982e78c73a5e413b36e2b1495e9`, remain evidence only for their superseded designs.
 - Milestone 0 is complete. Slice implementation starts only after the synchronized roadmap plus four slice plans are committed and that already-created commit is recorded at handoff as `PLAN_BASE_SHA`. Any later normative design amendment re-blocks every affected task until separately and explicitly approved.
 - Generation model IDs are exactly `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; returned provider model IDs are recorded separately and must be consistent per requested-model campaign, not textually equal to the requested ID.
@@ -61,7 +63,7 @@ Approved checkpoint amendment 36bdcf7 + this successor recorded as PLAN_BASE_SHA
 Slice 1 Tasks 10–12 and affected Runtime Tasks 6/7/9/10
     |
     v
-Exact protocol-signature evidence amendment approval + governance successor recorded as PLAN_BASE_SHA
+Approved protocol-signature evidence amendment d58bac0 + this successor recorded as PLAN_BASE_SHA
     |
     v
 Evaluation Task 3 protocol-review prefix/DAG/archive acceptance and downstream consumers
@@ -112,10 +114,12 @@ This roadmap is a non-executable orchestration index. The four slice plans below
 
 ## Plan synchronization gate
 
-- [ ] Receive explicit maintainer approval for the exact proposed source-backed protocol-signature
-  evidence amendment commit, record it without changing normative behavior in a governance-only
-  successor, and record that successor as `PLAN_BASE_SHA` before Evaluation Task 3's protocol-review
-  prefix/DAG/archive path or a downstream consumer is committed or merged as complete.
+- [x] Receive explicit maintainer approval for exact source-backed protocol-signature evidence
+  amendment commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with message
+  `Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086` on 2026-09-02.
+- [ ] Record this governance-only successor's future full SHA as `PLAN_BASE_SHA` before Evaluation
+  Task 3's protocol-review prefix/DAG/archive path or a downstream consumer proceeds; do not place
+  that future SHA inside this successor's own tree.
 
 - [x] Receive explicit maintainer approval for exact shard-checkpoint amendment commit
   `36bdcf7467ddd68543a024a1fb9a058f6c865a0d` with message

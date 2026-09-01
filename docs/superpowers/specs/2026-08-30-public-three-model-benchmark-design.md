@@ -2,11 +2,10 @@
 
 **Date:** 2026-08-30
 
-**Status:** Legacy-v1 price-migration, Foundations preflight-closure, and shard-checkpoint authority
-and bounded-directory amendments approved. A source-backed protocol-signature evidence amendment is
-proposed and unapproved. Evaluation Task 3's protocol-review prefix/DAG/archive acceptance path and
-every downstream consumer of those verified capabilities remain blocked from commit/merge as
-complete until the exact amendment commit is separately approved and governance-recorded.
+**Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
+bounded-directory, and source-backed protocol-signature evidence amendments approved. Evaluation
+Task 3's protocol-review prefix/DAG/archive acceptance path and downstream consumers may proceed
+only from a handoff that records this governance-only successor's full SHA as `PLAN_BASE_SHA`.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -30,7 +29,7 @@ message `Одобряю amendment e67ad191623316f69523b051fba48ec2e7492493`. Gov
 behavior and synchronizes the Foundations plan. Amendment-dependent implementation in that approved
 scope may proceed only from a handoff that records that successor's full SHA as `PLAN_BASE_SHA`.
 
-**Current checkpoint amendment approval:** On 2026-09-01, the maintainer/user in this Codex task
+**Prior checkpoint amendment approval:** On 2026-09-01, the maintainer/user in this Codex task
 explicitly approved the normative design at commit
 `36bdcf7467ddd68543a024a1fb9a058f6c865a0d` with the exact message
 `Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`. This governance-only successor
@@ -38,13 +37,21 @@ records that approval without changing normative behavior. Foundations Tasks 10�
 Runtime checkpoint work may proceed only from a handoff that records this successor's future full
 SHA as `PLAN_BASE_SHA`; the plan source does not invent or embed that SHA.
 
-**Pending protocol-signature evidence amendment:** The proposed revision replaces receipt-hash-only
-prefix inputs with exact source-bearing signature inputs. It requires the verifier to derive the
-stable REST and GraphQL projections from the retained GitHub response bytes, to use only the REST
+**Current protocol-signature evidence amendment approval:** On 2026-09-02, the maintainer/user in
+this Codex task explicitly approved the normative design at commit
+`d58bac05483e448e4cfa9c4bb2b7186ff3243086` with the exact message
+`Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 3's affected
+protocol-review work and downstream consumers may proceed only from a handoff that records this
+successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
+The approved revision replaces receipt-hash-only prefix inputs with exact source-bearing signature
+inputs. It requires the verifier to derive the stable REST and GraphQL projections from the
+retained GitHub response bytes, to use only the REST
 response's `verified_at` instant, and to reproduce keyed local verification against only the C0-bound
 keyring. It forbids synthesized GitHub success, synthesized local receipts, and use of transport
-observation time as stable verification time. Approval of any ancestor does not approve these
-pending bytes. It also supersedes the prior 64-hex OpenPGP alternative: this campaign accepts only
+observation time as stable verification time. It also supersedes the prior 64-hex OpenPGP
+alternative: this campaign accepts only
 the frozen v4 40-hex primary fingerprint profile below.
 
 **Prior approved baseline scope:** The approved revision closes constructive-liveness, credential-finality, and
@@ -74,7 +81,7 @@ requires one canonical regular-file USTAR typeflag, and bounds retained director
 independently of the total member limit. It does not change the estimand, workload, model set,
 provider wire, retry policy, spend caps, workflow inventory, App inventory, or publication rules.
 
-**Pending protocol-signature evidence amendment scope:** The proposed revision changes only the
+**Approved protocol-signature evidence amendment scope:** The approved revision changes only the
 construction and replay inputs for the already-frozen signature-evidence envelopes. It does not
 change the reviewer topology, statement/envelope/bundle serialized schemas, estimand, workload,
 model set, provider wire, spend limits, workflow inventory, App inventory, or publication rules.
