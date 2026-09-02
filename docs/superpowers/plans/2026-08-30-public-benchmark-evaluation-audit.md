@@ -41,13 +41,20 @@ records that approval without changing normative behavior. Evaluation Task 3's O
 path may proceed only from a handoff that records this successor's future full SHA as
 `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
-**Current normative amendment scope:** This amendment supersedes only the ambiguities in archived
+On 2026-09-02 the maintainer/user explicitly approved the protocol-evidence and judge-wire
+amendment at normative commit `cd24a8d9682586c73e40a1fc01b11856fd1142f6` with exact message
+`Одобряю amendment cd24a8d9682586c73e40a1fc01b11856fd1142f6`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Tasks 3 and 4's affected
+paths and downstream consumers may proceed only from a handoff that records this successor's
+future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
+**Approved normative amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider-dispatch, wire, and
 identity-bundle contract. It makes no
 other changes to behavior or ownership boundaries.
 
-The normative design's **Current protocol-evidence and judge-wire amendment** is binding on Tasks 3
+The normative design's **Approved protocol-evidence and judge-wire amendment** is binding on Tasks 3
 and 4. In particular, Task 3 must implement `ArchivedApiBlobV1` in the exact field order
 `path,kind,byte_length,sha256,raw_bytes_base64`, checking decoded length and digest while reusing the
 parent `safe_raw_response|canonical_projection` literals; archive every official list page through

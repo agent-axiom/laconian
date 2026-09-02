@@ -3,9 +3,10 @@
 **Date:** 2026-08-30
 
 **Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
-bounded-directory, and source-backed protocol-signature evidence amendments approved. Evaluation
-Task 3's protocol-review prefix/DAG/archive acceptance path and downstream consumers may proceed
-only from a handoff that records this governance-only successor's full SHA as `PLAN_BASE_SHA`.
+bounded-directory, source-backed protocol-signature evidence, and protocol-evidence/judge-wire
+amendments approved. Evaluation Tasks 3 and 4's affected paths and downstream consumers may
+proceed only from a handoff that records this governance-only successor's full SHA as
+`PLAN_BASE_SHA`.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -45,7 +46,7 @@ records that approval without changing normative behavior. Evaluation Task 3's a
 protocol-review work and downstream consumers may proceed only from a handoff that records this
 successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
-**Current OpenPGP packet-type clarification approval:** On 2026-09-02, the maintainer/user in this
+**Prior OpenPGP packet-type clarification approval:** On 2026-09-02, the maintainer/user in this
 Codex task explicitly approved the normative clarification at commit
 `ed89af2fd10da573864c4a96e27ed6718110da5d` with the exact message
 `Одобряю amendment ed89af2fd10da573864c4a96e27ed6718110da5d`. This governance-only successor
@@ -53,9 +54,17 @@ records that approval without changing normative behavior. Evaluation Task 3's O
 path may proceed only from a handoff that records this successor's future full SHA as
 `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
-The approved revision replaces receipt-hash-only prefix inputs with exact source-bearing signature
-inputs. It requires the verifier to derive the stable REST and GraphQL projections from the
-retained GitHub response bytes, to use only the REST
+**Current protocol-evidence and judge-wire amendment approval:** On 2026-09-02, the
+maintainer/user in this Codex task explicitly approved the normative amendment at commit
+`cd24a8d9682586c73e40a1fc01b11856fd1142f6` with the exact message
+`Одобряю amendment cd24a8d9682586c73e40a1fc01b11856fd1142f6`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Tasks 3 and 4's affected
+paths and downstream consumers may proceed only from a handoff that records this successor's
+future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
+The prior approved protocol-signature revision replaces receipt-hash-only prefix inputs with exact
+source-bearing signature inputs. It requires the verifier to derive the stable REST and GraphQL
+projections from the retained GitHub response bytes, to use only the REST
 response's `verified_at` instant, and to reproduce keyed local verification against only the C0-bound
 keyring. It forbids synthesized GitHub success, synthesized local receipts, and use of transport
 observation time as stable verification time. It also supersedes the prior 64-hex OpenPGP
@@ -94,13 +103,13 @@ construction and replay inputs for the already-frozen signature-evidence envelop
 change the reviewer topology, statement/envelope/bundle serialized schemas, estimand, workload,
 model set, provider wire, spend limits, workflow inventory, App inventory, or publication rules.
 
-**Current normative amendment scope:** This amendment supersedes only the ambiguities in archived
+**Approved protocol-evidence and judge-wire amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider dispatch, wire, and
 identity-bundle contract stated below. All other design, topology, authority, publication, and
 workflow rules remain unchanged.
 
-### Current protocol-evidence and judge-wire amendment
+### Approved protocol-evidence and judge-wire amendment
 
 #### Archived API blobs and exact tag-ruleset transport
 
