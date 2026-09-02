@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from statistics import median
 from typing import Any, Literal, Self, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -378,8 +380,173 @@ def _require_gate(gate: object) -> GateName:
     raise InferenceIntegrityError("gate must be exactly 'hard' or 'semantic'")
 
 
+def _require_arm(arm: object) -> ArmName:
+    if arm == "baseline":
+        return "baseline"
+    if arm == "caveman":
+        return "caveman"
+    if arm == "if":
+        return "if"
+    if arm == "concise":
+        return "concise"
+    raise InferenceIntegrityError(
+        "arm must be exactly 'baseline', 'caveman', 'if', or 'concise'"
+    )
+
+
 def _gate_pass(row: PlannedObservationV1, gate: GateName) -> bool:
     return row.hard_pass if gate == "hard" else row.semantic_success
+
+
+def _validated_bootstrap_population(
+    rows: Sequence[PlannedObservationV1],
+) -> tuple[PlannedObservationV1, ...]:
+    """Validate one 12-block bootstrap multiset without collapsing duplicates."""
+
+    checked_rows = _validated_exact_rows(rows)
+    if len(checked_rows) != 480:
+        raise InferenceIntegrityError(
+            "bootstrap estimator requires 480 rows from twelve sampled blocks"
+        )
+    if len({row.generation_model for row in checked_rows}) != 1:
+        raise InferenceIntegrityError(
+            "bootstrap estimator rows must share one generation model"
+        )
+
+    counters: dict[ArmName, Counter[RowKey]] = {}
+    grouped: dict[tuple[ArmName, RowKey], list[PlannedObservationV1]] = {}
+    for arm in _ARM_RANK:
+        arm_rows = tuple(row for row in checked_rows if row.arm == arm)
+        if len(arm_rows) != 120:
+            raise InferenceIntegrityError(
+                f"matched bootstrap arm multiplicities require 120 rows for {arm!r}"
+            )
+        counters[arm] = Counter(_row_key(row) for row in arm_rows)
+        for row in arm_rows:
+            grouped.setdefault((arm, _row_key(row)), []).append(row)
+
+    reference = counters["if"]
+    if any(counter != reference for counter in counters.values()):
+        raise InferenceIntegrityError(
+            "bootstrap blocks require matched key multiplicities across all arms"
+        )
+    for duplicates in grouped.values():
+        if any(row != duplicates[0] for row in duplicates[1:]):
+            raise InferenceIntegrityError(
+                "bootstrap duplicate key multiplicities must repeat identical rows"
+            )
+
+    keys = set(reference)
+    scenario_locales: dict[str, set[str]] = {}
+    scenario_keys: dict[str, set[RowKey]] = {}
+    case_ids: dict[tuple[str, str], set[str]] = {}
+    repetitions: dict[tuple[str, str], set[int]] = {}
+    for key in keys:
+        scenario_uid, case_id, locale, repetition = key
+        scenario_locales.setdefault(scenario_uid, set()).add(locale)
+        scenario_keys.setdefault(scenario_uid, set()).add(key)
+        scenario_locale = (scenario_uid, locale)
+        case_ids.setdefault(scenario_locale, set()).add(case_id)
+        repetitions.setdefault(scenario_locale, set()).add(repetition)
+    if not 1 <= len(scenario_locales) <= 12:
+        raise InferenceIntegrityError(
+            "bootstrap multiset must contain between one and twelve scenario blocks"
+        )
+    for scenario_uid, locales in scenario_locales.items():
+        if len(locales) != 2:
+            raise InferenceIntegrityError(
+                "each sampled scenario block requires both locales"
+            )
+        scenario_multiplicities = {
+            reference[key] for key in scenario_keys[scenario_uid]
+        }
+        if len(scenario_keys[scenario_uid]) != 10 or len(scenario_multiplicities) != 1:
+            raise InferenceIntegrityError(
+                "each sampled scenario block must be duplicated as a whole"
+            )
+        for locale in locales:
+            scenario_locale = (scenario_uid, locale)
+            if len(case_ids[scenario_locale]) != 1 or repetitions[
+                scenario_locale
+            ] != set(range(5)):
+                raise InferenceIntegrityError(
+                    "each sampled scenario block requires five matched repetitions per locale"
+                )
+    return checked_rows
+
+
+def median_visible_delta(
+    rows: Sequence[PlannedObservationV1], *, gate: GateName
+) -> float | None:
+    """Return median concise-minus-if visible tokens among jointly eligible token pairs."""
+
+    checked_gate = _require_gate(gate)
+    checked_rows = _validated_bootstrap_population(rows)
+    if_rows = {
+        _row_key(row): row for row in checked_rows if row.arm == "if"
+    }
+    concise_rows = {
+        _row_key(row): row for row in checked_rows if row.arm == "concise"
+    }
+    multiplicities = Counter(
+        _row_key(row) for row in checked_rows if row.arm == "if"
+    )
+    deltas: list[int] = []
+    for key, count in multiplicities.items():
+        if_row = if_rows[key]
+        concise_row = concise_rows[key]
+        if (
+            _gate_pass(if_row, checked_gate)
+            and _gate_pass(concise_row, checked_gate)
+            and if_row.visible_output_tokens is not None
+            and concise_row.visible_output_tokens is not None
+        ):
+            deltas.extend(
+                [concise_row.visible_output_tokens - if_row.visible_output_tokens]
+                * count
+            )
+    return None if not deltas else float(median(deltas))
+
+
+def arm_pass_proportion(
+    rows: Sequence[PlannedObservationV1], *, arm: ArmName, gate: GateName
+) -> float:
+    """Return the selected gate successes over the fixed 120 planned observations."""
+
+    checked_arm = _require_arm(arm)
+    checked_gate = _require_gate(gate)
+    checked_rows = _validated_bootstrap_population(rows)
+    successes = sum(
+        _gate_pass(row, checked_gate) for row in checked_rows if row.arm == checked_arm
+    )
+    return successes / 120
+
+
+def paired_pass_rate_difference(
+    rows: Sequence[PlannedObservationV1], *, gate: GateName
+) -> float:
+    """Return mean if-minus-concise success over all 120 matched planned keys."""
+
+    checked_gate = _require_gate(gate)
+    checked_rows = _validated_bootstrap_population(rows)
+    if_rows = {
+        _row_key(row): row for row in checked_rows if row.arm == "if"
+    }
+    concise_rows = {
+        _row_key(row): row for row in checked_rows if row.arm == "concise"
+    }
+    multiplicities = Counter(
+        _row_key(row) for row in checked_rows if row.arm == "if"
+    )
+    total = sum(
+        (
+            int(_gate_pass(if_rows[key], checked_gate))
+            - int(_gate_pass(concise_rows[key], checked_gate))
+        )
+        * count
+        for key, count in multiplicities.items()
+    )
+    return total / 120
 
 
 def arm_pass_rate(
@@ -594,7 +761,10 @@ __all__ = (
     "PairDenominatorsV1",
     "PlannedObservationV1",
     "TerminalZeroReason",
+    "arm_pass_proportion",
     "arm_pass_rate",
     "cache_integrity_limitations",
+    "median_visible_delta",
     "pair_denominators_for_gate",
+    "paired_pass_rate_difference",
 )

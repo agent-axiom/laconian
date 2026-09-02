@@ -99,6 +99,11 @@ from laconian_eval.benchmark.seeds import derive_seed128
 
 if TYPE_CHECKING:
     from laconian_eval.benchmark.aggregation import AggregatedModelV1
+    from laconian_eval.benchmark.bootstrap import (
+        BootstrapIntervalV1,
+        BootstrapVectorsV1,
+        make_cluster_vectors,
+    )
     from laconian_eval.benchmark.context import (
         AttachmentLayerRootMemberV1,
         BenchmarkProtocolBindingsV1,
@@ -179,6 +184,9 @@ _HARD_SCORE_EXPORTS = frozenset(
     }
 )
 _AGGREGATION_EXPORTS = frozenset({"AggregatedModelV1"})
+_BOOTSTRAP_EXPORTS = frozenset(
+    {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
+)
 JUDGE_LAZY_EXPORTS_V1 = (
     "JUDGE_REQUESTED_SERVICE_TIER",
     "JUDGE_SERVICE_TIER_WIRE_FIELD",
@@ -209,6 +217,8 @@ def __getattr__(name: str) -> Any:
 
     if name in _AGGREGATION_EXPORTS:
         module_name = "laconian_eval.benchmark.aggregation"
+    elif name in _BOOTSTRAP_EXPORTS:
+        module_name = "laconian_eval.benchmark.bootstrap"
     elif name in _CONTEXT_EXPORTS:
         module_name = "laconian_eval.benchmark.context"
     elif name in _HARD_SCORE_EXPORTS:
@@ -243,6 +253,8 @@ __all__ = (
     "AttachmentLayerRootMemberV1",
     "AuditReviewerRegistryV1",
     "BenchmarkProtocolBindingsV1",
+    "BootstrapIntervalV1",
+    "BootstrapVectorsV1",
     "BoundedCanonicalText",
     "CanonicalGitAsciiEmail",
     "CanonicalGitAsciiName",
@@ -333,6 +345,7 @@ __all__ = (
     "load_layer_root_index",
     "load_verified_generation_context_index",
     "load_verified_protocol_review_object_archive",
+    "make_cluster_vectors",
     "parse_canonical_json_v1",
     "parse_protocol_git_object",
     "protocol_bindings_from_context",
