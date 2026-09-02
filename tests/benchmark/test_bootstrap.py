@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: I001 -- direct module import preserves the Task 6 RED boundary.
+
 from collections import Counter
 from decimal import Decimal
 from hashlib import sha256
@@ -8,6 +10,17 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from laconian_eval.benchmark.bootstrap import (
+    BOOTSTRAP_CLUSTER_COUNT,
+    BOOTSTRAP_MIN_VALID,
+    BOOTSTRAP_REPLICATES,
+    BootstrapIntervalV1,
+    BootstrapVectorsV1,
+    _verify_cluster_vectors,
+    cluster_percentile_interval,
+    make_cluster_vectors,
+    type7_quantile,
+)
 from laconian_eval.benchmark import (
     BootstrapIntervalV1 as PublicBootstrapIntervalV1,
 )
@@ -23,17 +36,6 @@ from laconian_eval.benchmark.aggregation import (
     arm_pass_proportion,
     median_visible_delta,
     paired_pass_rate_difference,
-)
-from laconian_eval.benchmark.bootstrap import (
-    BOOTSTRAP_CLUSTER_COUNT,
-    BOOTSTRAP_MIN_VALID,
-    BOOTSTRAP_REPLICATES,
-    BootstrapIntervalV1,
-    BootstrapVectorsV1,
-    _verify_cluster_vectors,
-    cluster_percentile_interval,
-    make_cluster_vectors,
-    type7_quantile,
 )
 
 
