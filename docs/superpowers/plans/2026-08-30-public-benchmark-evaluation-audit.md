@@ -120,6 +120,110 @@ Runtime/publication authority must separately reproduce the campaign spend ledge
 mismatch is operationally invalid. Rows additionally preserve `output_characters`; characters
 remain descriptive and never substitute for visible tokens.
 
+**Current Task 8 provider-evidence closure amendment scope:** This amendment supersedes only the
+underspecified Task 8 in-memory authority inputs, retained root indexes, canonical identifiers,
+sampling arithmetic, and audit-population consumption boundary. It does not change the corpus,
+three models, four arms, repetitions, H/S definitions, 24 strata, certainty population, 144-record
+target, PCG64 seed family, audit metrics, spend caps, workflow inventory, or publication claims.
+Task 8 and every downstream consumer of its provider/audit wrappers remain blocked until the
+maintainer separately approves the exact normative commit containing this text.
+
+The provider loader takes the exact C0-authority-bound `ProtocolReviewIdentityRegistryBundleV1`
+content as an additional keyword-only argument. The bundle remains in memory only: it is retained by
+`VerifiedBenchmarkProviderEvidenceV1`, included in its complete mint fingerprint, exact-type and
+class-bound revalidated on every consumption, and supplied to all 36 calls of the existing public
+`verify_judge_request_attachment`. Its self digest must equal the `identity_registry_bundle_sha256`
+subject in the context's verified `security_evidence` attestation. It is never copied into the
+provider index, projection, population, sample, or any other serialized Task 8 object. A digest-only
+argument or the private context-only request checker cannot replace it. Because the signed
+Rsecurity subject authenticates content rather than Python object identity, a byte-identical,
+class-bound reconstruction is equivalent and must not be rejected merely for having new identity.
+
+The verified provider wrapper additionally retains the freshly loaded hard-score, judge-request,
+and judge `LayerRootIndexV1` objects. Together with the generation index already retained by its
+verified generation context and the separate index retained by `VerifiedJudgeAttemptRootV1`, these
+are the exact path-bearing objects used by the owner revalidator to repeat all four layer-index
+digest/path/vector/member joins and the judge-attempt join. They are in-memory-only and are included
+in the complete fingerprint; synthesizing their paths from copied vectors or hiding them only in
+the mint registry is forbidden.
+
+Task 8 uses the following frozen canonical definitions. The complete provider mint fingerprint is
+`stable_digest("laconian-verified-benchmark-provider-evidence-full-content-v1", payload)`, where
+`payload` projects every non-`InitVar` wrapper field in dataclass declaration order, including the
+complete identity bundle and retained root indexes. Exact Pydantic children undergo a fresh
+class-bound JSON dump/validation round trip, tuples retain order, and mapping keys are ordered by
+UTF-8 bytes. The recursive projection has no `repr` or generic-object fallback: exact Pydantic
+owners project as their module-qualified owner plus complete JSON dump; exact retained dataclass
+owners project as their module-qualified owner plus ordered `(field-name, projected-value)` pairs;
+tuples project as ordered lists, string-key mappings as UTF-8-key-sorted pairs, and only exact
+JSON scalar leaves are admitted. `canonical_record_id` is
+`stable_digest("laconian-audit-population-record-id-v1", payload)` over, in order, `campaign_id`,
+`generation_capsule_sha256`, `hard_score_request_set_sha256`,
+`judge_request_attachment_sha256`, `judge_attachment_sha256`, `plan_item_id`, `response_id`, and
+`judge_request_id`. Population JSONL rows are sorted by their exact canonical JSON bytes and joined
+with one LF after every row; `records_sha256` is raw SHA-256 over those bytes.
+
+`sample_manifest_sha256` is
+`stable_digest("laconian-audit-sample-manifest-v1", manifest.model_dump(mode="json",
+exclude={"sample_manifest_sha256"}))`. `audit_record_id` is
+`stable_digest("laconian-blind-audit-record-id-v1", {"campaign_id": campaign_id,
+"sample_manifest_sha256": sample_manifest_sha256, "canonical_record_id":
+canonical_record_id})` in that order. `packet_sha256` is
+`stable_digest("laconian-blind-audit-packet-v1", packet.model_dump(mode="json",
+exclude={"packet_sha256"}))`; the direct `campaign_registry_sha256` is therefore inside its
+preimage. A stratum ID is the UTF-8 decoding of `canonical_json_v1` over ordered fields
+`generation_model,locale,arm`; a cell ID adds `blinded_judge_decision` last. Stratum-map keys,
+certainty IDs, selected canonical IDs, and manifest cells are byte-sorted; blind packet records are
+sorted by opaque `audit_record_id` bytes. This packet order does not expose source population order.
+The blinding prohibition on response length means no explicit length, ordinal, token, latency,
+cost, judge, model, arm, or provider field; the required candidate-response text necessarily has an
+observable byte/character length.
+
+Hamilton arithmetic is exact. For a stratum, `m_h = 1` for every nonempty cell iff `q_s` is at
+least the nonempty-cell count, otherwise zero; `C_h = N_h - m_h`, `R = q_s - sum(m_h)`, and the
+proportional numerator/denominator are `R * C_h` and `sum(C_h)`. When both are zero the recorded
+denominator is one and the exact remainder is zero. Floors use integer division; remaining local
+seats use descending exact remainder then cell-ID bytes and skip any full cell until exactly `q_s`
+seats are assigned. Global-fill passes are numbered from one and visit all cell IDs in byte order,
+adding at most one available record per cell per pass until target or exhaustion. Recorded selected
+counts and inclusion probabilities include local and global seats.
+
+`VerifiedAuditPopulationV1` is owner-minted by `build_audit_population` and
+`load_verified_audit_population` using a private nonstored `InitVar`, `weakref_slot=True`, exact
+weak identity, guarded cleanup, and
+`stable_digest("laconian-verified-audit-population-full-content-v1", {"attachment":
+attachment.model_dump(mode="json"), "records": [record.model_dump(mode="json") for record in
+records]})` in that order. Every sampling/root consumer first
+revalidates that identity and fingerprint, freshly revalidates the provider wrapper, rebuilds the
+population from it, and byte-compares the complete attachment and record set before reading any
+supplied population field. Direct construction, `dataclasses.replace`, low-level construction,
+post-mint mutation, and a self-consistent copied population confer no authority. All Task 8
+serialized Pydantic models use `ConfigDict(strict=True, extra="forbid", frozen=True)` and exact
+nested owner types. The certainty predicate is exactly a judge-pass record whose `case_id` is
+`safety-medical-en` or `safety-medical-ru` and whose arm is `if` or `concise`; `case_category`
+alone is insufficient.
+
+`write_audit_population`, whose frozen signature intentionally has no provider argument, accepts
+only the exact live owner-minted population identity and invokes the population owner revalidator
+before reading it. That revalidator checks the weak-registry identity and complete immutable mint
+fingerprint and returns a fresh registered wrapper. It does not claim a new durable provider reload.
+Consumers that do accept `provider_evidence`—the population loader, sampler, sample verifier, and
+sample-root writer/loader—additionally revalidate that provider and rebuild/compare the population.
+
+For each requested-model entry, `returned_model_source_sha256` is the aggregate source root
+`stable_digest("laconian-requested-returned-model-sources-v1", payload)`. Its ordered payload is
+`purpose`, `requested_model_id`, the one campaign-consistent `returned_model_id`, and
+`ordered_returned_model_source_sha256s`. Generation sources follow the canonical provider chain and
+plan-row order for that requested model; judge sources use each
+`returned_judge_model_source_sha256` in canonical chain and successful-attempt order. Every
+retained attempt source digest is independently verified before entering this
+root. An empty successful-source population or two returned IDs for one requested model is invalid.
+The existing named Task 8 tests must additionally exercise missing, foreign, digest-substituted,
+and post-validation-mutated identity bundles; missing, reordered, and self-rehashed retained root
+indexes; a changed per-attempt returned-model source under a recomputed provider-index hash; and
+direct, replaced, low-level, and mutated audit-population wrappers. These are cases within the
+existing 51 tests, not alternate APIs or extra workflow behavior.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -4477,6 +4581,16 @@ class RequestedReturnedModelEvidenceV1(BaseModel):
     returned_model_source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
+def compute_requested_returned_model_source_sha256(
+    *,
+    purpose: Literal["generation", "judge"],
+    requested_model_id: Literal["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    returned_model_id: ProviderMetadataString,
+    ordered_source_sha256s: tuple[str, ...],
+) -> str:
+    """Hash one nonempty canonical ordered set of independently verified model sources."""
+
+
 class PublicBenchmarkCacheEvidenceV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     attempt_id: str = Field(pattern="^[0-9a-f]{64}$")
@@ -4614,25 +4728,51 @@ class ProviderEvidenceIndexV1(BaseModel):
             or len({reviewer.reviewer_login for reviewer in protocol_reviewers}) != 3
         ):
             raise ValueError("provider index requires three distinct protocol reviewers")
-        if self.protocol_reviewer_registry.protocol_reviewer_registry_sha256 != (
-            compute_protocol_reviewer_registry_sha256(protocol_reviewers)
+        recomputed_protocol_registry = compute_protocol_reviewer_registry_sha256(
+            protocol_reviewers
+        )
+        if (
+            self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
+            != recomputed_protocol_registry
+            or self.protocol_reviewer_registry_sha256 != recomputed_protocol_registry
         ):
             raise ValueError("provider index protocol reviewer registry digest mismatch")
+        shared_statement_authority: tuple[str, str, str, str, str] | None = None
         for attestation, reviewer in zip(
             self.protocol_attestations,
             protocol_reviewers,
             strict=True,
         ):
+            statement = attestation.statement
+            signature = attestation.signature_evidence
             if (
-                attestation.statement.role != reviewer.role
-                or attestation.statement.reviewer_numeric_account_id
-                != reviewer.reviewer_numeric_account_id
-                or attestation.statement.reviewer_login != reviewer.reviewer_login
-                or attestation.statement.protocol_registry_sha256
-                != self.protocol_reviewer_registry.protocol_reviewer_registry_sha256
-                or attestation.statement.workflow_root != self.workflow_root
+                statement.role != reviewer.role
+                or statement.reviewer_numeric_account_id != reviewer.reviewer_numeric_account_id
+                or statement.reviewer_login != reviewer.reviewer_login
+                or statement.verification_mode != reviewer.verification_mode
+                or statement.signing_fingerprint != reviewer.signing_fingerprint
+                or signature.verification_mode != reviewer.verification_mode
+                or statement.protocol_registry_sha256 != recomputed_protocol_registry
+                or statement.workflow_root != self.workflow_root
+                or statement.peeled_c0_oid != self.input_tag_commit
             ):
                 raise ValueError("provider index protocol attestation identity mismatch")
+            signature_fingerprint = getattr(signature, "fingerprint", None)
+            if reviewer.verification_mode != "github_verified_commit" and (
+                signature_fingerprint != reviewer.signing_fingerprint
+            ):
+                raise ValueError("provider index protocol signature fingerprint mismatch")
+            statement_authority = (
+                statement.input_tag_ref,
+                statement.input_tag_oid,
+                statement.input_tag_object_sha256,
+                statement.peeled_c0_oid,
+                statement.peeled_c0_sha256,
+            )
+            if shared_statement_authority is None:
+                shared_statement_authority = statement_authority
+            elif statement_authority != shared_statement_authority:
+                raise ValueError("provider index protocol attestation authority mismatch")
         if self.protocol_attestations_root != (
             compute_protocol_attestations_root(self.protocol_attestations)
         ):
@@ -4710,12 +4850,16 @@ class BenchmarkProviderEvidenceProjectionV1(BaseModel):
 class VerifiedBenchmarkProviderEvidenceV1:
     generation_expectation: VerifiedGenerationContextExpectationV1
     generation_context: VerifiedGenerationContextIndexV1
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1
     index: ProviderEvidenceIndexV1
     projection: BenchmarkProviderEvidenceProjectionV1
     generation_evidence: tuple[VerifiedScoredCapsuleV2, ...]
+    hard_score_root_index: LayerRootIndexV1
     hard_score_request_sets: tuple[HardScoreRequestSetV1, ...]
+    judge_request_root_index: LayerRootIndexV1
     judge_request_attachments: tuple[JudgeRequestAttachmentV1, ...]
     judge_attempt_root: VerifiedJudgeAttemptRootV1
+    judge_root_index: LayerRootIndexV1
     judge_attachments: tuple[JudgeAttachmentV1, ...]
     _construction_authority: InitVar[object] = None
 
@@ -4760,7 +4904,7 @@ class AuditPopulationAttachmentV1(BaseModel):
 
 
 class AuditPopulationRecordV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     canonical_record_id: str
     generation_capsule_sha256: str
     hard_score_request_set_sha256: str
@@ -4785,7 +4929,7 @@ class AuditPopulationRecordV1(BaseModel):
 
 
 class CellAllocationV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     cell_id: str
     noncertainty_population: int
     local_minimum: int
@@ -4802,7 +4946,7 @@ class CellAllocationV1(BaseModel):
 
 
 class AuditSampleManifestV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     schema_version: Literal["audit-sample-manifest-v1"]
     campaign_id: str
     protocol_bindings: BenchmarkProtocolBindingsV1
@@ -4817,7 +4961,7 @@ class AuditSampleManifestV1(BaseModel):
 
 
 class BlindAuditRecordV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     audit_record_id: str
     prompt: str
     rubric: tuple[RubricItemV1, ...]
@@ -4828,17 +4972,18 @@ class BlindAuditRecordV1(BaseModel):
 
 
 class BlindAuditPacketV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     campaign_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     sample_manifest_sha256: str
     records: tuple[BlindAuditRecordV1, ...]
     packet_sha256: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class VerifiedAuditPopulationV1:
     attachment: AuditPopulationAttachmentV1
     records: tuple[AuditPopulationRecordV1, ...]
+    _construction_authority: InitVar[object] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4856,6 +5001,12 @@ roots. Direct construction from a self-consistent provider index, hard/judge att
 self-hashed judge-attempt root is rejected. The `InitVar` check prevents ordinary construction and
 `dataclasses.replace`; no copyable mint marker is stored on the instance.
 
+The wrapper's `identity_registry_bundle`, `hard_score_root_index`,
+`judge_request_root_index`, and `judge_root_index` fields are in-memory authority evidence only.
+They are never serialized into a provider index, projection, or audit artifact. The generation
+index remains owned by `generation_context.root_index`, and the attempt index remains owned by
+`judge_attempt_root.index`; the complete retained set therefore supports fresh root-join replay.
+
 The owner instead maintains a module-private weak mint registry keyed by `id(wrapper)`. Each entry
 contains a weak reference to that exact wrapper and a domain-separated SHA-256 of its complete
 canonical content, not merely its child self-digests. `weakref_slot=True` permits cleanup; the
@@ -4865,17 +5016,19 @@ fingerprint projects fields in dataclass declaration order, every Pydantic child
 class-bound `model_dump(mode="json")`/`model_validate` round trip, tuples in order, and mappings by
 UTF-8 key order. It includes every generation plan/scored attempt/case, hard-score row,
 judge-request, judge attempt/judgment, and final judge record; a digest-only projection is
-forbidden. The provider loader registers the wrapper and fingerprint only after its fresh durable
-verification succeeds.
+forbidden. It also includes the complete identity bundle and retained path-bearing indexes. The
+provider loader registers the wrapper and fingerprint only after its fresh durable verification
+succeeds.
 
 The provider-evidence owner therefore also defines the non-exported capability
 `_revalidate_verified_provider_evidence_v1(value)`. It requires the exact wrapper type, treats the
 input as untrusted, requires its exact live identity in the weak registry, recomputes the complete
 canonical fingerprint, and compares it with the immutable minted snapshot before trusting any
 field. It then exact-type checks retained verified parent shells, class-bound revalidates every
-serializable child, and recomputes the four 36-member relational/root joins plus the separate
-judge-attempt-root join. Finally it reconstructs and registers a fresh wrapper with the private
-construction authority. It rejects ordinary construction, `dataclasses.replace`, copied fields in
+serializable child, the identity bundle, and every retained root index; recomputes the four
+36-member path/vector/member joins plus the separate judge-attempt-root join; and reruns every
+request verifier with that bundle. Finally it reconstructs and registers a fresh wrapper with the
+private construction authority. It rejects ordinary construction, `dataclasses.replace`, copied fields in
 an `object.__new__` instance, and any content mutated through `object.__setattr__`, including a
 self-consistently rehashed nested graph. The loader and this revalidator share one relational and
 fingerprint implementation so neither path can drift. This is in-memory consumption authority;
@@ -4947,8 +5100,9 @@ def load_verified_benchmark_provider_evidence(
     judge_attempt_root: Path,
     judge_root: Path,
     generation_expectation: VerifiedGenerationContextExpectationV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
 ) -> VerifiedBenchmarkProviderEvidenceV1:
-    """Verify the live capability, four layer roots, and separate attempt root."""
+    """Verify the live capabilities, four layer roots, and separate attempt root."""
 
 
 def build_audit_population(
@@ -5108,8 +5262,9 @@ vector, or inferred parent value in place of this file.
 The requested/returned model projection is exactly four entries in order: generation
 `gpt-5.6-sol`, generation `gpt-5.6-terra`, generation `gpt-5.6-luna`, judge `gpt-5.6-sol`.
 Construction compares every successful response in each entry and rejects two different returned
-IDs; a returned ID need not equal its requested ID. Each returned value binds the digest of the
-exact `response.model` source independently of cache, tier, usage, and reasoning sources.
+IDs; a returned ID need not equal its requested ID. Each returned value binds the frozen aggregate
+root of every independently verified exact `response.model` source for that entry, independently
+of cache, tier, usage, and reasoning sources.
 The attempt root is a sealed source-provenance parent, not a fifth published evidence layer:
 Runtime's `Runtime.seal_judge` obtains its digest/vector only from
 `VerifiedJudgeAttemptRootV1`, and every emitted judge record names its exact successful attempt
@@ -5133,7 +5288,8 @@ benchmark model from a fake campaign-side module and statically proves that
 `load_verified_benchmark_provider_evidence` is the only constructor for the verified dataclass. It
 requires `provider_index_path` to be the exact retained-descriptor child
 `judge_root/provider-evidence-index.json`, requires the caller's
-`generation_expectation: VerifiedGenerationContextExpectationV1`, calls
+`generation_expectation: VerifiedGenerationContextExpectationV1` and exact verified C0
+`identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1`, calls
 `load_provider_evidence_index`, and opens the exact four layer roots plus the separate
 `judge_attempt_root` read-only. After verifying the judge-request attachments, it calls
 `load_verified_judge_attempt_root(judge_attempt_root,
@@ -5204,8 +5360,17 @@ analytical cost basis. Missing or forbidden write evidence is
 retained for the integrity limitation path; it is never filtered merely to make the projection
 eligible for analysis.
 
+For each requested-model entry the loader recomputes `returned_model_source_sha256` as the frozen
+aggregate source root in the current Task 8 amendment. The producer and loader use the same
+owner function `compute_requested_returned_model_source_sha256` and canonical successful-source
+order; the serialized field is never one arbitrarily selected attempt digest. Runtime and Slice 4
+import that owner function instead of duplicating the preimage.
+
 Class-bound revalidate the provider index, projection, and every parent again in both
-audit-population entry points. The population attachment must copy
+audit-population entry points. The population owner uses the same private-`InitVar`, weak-identity,
+guarded-cleanup, and complete-fingerprint construction pattern as the provider owner. Sampling and
+sample-root consumers first owner-revalidate it and byte-compare a fresh population rebuilt from
+the freshly revalidated provider wrapper. The population attachment must copy
 `provider_evidence_index_sha256`, `benchmark_provider_evidence_sha256`, and the four exact ordered
 layer hash vectors plus the exact judge-attempt root digest and ordered boundary vector. A missing,
 duplicate, extra, reordered, substituted, or cross-parent member is an
@@ -7572,7 +7737,8 @@ BenchmarkProtocolBindingsV1, protocol_bindings_from_context,
 GenerationContextExpectationV1, VerifiedGenerationContextExpectationV1,
 GenerationContextIndexV1, VerifiedGenerationContextIndexV1,
 write_generation_context_index, load_verified_generation_context_index,
-ProviderEvidenceIndexV1, write_provider_evidence_index, load_provider_evidence_index,
+ProviderEvidenceIndexV1, compute_requested_returned_model_source_sha256,
+write_provider_evidence_index, load_provider_evidence_index,
 BenchmarkProviderEvidenceProjectionV1, VerifiedBenchmarkProviderEvidenceV1,
 load_verified_benchmark_provider_evidence,
 AuditPopulationAttachmentV1, VerifiedAuditPopulationV1, VerifiedAuditSampleRootV1,

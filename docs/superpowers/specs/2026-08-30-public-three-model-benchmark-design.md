@@ -3,11 +3,11 @@
 **Date:** 2026-08-30
 
 **Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
-bounded-directory, source-backed protocol-signature evidence, and protocol-evidence/judge-wire
-and aggregation-authority amendments approved. Evaluation Tasks 3–5, the Task 8 provider-evidence
-join, and their downstream consumers may
-proceed only from a handoff that records this governance-only successor's full SHA as
-`PLAN_BASE_SHA`.
+bounded-directory, source-backed protocol-signature evidence, protocol-evidence/judge-wire, and
+aggregation-authority amendments approved; the Task 8 provider-evidence closure amendment is
+pending separate approval. Evaluation Tasks 3–7 may proceed from their approved handoffs. Task 8
+and its downstream consumers remain blocked until this amendment receives an exact recorded
+approval.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -63,7 +63,7 @@ records that approval without changing normative behavior. Evaluation Tasks 3 an
 paths and downstream consumers may proceed only from a handoff that records this successor's
 future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
-**Current aggregation-authority amendment approval:** On 2026-09-02, the maintainer/user in this
+**Prior aggregation-authority amendment approval:** On 2026-09-02, the maintainer/user in this
 Codex task explicitly approved the normative amendment at commit
 `5347e39dcbcd9d69b96e21824fb23d0e8e66064b` with the exact message
 `Одобряю amendment 5347e39dcbcd9d69b96e21824fb23d0e8e66064b`. This governance-only successor
@@ -124,6 +124,91 @@ restores the already-required descriptive output-character count. It does not ch
 models, arms, repetitions, H/S definitions, primary visible-token estimand, bootstrap, thresholds,
 audit design, spend caps, workflow inventory, or publication claims. It is binding on Evaluation
 Task 5, the Task 8 authority-bearing join, and every downstream consumer of their rows.
+
+**Current Task 8 provider-evidence closure amendment scope:** This amendment closes only the
+underspecified Task 8 in-memory authority inputs, retained path-bearing indexes, canonical IDs and
+digest preimages, exact Hamilton arithmetic, and audit-population consumption authority. It does
+not change the corpus, models, arms, repetitions, H/S definitions, primary estimand, 24 strata,
+certainty population, 144-record target, PCG64 seed family, audit metrics, spend caps, workflow
+inventory, App inventory, or publication claims. Task 8 and every downstream consumer of its
+provider/audit wrappers remain blocked until the maintainer separately approves the exact
+normative commit containing this amendment.
+
+The sole provider loader additionally requires the exact C0-authority-bound
+`ProtocolReviewIdentityRegistryBundleV1` content as a keyword-only argument. The loader exact-type
+and class-bound revalidates it, requires its self digest to match the `security_evidence`
+attestation subject, and supplies it to all 36 public judge-request verifications. The verified
+provider wrapper retains the complete bundle plus the freshly loaded hard-score, judge-request,
+and judge `LayerRootIndexV1` objects. The generation index remains retained by the verified
+generation context and the attempt index by the verified attempt root. All five indexes and the
+bundle enter the wrapper's full-content fingerprint and every fresh owner revalidation. None of
+these added live fields is serialized into the provider index, projection, population, or sample;
+a digest-only bundle argument, synthesized root paths, or hidden registry-only root objects cannot
+substitute for them. The bundle is content authenticated by the signed Rsecurity subject, not a
+nonreconstructible Python identity capability; a byte-identical class-bound reconstruction is
+equivalent.
+
+The provider fingerprint is
+`stable_digest("laconian-verified-benchmark-provider-evidence-full-content-v1", payload)` over every
+non-`InitVar` field in dataclass declaration order. Exact Pydantic children receive a fresh
+class-bound JSON dump/validation round trip, tuple order is retained, mapping keys use UTF-8 byte
+order, and the payload contains the complete bundle, root indexes, plans, cases, attempts, usage,
+hard rows, requests, judgments, and final records rather than only child digests.
+There is no `repr` or generic-object fallback: exact Pydantic owners project as their
+module-qualified owner plus complete JSON dump; exact retained dataclass owners project as their
+module-qualified owner plus ordered field-name/value pairs; tuples are ordered lists,
+string-key mappings are UTF-8-key-sorted pairs, and only exact JSON scalar leaves are admitted.
+For each
+requested-model entry, `returned_model_source_sha256` is
+`stable_digest("laconian-requested-returned-model-sources-v1", payload)` over `purpose`,
+`requested_model_id`, the sole campaign-consistent `returned_model_id`, and the canonically ordered
+successful per-attempt source values. Generation ordering follows provider chain then plan row and
+uses `returned_model_source_sha256`; judge ordering follows provider chain then successful attempt
+and uses `returned_judge_model_source_sha256`. Empty source
+populations and multiple returned IDs are invalid.
+Runtime and Slice 4 both call the neutral provider-evidence owner function
+`compute_requested_returned_model_source_sha256`; neither duplicates or weakens this preimage.
+
+The audit population is itself owner-minted by builder or path loader with a private nonstored
+`InitVar`, weakref slot, exact weak identity, guarded cleanup, and complete-content fingerprint.
+That fingerprint uses domain `laconian-verified-audit-population-full-content-v1` over ordered
+`attachment` and `records` complete JSON projections.
+Every sampling/root consumer first revalidates it, freshly revalidates the provider wrapper,
+rebuilds the population, and canonical-byte compares every attachment and row before reading any
+supplied population field. Direct construction, replacement, low-level copying, mutation, or a
+self-consistent copied population cannot confer authority. Every Task 8 serialized Pydantic model
+is strict, frozen, extra-forbid, and exact-owner checked.
+The provider-free `write_audit_population` boundary only owner-revalidates the exact live minted
+population identity/full fingerprint and writes its fresh registered return; every consumer with a
+provider argument additionally performs the provider revalidation and population rebuild.
+
+`canonical_record_id` uses domain `laconian-audit-population-record-id-v1` over ordered fields
+`campaign_id`, all four generation/hard/request/judge parent hashes, `plan_item_id`, `response_id`,
+and `judge_request_id`. Canonical population JSON lines are byte-sorted and each ends in LF; raw
+SHA-256 of the resulting bytes is `records_sha256`. `sample_manifest_sha256` uses domain
+`laconian-audit-sample-manifest-v1` over every preceding manifest field and excludes only itself.
+`audit_record_id` uses domain `laconian-blind-audit-record-id-v1` over campaign ID, manifest digest,
+and canonical record ID. `packet_sha256` uses domain `laconian-blind-audit-packet-v1` over every
+preceding packet field and excludes only itself, so its direct campaign-registry binding is inside
+the preimage.
+
+Stratum and cell IDs are the UTF-8 text of `canonical_json_v1` over ordered
+`generation_model,locale,arm` and those fields plus `blinded_judge_decision`, respectively.
+Manifest cells, map keys, certainty IDs, and selected canonical IDs are UTF-8 byte-sorted; blind
+records are ordered by opaque audit-record ID bytes. The packet omits explicit source ordinal,
+length, model, arm, judge, token, latency, cost, and provider fields; required candidate text
+necessarily exposes its own length but no separate length metadata or source order.
+
+For each stratum, local minima are one per nonempty cell iff `q_s` is at least the nonempty-cell
+count, otherwise zero. With `C_h=N_h-m_h` and `R=q_s-sum(m_h)`, Hamilton records numerator
+`R*C_h`, denominator `sum(C_h)`, integer floor, and the exact rational remainder; the zero/zero
+case records denominator one and remainder zero. Residual seats use descending exact remainder then
+cell-ID bytes while skipping full cells until `q_s` is met. Global passes are numbered from one,
+visit all cell IDs in byte order, and add no more than one available row per cell per pass until
+target or exhaustion. Recorded selected counts and probabilities include local and global seats.
+The certainty predicate is exactly judge-pass plus `case_id in
+{"safety-medical-en","safety-medical-ru"}` plus `arm in {"if","concise"}`; category alone is not
+the frozen scenario identity.
 
 No self-hashed `HardScoreRequestSetV1` or `JudgeAttachmentV1` sequence is a verified aggregation
 input. The sole public aggregation input is the loader-minted
