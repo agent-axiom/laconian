@@ -151,6 +151,12 @@ if TYPE_CHECKING:
         verify_judge_request_attachment,
         write_judge_attempt_root,
     )
+    from laconian_eval.benchmark.outcomes import (
+        ModelOutcome,
+        ModelOutcomeV1,
+        OutcomeEvidenceV1,
+        classify_model_outcome,
+    )
 
 _CONTEXT_EXPORTS = frozenset(
     {
@@ -186,6 +192,14 @@ _HARD_SCORE_EXPORTS = frozenset(
 _AGGREGATION_EXPORTS = frozenset({"AggregatedModelV1"})
 _BOOTSTRAP_EXPORTS = frozenset(
     {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
+)
+_OUTCOME_EXPORTS = frozenset(
+    {
+        "ModelOutcome",
+        "ModelOutcomeV1",
+        "OutcomeEvidenceV1",
+        "classify_model_outcome",
+    }
 )
 JUDGE_LAZY_EXPORTS_V1 = (
     "JUDGE_REQUESTED_SERVICE_TIER",
@@ -223,6 +237,8 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.context"
     elif name in _HARD_SCORE_EXPORTS:
         module_name = "laconian_eval.benchmark.hard_score"
+    elif name in _OUTCOME_EXPORTS:
+        module_name = "laconian_eval.benchmark.outcomes"
     elif name in _JUDGE_EXPORTS:
         module_name, owner_name = _JUDGE_EXPORTS[name]
         value = getattr(import_module(module_name), owner_name)
@@ -280,7 +296,10 @@ __all__ = (
     "LayerRootIndexV1",
     "LayerRootMemberV1",
     "LocalSignatureVerificationReceiptV1",
+    "ModelOutcome",
+    "ModelOutcomeV1",
     "OpenPGPVerifiedCommitEvidenceV1",
+    "OutcomeEvidenceV1",
     "ParsedProtocolGitObjectV1",
     "ProtocolAttestationBundleV1",
     "ProtocolAttestationTagBindingV1",
@@ -340,6 +359,7 @@ __all__ = (
     "compute_protocol_attestations_root",
     "compute_protocol_reviewer_registry_sha256",
     "compute_verifier_dependency_inventory_root",
+    "classify_model_outcome",
     "derive_judge_request_id",
     "derive_seed128",
     "load_layer_root_index",
