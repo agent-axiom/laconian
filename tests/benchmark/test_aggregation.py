@@ -26,7 +26,7 @@ from laconian_eval.benchmark.aggregation import (
 def _key(*, scenario: int, locale: str, repetition: int) -> dict[str, object]:
     return {
         "scenario_uid": sha256(f"scenario-{scenario}".encode()).hexdigest(),
-        "case_id": f"case-{scenario:02d}",
+        "case_id": f"case-{scenario:02d}-{locale}",
         "locale": locale,
         "repetition": repetition,
     }
@@ -168,6 +168,18 @@ def test_row_builder_rejects_missing_duplicate_or_cross_arm_key_populations(
     )
     with pytest.raises(InferenceIntegrityError, match=r"shared|key"):
         _build_aggregated_model_from_rows(generation_model="model-a", rows=cross_arm)
+
+    inconsistent_locale_case = complete_rows
+    for index in (0, 120, 240, 360):
+        inconsistent_locale_case = _replace_row(
+            inconsistent_locale_case,
+            index,
+            case_id="case-00-en-alternate",
+        )
+    with pytest.raises(InferenceIntegrityError, match=r"case|repetition"):
+        _build_aggregated_model_from_rows(
+            generation_model="model-a", rows=inconsistent_locale_case
+        )
 
 
 @pytest.mark.parametrize("reason", ["provider_rejected", "retry_exhausted"])
@@ -371,14 +383,14 @@ def test_cache_write_evidence_never_changes_visible_output_or_pair_eligibility(
     before = pair_denominators_for_gate(complete_rows, gate="hard")
     changed = _replace_row(
         complete_rows,
-        0,
+        240,
         cache_write_tokens=None,
         ordinary_uncached_input_tokens=None,
         cache_write_status="missing",
         cache_policy_status="missing_write_detail",
         cost_availability="retained_worst_case",
     )
-    assert changed[0].visible_output_tokens == complete_rows[0].visible_output_tokens
+    assert changed[240].visible_output_tokens == complete_rows[240].visible_output_tokens
     assert pair_denominators_for_gate(changed, gate="hard") == before
 
 

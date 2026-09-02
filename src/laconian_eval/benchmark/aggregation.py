@@ -325,25 +325,31 @@ def _validated_exact_rows(rows: Iterable[PlannedObservationV1]) -> tuple[Planned
 
 
 def _validate_key_shape(keys: set[RowKey]) -> None:
-    scenario_case_ids: dict[str, set[str]] = {}
-    scenario_keys: dict[str, set[tuple[str, int]]] = {}
+    scenario_locales: dict[str, set[str]] = {}
+    case_ids_by_scenario_locale: dict[tuple[str, str], set[str]] = {}
+    repetitions_by_scenario_locale: dict[tuple[str, str], set[int]] = {}
     for scenario_uid, case_id, locale, repetition in keys:
-        scenario_case_ids.setdefault(scenario_uid, set()).add(case_id)
-        scenario_keys.setdefault(scenario_uid, set()).add((locale, repetition))
-    if len(scenario_keys) != 12:
+        scenario_locales.setdefault(scenario_uid, set()).add(locale)
+        scenario_locale = (scenario_uid, locale)
+        case_ids_by_scenario_locale.setdefault(scenario_locale, set()).add(case_id)
+        repetitions_by_scenario_locale.setdefault(scenario_locale, set()).add(repetition)
+    if len(scenario_locales) != 12:
         raise InferenceIntegrityError("planned population must contain exactly 12 scenarios")
-    for scenario_uid, locale_repetitions in scenario_keys.items():
-        if len(scenario_case_ids[scenario_uid]) != 1:
-            raise InferenceIntegrityError("scenario UID must identify exactly one case")
-        locales = {locale for locale, _ in locale_repetitions}
-        if len(locales) != 2 or any(
-            {repetition for candidate, repetition in locale_repetitions if candidate == locale}
-            != set(range(5))
-            for locale in locales
-        ):
+    for scenario_uid, locales in scenario_locales.items():
+        if len(locales) != 2:
             raise InferenceIntegrityError(
                 "each scenario requires two locales and five repetitions"
             )
+        for locale in locales:
+            scenario_locale = (scenario_uid, locale)
+            if len(case_ids_by_scenario_locale[scenario_locale]) != 1:
+                raise InferenceIntegrityError(
+                    "case ID must be stable across locale repetitions"
+                )
+            if repetitions_by_scenario_locale[scenario_locale] != set(range(5)):
+                raise InferenceIntegrityError(
+                    "each scenario requires two locales and five repetitions"
+                )
 
 
 def _validate_population(rows: Sequence[PlannedObservationV1]) -> None:
