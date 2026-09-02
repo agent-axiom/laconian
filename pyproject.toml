@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Laconian contributors" }]
 dependencies = [
+  "cryptography==50.0.1",
   "numpy>=2,<3",
   "packaging>=26,<27",
   "pydantic>=2.12,<3",
