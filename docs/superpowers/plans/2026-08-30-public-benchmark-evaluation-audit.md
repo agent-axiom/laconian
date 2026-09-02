@@ -88,6 +88,32 @@ provider-neutral evidence parser, and extended typed SDK gate. Judge re-exports 
 562 lazy registry. No provider imports `benchmark.judge`; no local compatibility alias, inferred
 provider default, unsealed kwarg, or alternate dependency lookup is permitted.
 
+**Current aggregation-authority amendment scope:** This amendment supersedes only the Task 5
+authority boundary, row-integrity validators, and analytical-cost ambiguity exposed during
+implementation. It does not change the frozen population, H/S definitions, primary estimand,
+bootstrap, outcome thresholds, audit, or publication claims. Amendment-dependent Task 5, the Task
+8 provider-evidence join, and their downstream consumers remain blocked until the maintainer
+separately approves the exact normative commit.
+
+Task 5 must not accept independently self-hashed `HardScoreRequestSetV1` and `JudgeAttachmentV1`
+sequences as if their semantic decisions were verified. Those types become authoritative for
+aggregation only inside the already-planned `VerifiedBenchmarkProviderEvidenceV1`, after the Task 8
+loader has reloaded all four layer roots plus the judge-attempt root, invoked every parent verifier,
+and byte-compared every judge record with its verified terminal attempt. Task 5 owns the strict row,
+fixed-denominator, pair-eligibility, cache-limitation, and complete-model validators. Task 8 adds the
+public `aggregate_verified_evidence(*, provider_evidence=...)` entry point and the full 36-chain,
+1,440-row adversarial join tests. No public or private overload accepts three bare evidence
+sequences.
+
+Task 5 also renames the ambiguous row field to `analytical_cost_usd`. For trusted complete usage it
+is the exact five-component Decimal estimate under the sealed price snapshot. When cache-write or
+another required accounting detail is missing, `retained_worst_case` stores the mechanically
+reproduced per-attempt reservation envelope from normative Section 8; it is explicitly an
+analytical exposure bound, not a claim that Slice 2 verified Runtime's spend ledger. The later
+Runtime/publication authority must separately reproduce the campaign spend ledger, and any
+mismatch is operationally invalid. Rows additionally preserve `output_characters`; characters
+remain descriptive and never substitute for visible tokens.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -3667,26 +3693,35 @@ git commit -m "feat: freeze blind semantic judge attachments"
 - Create: `src/laconian_eval/benchmark/aggregation.py`
 - Create: `tests/benchmark/test_aggregation.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
-- Modify: `tests/benchmark/helpers.py`
 
 - [ ] **Step 1: Write denominator, failure, and token-accounting tests**
 
 Create tests named:
 
 - `test_h_and_s_use_120_planned_key_denominators`.
-- `test_provider_rejections_are_zero_but_missing_or_ambiguous_keys_invalidate`.
+- `test_row_builder_rejects_missing_duplicate_or_cross_arm_key_populations`.
 - `test_planned_observation_provider_failures_require_null_response_and_zero_h_s`.
 - `test_planned_observation_success_requires_response_and_exact_h_s_reason_matrix`.
+- `test_planned_observation_response_and_output_character_presence_match`.
 - `test_cache_write_counts_accounting_and_cost_basis_remain_distinct`.
 - `test_missing_cache_write_detail_retains_worst_case_cost_and_integrity_limitation`.
+- `test_cost_availability_is_an_exhaustive_three_state_iff_matrix`.
+- `test_analytical_cost_uses_independent_integer_micro_usd_component_ceilings`.
 - `test_cache_write_evidence_never_changes_visible_output_or_pair_eligibility`.
 - `test_visible_tokens_subtract_reasoning_and_never_fall_back_to_billed_output`.
 - `test_eligible_pairs_and_token_pairs_are_distinct`.
+- `test_pair_denominators_reject_impossible_scenario_counts`.
+- `test_gate_names_are_runtime_closed`.
+- `test_aggregated_model_requires_shared_arm_keys_canonical_order_and_immutable_gates`.
 
 The first fixture must contain exactly 12 scenarios, two locales, and five repetitions for one arm,
 then assert `hard_pass_rate == Fraction(sum_h, 120)` and
 `semantic_success_rate == Fraction(sum_s, 120)`. The token test covers missing reasoning usage,
-reasoning greater than output, and a valid zero-visible-token response.
+reasoning greater than output, a valid zero-visible-token response, and preservation of the exact
+Unicode code-point length as `output_characters` without using it as a token fallback.
+The final model fixture contains exactly 480 rows and proves that all four arms share one exact
+120-key set, use canonical row order, reproduce both gate denominators, expose no mutable gate
+mapping, and reject any one-arm key substitution.
 
 - [ ] **Step 2: Run RED**
 
@@ -3723,7 +3758,6 @@ CostAvailabilityV1 = Literal[
     "trusted_usage",
     "definitely_rejected_zero",
     "retained_worst_case",
-    "unavailable",
 ]
 CacheIntegrityLimitationV1 = Literal[
     "cache_write_detail_missing",
@@ -3760,9 +3794,10 @@ class PlannedObservationV1(BaseModel):
     cache_policy_status: CachePolicyStatusV1
     total_tokens: int | None = Field(default=None, ge=0)
     visible_output_tokens: int | None = Field(default=None, ge=0)
-    reconciled_cost_usd: Decimal | None = Field(default=None, ge=0)
+    analytical_cost_usd: Decimal = Field(ge=0)
     cost_availability: CostAvailabilityV1
     latency_ms: int | None = Field(default=None, ge=0)
+    output_characters: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_terminal_projection(self) -> Self:
@@ -3772,11 +3807,44 @@ class PlannedObservationV1(BaseModel):
         }
         successful_zero = self.terminal_zero_reason in {"blank_response", "hard_fail"}
         if provider_failure:
-            if self.response_id is not None or self.hard_pass or self.semantic_success:
+            response_values = (
+                self.input_tokens,
+                self.output_tokens,
+                self.reasoning_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+                self.ordinary_uncached_input_tokens,
+                self.total_tokens,
+                self.visible_output_tokens,
+                self.latency_ms,
+                self.output_characters,
+            )
+            expected_statuses = {
+                "not_applicable_definitely_not_sent",
+                "not_applicable_definitely_rejected",
+            }
+            statuses = (
+                self.applied_cache_control_status,
+                self.cache_read_status,
+                self.cache_write_status,
+                self.service_tier_status,
+            )
+            if (
+                self.response_id is not None
+                or self.hard_pass
+                or self.semantic_success
+                or any(value is not None for value in response_values)
+                or statuses[0] not in expected_statuses
+                or any(status != statuses[0] for status in statuses[1:])
+                or self.analytical_cost_usd != Decimal(0)
+                or self.cost_availability != "definitely_rejected_zero"
+            ):
                 raise ValueError("provider failure projection mismatch")
             return self
         if self.response_id is None:
             raise ValueError("provider success requires response_id")
+        if self.output_characters is None:
+            raise ValueError("provider response requires output characters")
         if successful_zero:
             if self.hard_pass or self.semantic_success:
                 raise ValueError("successful zero projection mismatch")
@@ -3801,6 +3869,8 @@ class PlannedObservationV1(BaseModel):
         complete_cache_detail = all(
             status in {"reported_zero", "reported_nonzero"} for status, _ in cache_fields
         )
+        if complete_cache_detail and self.input_tokens is None:
+            raise ValueError("reported cache components require input tokens")
         if complete_cache_detail and self.input_tokens is not None:
             assert self.cache_read_tokens is not None
             assert self.cache_write_tokens is not None
@@ -3814,8 +3884,17 @@ class PlannedObservationV1(BaseModel):
                 raise ValueError("uncached input projection mismatch")
         elif self.ordinary_uncached_input_tokens is not None:
             raise ValueError("uncached input requires complete cache detail")
-        if (self.cost_availability == "unavailable") != (self.reconciled_cost_usd is None):
-            raise ValueError("cost availability/value mismatch")
+        if self.output_tokens is None or self.reasoning_tokens is None:
+            if self.visible_output_tokens is not None:
+                raise ValueError("visible output requires reasoning accounting")
+        elif self.visible_output_tokens != self.output_tokens - self.reasoning_tokens:
+            raise ValueError("visible output projection mismatch")
+        if self.total_tokens is not None and (
+            self.input_tokens is None
+            or self.output_tokens is None
+            or self.total_tokens != self.input_tokens + self.output_tokens
+        ):
+            raise ValueError("total token projection mismatch")
         if (
             self.response_id is not None
             and self.cache_write_status in {"missing", "invalid"}
@@ -3837,50 +3916,136 @@ class PlannedObservationV1(BaseModel):
                 raise ValueError("cache-write policy status mismatch")
         elif self.response_id is None and self.cache_policy_status != "terminal_no_usage":
             raise ValueError("response-free terminal row requires terminal_no_usage")
+        trusted_cost_shape = (
+            self.response_id is not None
+            and all(
+                value is not None
+                for value in (
+                    self.input_tokens,
+                    self.output_tokens,
+                    self.reasoning_tokens,
+                    self.cache_read_tokens,
+                    self.cache_write_tokens,
+                    self.ordinary_uncached_input_tokens,
+                    self.total_tokens,
+                    self.visible_output_tokens,
+                )
+            )
+            and self.applied_cache_control_status == "reported_exact"
+            and self.service_tier_status == "reported_default"
+            and complete_cache_detail
+        )
+        if self.response_id is not None and self.cost_availability != (
+            "trusted_usage" if trusted_cost_shape else "retained_worst_case"
+        ):
+            raise ValueError("response cost availability does not match accounting shape")
         if self.cost_availability == "definitely_rejected_zero" and (
-            self.response_id is not None or self.reconciled_cost_usd != 0
+            self.response_id is not None or self.analytical_cost_usd != 0
         ):
             raise ValueError("definitely rejected zero-cost projection mismatch")
         return self
 
 
 class PairDenominatorsV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     planned_pairs: Literal[120] = 120
     eligible_pairs: int = Field(ge=0, le=120)
     token_pairs: int = Field(ge=0, le=120)
     eligible_scenarios: int = Field(ge=0, le=12)
 
+    @model_validator(mode="after")
+    def validate_nested_counts(self) -> Self:
+        if self.token_pairs > self.eligible_pairs:
+            raise ValueError("token pairs must be a subset of eligible pairs")
+        if self.eligible_pairs == 0:
+            if self.eligible_scenarios != 0:
+                raise ValueError("eligible scenarios require eligible pairs")
+            return self
+        minimum_scenarios = (self.eligible_pairs + 9) // 10
+        maximum_scenarios = min(self.eligible_pairs, 12)
+        if not minimum_scenarios <= self.eligible_scenarios <= maximum_scenarios:
+            raise ValueError("eligible scenario count is impossible")
+        return self
+
+
+class GatePairDenominatorsV1(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    hard: PairDenominatorsV1
+    semantic: PairDenominatorsV1
+
 
 class AggregatedModelV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     generation_model: str
     rows: tuple[PlannedObservationV1, ...]
-    denominators_by_gate: Mapping[Literal["hard", "semantic"], PairDenominatorsV1]
+    denominators_by_gate: GatePairDenominatorsV1
     integrity_limitations: tuple[CacheIntegrityLimitationV1, ...]
-
-
-def aggregate_verified_evidence(
-    *,
-    evidence: Sequence[VerifiedScoredCapsuleV2],
-    hard_sets: Sequence[HardScoreRequestSetV1],
-    judge_attachments: Sequence[JudgeAttachmentV1],
-) -> tuple[AggregatedModelV1, ...]:
-    """Verify all joins and emit one canonical 120-key arm table per generation model."""
 ~~~
 
-Require a bijection over the canonical 120 keys in every model/arm. Provider rejection,
-retry exhaustion, blank response, and deterministic hard failure produce `H = S = 0`.
-Missing keys, unknown delivery, authentication stop, inconsistent returned model, duplicate key,
-or unverifiable provenance raise `InferenceIntegrityError`; they are never zero-imputed.
+Task 5 exposes no function that accepts bare generation, hard-score, or judge-attachment sequences.
+Implement one module-private pure row helper,
+`_build_aggregated_model_from_rows(*, generation_model, rows)`, which accepts no evidence objects,
+claims no provenance, and exists only to exercise and reuse the Task 5 row validators. It requires
+exactly 480 rows: each arm has exactly 120 unique keys and the four arms have the identical key
+set. Its returned rows are in exact canonical order by `(raw SHA-256 bytes of scenario_uid,
+UTF-8 bytes of case_id, UTF-8 bytes of locale, repetition integer, arm rank)` where arm rank is
+`baseline`, `caveman`, `if`, `concise`. It rejects any other order at the model boundary rather than
+silently sorting an already-constructed `AggregatedModelV1`. Task 8 calls this helper only after
+the authority-bearing join; it is not package-exported and is never a publication input.
+
+Provider rejection, retry exhaustion, blank response, and deterministic hard failure produce
+`H = S = 0`. Evidence-level unknown delivery, authentication stop, inconsistent returned model,
+or unverifiable provenance are outside the pure Task 5 row boundary and are tested by Task 8's
+authority join; they raise `InferenceIntegrityError` there and are never zero-imputed. Missing,
+duplicate, or cross-arm row keys fail in Task 5. The public authority-bearing join is added in Task
+8 after `VerifiedBenchmarkProviderEvidenceV1` exists.
 
 Import `Self` and `model_validator` and class-bound revalidate every projected row. The terminal
 matrix is exact: `provider_rejected` and `retry_exhausted` require `response_id=None` and
-`H=S=0`; `blank_response` and `hard_fail` require a nonnull persisted response ID and `H=S=0`;
-and `terminal_zero_reason=None` requires a nonnull response ID and `H=1`, while `S` may be either
-the verified judge pass or fail. No other combination is valid. The two matrix tests must mutate
-each of `response_id`, `hard_pass`, `semantic_success`, and `terminal_zero_reason` independently
-and assert validation failure rather than relying only on the aggregation builder.
+`H=S=0`, null response-derived usage/latency/characters, matching independent
+`not_applicable_definitely_not_sent` or `not_applicable_definitely_rejected` statuses,
+`analytical_cost_usd=Decimal(0)`, and `cost_availability="definitely_rejected_zero"`.
+Task 8 may project those reasons only after every relevant attempt proves that exact delivery
+state; a response-received error, unknown delivery, or merely ambiguous provider error invalidates
+inference and never becomes a zero-cost row. `blank_response` and `hard_fail` require a nonnull
+persisted response ID and `H=S=0`; `terminal_zero_reason=None` requires a nonnull response ID and
+`H=1`, while `S` may be either the verified judge pass or fail. No other combination is valid. The
+two matrix tests must mutate each of `response_id`, `hard_pass`, `semantic_success`,
+`terminal_zero_reason`, cost value/basis, and response-derived accounting independently and assert
+validation failure rather than relying only on the aggregation builder.
+
+`output_characters` is null exactly when `response_id` is null and is otherwise present. Task 8
+computes it as the exact Python `len(output_text)` Unicode code-point count from the verified raw
+response and rejects a mismatching projected value. A response with an empty string has zero
+characters; zero is not treated as missing. The count remains descriptive only.
+
+The three cost states form an exhaustive iff matrix. A response-free provider terminal has only
+`definitely_rejected_zero` as specified above. A response row has `trusted_usage` iff its five cost
+components—ordinary uncached input, cache-read input, cache-write input, visible output, and
+reasoning output—are all nonnull, the projected input/output/total identities are complete, and
+the carried applied-control, service-tier, and cache statuses are the exact trusted reported
+states. Task 8 additionally requires the source owner's usage availability and reasoning-accounting
+state to be exact reported/complete values. A response row has
+`retained_worst_case` iff response evidence remains admissible but at least one required accounting
+component or trusted status is missing, invalid, mismatched, or otherwise unresolved. No complete
+trusted row may claim the retained basis, and no accepted incomplete row may claim trusted usage.
+There is no `unavailable` state: every verified public campaign has a sealed five-rate snapshot;
+missing, malformed, nonintegral, wrong-model, or unauthorized price evidence invalidates inference
+instead of creating a fourth cost path. Task 5 validates the structural matrix; Task 8 verifies the
+source states and exact numeric value against the authorized snapshot.
+
+`PairDenominatorsV1` class-bound revalidation enforces `token_pairs <= eligible_pairs`. Zero
+eligible pairs requires zero eligible scenarios. Otherwise it requires
+`ceil(eligible_pairs / 10) <= eligible_scenarios <= min(eligible_pairs, 12)`, because one scenario
+contains at most ten locale/repetition keys. Gate lookup accepts runtime values exactly equal to
+`"hard"` or `"semantic"`; every other string raises `InferenceIntegrityError` and never falls
+through to semantic. `AggregatedModelV1` revalidates all 480 exact-owner rows, their shared arm key
+set, canonical order, both recomputed denominators, and canonical integrity limitations. Every row
+must repeat the enclosing `generation_model`. Integrity limitations contain no duplicates, follow
+the literal order `("cache_write_detail_missing", "forbidden_cache_write_observed")`, include the
+first item iff at least one row has `cache_policy_status="missing_write_detail"`, include the
+second iff at least one row has `cache_policy_status="forbidden_nonzero_write"`, and contain no
+other item.
 
 - [ ] **Step 4: Freeze token and pair eligibility formulas**
 
@@ -3896,22 +4061,49 @@ provider cache reads and cache writes as separate accounting statuses and counts
 `ordinary_uncached_input_tokens = input_tokens - cache_read_tokens - cache_write_tokens` only when both
 cache details are reported; never infer a zero cache-write count from omission or fold writes into
 cached/uncached input. Keep input, uncached input, cached reads, cache writes, visible output,
-reasoning output, provider output, total, reconciled cost, cost availability, latency, and characters
+reasoning output, provider output, total, analytical cost, cost availability, latency, and characters
 as distinct fields.
 
 The frozen explicit/no-breakpoint policy expects a reported zero write count. A terminal success
-with missing write detail must retain the runtime ledger's worst-case amount with
+with missing write detail must reproduce the Section 8 per-attempt reservation envelope with
 `cost_availability="retained_worst_case"`, set `cache_policy_status="missing_write_detail"`, and add
 `cache_write_detail_missing` to `AggregatedModelV1.integrity_limitations`. A reported nonzero write
-remains immutable billable evidence, sets `forbidden_nonzero_write`, retains its reconciled charge,
+remains immutable billable evidence, sets `forbidden_nonzero_write`, retains its analytical charge,
 and adds `forbidden_cache_write_observed`; it is not rewritten to zero. Both conditions propagate to
 the campaign limitations and operational-integrity outcome instead of disappearing. Cache-write,
 uncached-input, and cost fields are descriptive only and never enter visible-output computation,
 pair eligibility, delta, bootstrap quality/brevity, or sensitivity assignment logic.
 
+For trusted complete usage, compute `analytical_cost_usd` from the five separately observed token
+components with integer arithmetic only. Convert each sealed USD-per-million rate with
+`Decimal(str(rate)) * 1_000_000` to an integral nonnegative micro-USD-per-million integer and reject
+a nonintegral projection. For each component compute
+`(tokens * rate_micro_usd_per_million + 999_999) // 1_000_000`, independently; sum the five integer
+micro-USD values; then divide that sum by `Decimal(1_000_000)` exactly. Never use binary-float
+arithmetic, fold components, or apply one ceiling after summation. A golden test must distinguish
+the five independent ceilings from a single ceiling of their total.
+
+Task 8 selects rates only from the sealed snapshot attached to the exact requested generation-model
+identity authorized by the context and capsule manifest. A returned model ID is an equality check,
+never a pricing alias or lookup key. Any cross-model, missing, malformed, or unauthorized snapshot
+is inference-invalid.
+
+For `retained_worst_case`, reproduce the versioned generation envelope with one ceiling over the
+whole reservation numerator: let `R_i=max(P_u, P_r, P_w)` and `R_o=max(P_v, P_h)` in those same
+integer micro-USD-per-million units, compute
+`(272_000 * R_i + 1_024 * R_o + 999_999) // 1_000_000` integer micro-USD, then divide by
+`Decimal(1_000_000)` exactly. This is an analytical exposure bound only. It neither proves nor
+replaces the append-only Runtime ledger. The later Runtime/publication inventory compares the
+verified spend projection independently; Task 8 imports no spend-ledger owner and makes no ledger
+claim.
+
 For a selected gate, a primary pair is eligible only when matched `if` and `concise` rows both pass
 that gate. It is a token pair only when it is eligible and both visible-token values exist. Compute
 `delta = visible_tokens(concise) - visible_tokens(if)`, so a positive value favors `if`.
+
+At this task boundary, add only `AggregatedModelV1` to the package's lazy aggregation exports.
+Task 8 adds `aggregate_verified_evidence` after its authority-bearing provider wrapper and complete
+join tests exist.
 
 - [ ] **Step 5: Run GREEN and commit**
 
@@ -3926,7 +4118,7 @@ uv run mypy src/laconian_eval/benchmark/aggregation.py
 Expected: all commands pass.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/aggregation.py tests/benchmark/helpers.py tests/benchmark/test_aggregation.py
+git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/aggregation.py tests/benchmark/test_aggregation.py
 git commit -m "feat: aggregate fixed-denominator benchmark evidence"
 ~~~
 
@@ -4184,6 +4376,7 @@ git commit -m "feat: classify benchmark model outcomes"
 - Create: `src/laconian_eval/benchmark/provider_evidence.py`
 - Create: `tests/benchmark/test_provider_evidence.py`
 - Create: `tests/benchmark/test_audit_sampling.py`
+- Modify: `src/laconian_eval/benchmark/aggregation.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
 - Modify: `tests/benchmark/helpers.py`
 
@@ -4220,6 +4413,17 @@ Create tests named:
 - `test_benchmark_provider_projection_is_campaign_package_independent_and_input_read_only`.
 - `test_benchmark_provider_projection_preserves_cache_write_evidence_and_accounting_status`.
 - `test_benchmark_provider_projection_preserves_closed_judge_service_tier_status`.
+- `test_verified_aggregate_requires_loader_minted_provider_evidence_wrapper`.
+- `test_verified_provider_owner_revalidator_rejects_replace_nested_and_low_level_forgery`.
+- `test_provider_mint_registry_weak_cleanup_cannot_transfer_identity_authority`.
+- `test_all_provider_evidence_consumers_revalidate_before_reading_supplied_fields`.
+- `test_verified_aggregate_emits_exact_36_chain_1440_row_bijection`.
+- `test_verified_aggregate_requires_same_canonical_120_keys_across_all_models_and_arms`.
+- `test_verified_aggregate_rejects_rehashed_semantic_flip_against_judge_attempt_root`.
+- `test_verified_aggregate_rejects_missing_duplicate_reordered_or_cross_parent_join`.
+- `test_verified_aggregate_rejects_unknown_delivery_authentication_or_response_received_error`.
+- `test_verified_aggregate_cost_is_analytical_and_never_claims_ledger_verification`.
+- `test_verified_aggregate_output_characters_match_verified_response_text`.
 - `test_audit_population_is_a_bijection_over_verified_judged_records`.
 - `test_audit_population_attachment_binds_every_provider_evidence_parent`.
 - `test_audit_population_parents_require_exact_36_unique_index_aligned_chains`.
@@ -4496,7 +4700,7 @@ class BenchmarkProviderEvidenceProjectionV1(BaseModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class VerifiedBenchmarkProviderEvidenceV1:
     generation_expectation: VerifiedGenerationContextExpectationV1
     generation_context: VerifiedGenerationContextIndexV1
@@ -4507,6 +4711,7 @@ class VerifiedBenchmarkProviderEvidenceV1:
     judge_request_attachments: tuple[JudgeRequestAttachmentV1, ...]
     judge_attempt_root: VerifiedJudgeAttemptRootV1
     judge_attachments: tuple[JudgeAttachmentV1, ...]
+    _construction_authority: InitVar[object] = None
 
 
 class AuditPopulationAttachmentV1(BaseModel):
@@ -4637,6 +4842,75 @@ class VerifiedAuditSampleRootV1:
     packet: BlindAuditPacketV1
     audit_sample_root_sha256: str
 ~~~
+
+`VerifiedBenchmarkProviderEvidenceV1` is loader-minted: its private module construction authority
+is required by `__post_init__`, is never exported or serialized, and is supplied only after the
+provider loader has freshly verified every external authority parent and all four retained layer
+roots. Direct construction from a self-consistent provider index, hard/judge attachments, or a
+self-hashed judge-attempt root is rejected. The `InitVar` check prevents ordinary construction and
+`dataclasses.replace`; no copyable mint marker is stored on the instance.
+
+The owner instead maintains a module-private weak mint registry keyed by `id(wrapper)`. Each entry
+contains a weak reference to that exact wrapper and a domain-separated SHA-256 of its complete
+canonical content, not merely its child self-digests. `weakref_slot=True` permits cleanup; the
+callback removes an entry only if its stored weak reference is still the one being finalized, and
+lookup requires `stored_ref() is value`, so object-ID reuse cannot inherit authority. The full
+fingerprint projects fields in dataclass declaration order, every Pydantic child through a fresh
+class-bound `model_dump(mode="json")`/`model_validate` round trip, tuples in order, and mappings by
+UTF-8 key order. It includes every generation plan/scored attempt/case, hard-score row,
+judge-request, judge attempt/judgment, and final judge record; a digest-only projection is
+forbidden. The provider loader registers the wrapper and fingerprint only after its fresh durable
+verification succeeds.
+
+The provider-evidence owner therefore also defines the non-exported capability
+`_revalidate_verified_provider_evidence_v1(value)`. It requires the exact wrapper type, treats the
+input as untrusted, requires its exact live identity in the weak registry, recomputes the complete
+canonical fingerprint, and compares it with the immutable minted snapshot before trusting any
+field. It then exact-type checks retained verified parent shells, class-bound revalidates every
+serializable child, and recomputes the four 36-member relational/root joins plus the separate
+judge-attempt-root join. Finally it reconstructs and registers a fresh wrapper with the private
+construction authority. It rejects ordinary construction, `dataclasses.replace`, copied fields in
+an `object.__new__` instance, and any content mutated through `object.__setattr__`, including a
+self-consistently rehashed nested graph. The loader and this revalidator share one relational and
+fingerprint implementation so neither path can drift. This is in-memory consumption authority;
+the original durable authority transition remains exclusively the path-based provider loader. Every
+public Task 8-or-later consumer that accepts `VerifiedBenchmarkProviderEvidenceV1` must call this
+function first, use only its fresh return value, and read no field from the supplied object before
+that call.
+
+After that loader exists, add this public boundary in `aggregation.py`:
+
+~~~python
+def aggregate_verified_evidence(
+    *,
+    provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
+) -> tuple[AggregatedModelV1, ...]:
+    """Project only loader-minted provider evidence into the frozen 1,440-row table."""
+~~~
+
+Keep `from __future__ import annotations` and import
+`VerifiedBenchmarkProviderEvidenceV1` under `TYPE_CHECKING` so mypy resolves the signature without
+an initialization cycle. At runtime use function-local imports of both that type and
+`_revalidate_verified_provider_evidence_v1`. Require the exact loader-minted owner by calling that
+owner-side revalidator before reading any provider-evidence field. Then join all 36 index-aligned
+generation capsules and their hard-score
+sets, judge-request attachments, judge-attempt boundaries, and judge attachments. Recheck every
+capsule/manifest/plan/attempt/response/request identity, byte-compare each judge record's judgment
+and raw-attempt hash to the sole verified terminal-success attempt, enforce one consistent returned
+generation model per requested model plus one consistent returned judge model, and emit exactly
+three `AggregatedModelV1` objects whose IDs equal the three context-authorized generation models in
+canonical UTF-8 byte order. Each contains exactly 480 canonically ordered rows, and every row's
+`generation_model` equals its enclosing model. Every model and arm must share the same exact
+canonical 120-key population; model-specific key drift is invalid. A rehashed semantic flip, a bare
+attachment tuple, or any missing, duplicate, reordered, cross-parent, unknown-delivery,
+authentication-stop, response-received provider error, or unverifiable row raises
+`InferenceIntegrityError`; none is zero-imputed. Only independently proven definitely-not-sent or
+definitely-rejected terminal attempts may produce the Task 5 zero-cost provider-failure row.
+
+Compute `analytical_cost_usd` only after this authority join, using the sealed snapshot and the Task
+5 formulas. The result remains an analytical estimate/exposure bound. The provider wrapper does
+not assert that Slice 2 verified the Runtime ledger, and no aggregation field may be used as the
+published campaign spend total.
 
 - [ ] **Step 4: Build and verify the complete audit population**
 
@@ -4919,7 +5193,8 @@ context, provider index, or any one of the three attestations whose workflow roo
 when all substituted objects are internally self-hashed.
 The projection must preserve each scored attempt's independent cache-read count/status/source,
 cache-write count/status/source, applied-control mode/TTL/status/source, service-tier status/source,
-usage/reasoning sources, requested/returned model mapping, and reconciled cost basis. Missing or forbidden write evidence is
+usage/reasoning sources, requested/returned model mapping, and the inputs to the separately labelled
+analytical cost basis. Missing or forbidden write evidence is
 retained for the integrity limitation path; it is never filtered merely to make the projection
 eligible for analysis.
 
@@ -5071,15 +5346,15 @@ re-export those exact objects from `laconian_eval.benchmark`; do not define adap
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run ruff check src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run mypy src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
+uv run pytest -q tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run ruff check src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run mypy src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
 ~~~
 
 Expected: all commands pass.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
 git commit -m "feat: verify benchmark evidence and freeze audit sampling"
 ~~~
 
@@ -6062,6 +6337,9 @@ Create tests named:
 - `test_verified_analysis_loader_rejects_analysis_only_root_without_bound_audit_tree`
 - `test_analysis_builder_and_loader_require_provider_bound_statistical_protocol`.
 - `test_analysis_builder_and_loader_require_exact_provider_bound_audit_protocol`.
+- `test_analysis_builder_rederives_aggregates_only_from_verified_provider_evidence`.
+- `test_analysis_builder_has_no_bare_aggregate_hard_set_or_judge_attachment_override`.
+- `test_analysis_writer_and_loader_rederive_analysis_before_accepting_bytes`.
 - `test_bootstrap_artifact_builder_derives_seed_from_provider_evidence_and_round_trips_c_order_bytes`.
 - `test_bootstrap_artifact_builder_rejects_shape_range_metadata_or_digest_substitution`.
 - `test_bootstrap_artifact_builder_has_no_raw_seed_or_protocol_override`.
@@ -6135,7 +6413,6 @@ class DescriptiveUsageV1(BaseModel):
     trusted_usage_cost_usd: DistributionSummaryV1
     definitely_rejected_zero_cost_usd: DistributionSummaryV1
     retained_worst_case_exposure_usd: DistributionSummaryV1
-    unavailable_cost_count: int = Field(ge=0)
     cost_availability_counts: Mapping[CostAvailabilityV1, int]
     cache_policy_status_counts: Mapping[CachePolicyStatusV1, int]
     latency_ms: DistributionSummaryV1
@@ -6286,12 +6563,18 @@ the exact attempt index, 36 matching judge attachment hashes, and exactly
 three distinct model analyses sorted by UTF-8 model ID. The campaign analysis digest excludes only
 its own digest and uses domain
 `laconian-campaign-analysis-v1`.
-`analyze_campaign` class-bound revalidates `provider_evidence` and sets
+`analyze_campaign` first assigns
+`checked_provider = _revalidate_verified_provider_evidence_v1(provider_evidence)`, reads only
+`checked_provider`, and sets
 `statistical_protocol_sha256` only from
-`provider_evidence.index.statistical_protocol_sha256`; it has no protocol argument or environment
+`checked_provider.index.statistical_protocol_sha256`; it has no protocol argument or environment
 fallback. It likewise sets `audit_protocol_sha256` only from
-`provider_evidence.index.audit_protocol_sha256`. Both repeated projection fields and the complete
+`checked_provider.index.audit_protocol_sha256`. Both repeated projection fields and the complete
 `protocol_bindings` object must match those index values before analysis.
+It calls `aggregate_verified_evidence(provider_evidence=checked_provider)` itself and uses that
+fresh exact three-model result. It has no `aggregates`, `hard_sets`, `judge_attachments`, raw row,
+or digest-override argument, so analysis cannot pair an authoritative provider wrapper with a
+caller-selected H/S table.
 For every model, require
 the limits in exact `(if, concise)` order, each
 `limit.model_audit_metric_sha256 == audit_metrics.model_audit_metric_sha256`, and
@@ -6319,7 +6602,7 @@ binding and recompute every local self digest; the fixed parent comparison must 
 
 - [ ] **Step 4: Expose the Slice 4 verified loader boundary**
 
-Use frozen dataclasses for already-verified aggregates:
+Use frozen dataclasses for already-verified evidence roots:
 
 ~~~python
 @dataclass(frozen=True, slots=True)
@@ -6438,6 +6721,10 @@ provider_evidence.projection.benchmark_provider_evidence_sha256`, its input-tag 
 `audit_protocol_sha256` to equal both `provider_evidence.index.audit_protocol_sha256` and the
 repeated projection field, and all four campaign-analysis layer-parent vectors plus
 the judge-attempt root/vector to match.
+It then calls `analyze_campaign` with only the freshly owner-revalidated provider evidence, the
+freshly loaded audit wrapper, and the stored verified bootstrap artifact, and requires canonical
+byte equality with the stored `CampaignAnalysisV1`. A locally self-consistent analysis digest or
+matching parent hashes cannot substitute for rederivation.
 Reject symlinks, non-regular
 files, duplicate reviewer paths, unexpected members, extra JSON fields, noncanonical JSON or JSONL,
 checksum mismatch, any campaign/root disagreement, and any component not reachable from the
@@ -6470,7 +6757,6 @@ Implement:
 def build_bootstrap_artifact(
     *,
     provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
-    scenario_uids: Sequence[str],
 ) -> BootstrapArtifactV1:
     """Derive the frozen seed, vectors, matrix, and artifact digest from verified parents."""
 
@@ -6478,13 +6764,10 @@ def build_bootstrap_artifact(
 def analyze_campaign(
     *,
     provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
-    aggregates: Sequence[AggregatedModelV1],
-    hard_sets: Sequence[HardScoreRequestSetV1],
-    judge_attachments: Sequence[JudgeAttachmentV1],
     audit: VerifiedAuditEvidenceV1,
     vectors: BootstrapArtifactV1,
 ) -> CampaignAnalysisV1:
-    """Derive outcomes with analysis protocol only from the verified provider projection."""
+    """Rederive H/S rows and outcomes only from the verified provider projection."""
 
 
 def render_public_report(analysis: CampaignAnalysisV1) -> bytes:
@@ -6497,13 +6780,13 @@ def write_analysis_evidence_root(
     source_audit_root: Path,
     provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
     audit: VerifiedAuditEvidenceV1,
-    analysis: CampaignAnalysisV1,
     bootstrap: BootstrapArtifactV1,
 ) -> AnalysisEvidenceAttachmentV1:
-    """Atomically write one combined root containing the verified audit and new analysis."""
+    """Rederive and atomically write the verified audit plus its unique analysis."""
 ~~~
 
-`build_bootstrap_artifact` class-bound revalidates `provider_evidence`, derives
+`build_bootstrap_artifact` first calls the provider owner's revalidator, uses only its fresh return
+value, derives the exact 12 canonical scenario UIDs from its verified generation parents, and then derives
 `seed = derive_seed128("laconian-bootstrap-v1", campaign_seed, input_tag_commit,
 judge_protocol_sha256)` solely from its index, and calls `make_cluster_vectors` with exactly the 12
 bytewise-sorted scenario UIDs from the verified generation parents. It serializes exactly 10,000
@@ -6522,14 +6805,14 @@ Place point, two-sided 95% interval, fixed denominator 120, scenario coverage, e
 token pairs, and missingness in one table row. State the direction
 `visible tokens(concise) - visible tokens(if)` next to every primary estimate and phrase any claim
 as “among jointly successful matched responses.” Keep input, visible output, reasoning output,
-billed output, total, uncached input, cached-read input, cache-write input, reconciled cost by
+billed output, total, uncached input, cached-read input, cache-write input, analytical cost by
 availability basis, retained worst-case exposure, latency, and characters separate. Never call
 cache writes cached reads, infer absent writes as zero, combine retained exposure with trusted-usage
 cost, or call visible-token change billed-token, total-token, cost, or unconditional savings. Render
 `cache_write_detail_missing` and `forbidden_cache_write_observed` as operational-integrity
 limitations adjacent to cost availability and the model outcome.
 For each arm, every distribution requires `observed_count + missing_count == 120`;
-`cost_availability_counts` contains exactly all four `CostAvailabilityV1` keys including explicit
+`cost_availability_counts` contains exactly all three `CostAvailabilityV1` keys including explicit
 zeros, and `cache_policy_status_counts` contains exactly all four `CachePolicyStatusV1` keys. Their
 counts each sum to 120. A missing cache-write detail therefore appears simultaneously in the write
 distribution's missing count, the closed policy-status count, retained-worst-case exposure, and the
@@ -6562,11 +6845,14 @@ Canonical JSON files end with one newline. `bootstrap.json` contains vector meta
 10,000 by 12 integer matrix and is hash-bound to its C-order bytes. Before writing,
 `write_analysis_evidence_root` calls
 `load_verified_audit_evidence(source_audit_root, provider_evidence=provider_evidence)` and requires
-canonical equality with `audit`. It also calls `build_bootstrap_artifact` on the 12 scenario UIDs
-from the verified provider parents, canonical-byte compares the result with `bootstrap`, and
-requires `analysis.statistical_protocol_sha256` to equal the provider index and projection statistics
-protocol and `analysis.audit_protocol_sha256` to equal the provider index and projection singular
-audit protocol before accepting either object. It stages an absent `output_root`, copies that loader's exact
+canonical equality with `audit`. It also calls
+`build_bootstrap_artifact(provider_evidence=provider_evidence)`, which derives the 12 scenario UIDs
+without a caller override, canonical-byte compares the result with `bootstrap`, and
+calls `analyze_campaign` with those freshly verified inputs to construct `analysis` internally. It
+requires the derived analysis statistical/audit protocol fields to equal the provider index and
+projection before rendering or writing it; there is no caller-supplied analysis, aggregate,
+hard-set, judge-attachment, report, or analysis-digest override. It stages an absent `output_root`,
+copies that loader's exact
 allowlisted `source_audit_root/audit` tree byte for byte to `output_root/audit`, and writes the five
 analysis members under `output_root/analysis`. No reference or symlink back to the source is
 permitted. Build `analysis/checksums.json` over the other analysis artifacts, then bind it in

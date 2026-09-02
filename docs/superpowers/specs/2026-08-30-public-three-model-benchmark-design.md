@@ -4,7 +4,8 @@
 
 **Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
 bounded-directory, source-backed protocol-signature evidence, and protocol-evidence/judge-wire
-amendments approved. Evaluation Tasks 3 and 4's affected paths and downstream consumers may
+amendments approved; the aggregation-authority amendment is pending separate approval. Evaluation
+Tasks 3 and 4's affected paths and downstream consumers may
 proceed only from a handoff that records this governance-only successor's full SHA as
 `PLAN_BASE_SHA`.
 
@@ -108,6 +109,51 @@ API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-b
 dependency provenance, and the Task 4 blind-judge schema, provider dispatch, wire, and
 identity-bundle contract stated below. All other design, topology, authority, publication, and
 workflow rules remain unchanged.
+
+**Current aggregation-authority amendment scope:** This amendment closes the implementation-time
+authority, row-integrity, and analytical-cost ambiguities at the Task 5/Task 8 boundary. It also
+restores the already-required descriptive output-character count. It does not change the corpus,
+models, arms, repetitions, H/S definitions, primary visible-token estimand, bootstrap, thresholds,
+audit design, spend caps, workflow inventory, or publication claims. Evaluation Task 5, the Task 8
+authority-bearing join, and downstream consumers of their rows remain blocked until the maintainer
+separately approves the exact normative commit.
+
+No self-hashed `HardScoreRequestSetV1` or `JudgeAttachmentV1` sequence is a verified aggregation
+input. The sole public aggregation input is the loader-minted
+`VerifiedBenchmarkProviderEvidenceV1` from Section 9's complete provider-evidence verification. Its
+loader must have reloaded all four layer roots and the judge-attempt root, invoked every parent
+verifier, and byte-compared every accepted judge record with its sole verified terminal attempt.
+The wrapper requires a private nonserialized construction authority; direct construction from
+self-consistent serialized children is rejected. No copyable mint marker is stored on the object.
+Instead the loader, after fresh durable verification, records the exact weak object identity and a
+domain-separated fingerprint of every canonical nested field in a module-private weak registry;
+the fingerprint includes full judgments/attempts/rows rather than child digests alone. Before
+aggregation reads any field, the provider-evidence owner requires that registered identity,
+recomputes and compares the complete fingerprint, class-bound revalidates serializable children,
+and repeats all four 36-member relational/root joins plus the judge-attempt-root join. It returns a
+fresh registered wrapper. Weak-reference identity checking and guarded cleanup prevent object-ID
+reuse. This rejects `dataclasses.replace`, nested-field substitution, copied fields in a low-level
+instance, and post-mint mutation, including self-consistent rehashing. The public aggregation
+function is therefore implemented with the provider-evidence owner, not before that owner exists.
+Every downstream public consumer invokes the same owner revalidator first and uses only its fresh
+return value; durable authority still comes only from the path-based loader.
+
+Per-observation cost is named `analytical_cost_usd`. Complete trusted usage converts all five
+sealed USD-per-million rates to integral micro-USD-per-million values, rejects a nonintegral
+projection, and uses independent integer ceiling division for every token component before
+summing. Missing required accounting uses the mechanically
+reproduced Section 8 per-attempt reservation envelope and is labelled
+`retained_worst_case`; this value is an analytical exposure bound, not a representation or
+verification of the Runtime ledger. Later Runtime/publication verification independently
+reproduces the append-only ledger, and any disagreement is operationally invalid. Every row also
+preserves `output_characters`; character counts are descriptive and can never stand in for visible
+tokens.
+
+Cost availability has exactly three states. Independently proven response-free rejection is zero;
+a response with all five trusted reported accounting components uses `trusted_usage`; an otherwise
+admissible response with any required accounting component/status unresolved uses
+`retained_worst_case`. A valid campaign never emits `unavailable`: absent, malformed, nonintegral,
+wrong-model, or unauthorized sealed pricing invalidates inference.
 
 ### Approved protocol-evidence and judge-wire amendment
 
@@ -8608,7 +8654,8 @@ A positive delta means the eligible visible `if` response is shorter. For each r
 tokens are reported separately. The point estimator is the median over eligible paired visible-token
 deltas. Characters are secondary and are never presented as tokens. Input, visible output,
 reasoning output, billed output, total, cache-read-input tokens, cache-write-input tokens,
-estimated cost, and latency remain separate descriptive metrics.
+`analytical_cost_usd`, cost-availability basis, latency, and `output_characters` remain separate
+descriptive metrics. Analytical cost is not the published campaign spend ledger.
 
 This is a post-treatment estimand conditional on both matched responses passing the semantic gate.
 It does not estimate unconditional token, total-token, or cost savings across all planned requests.
@@ -8648,6 +8695,50 @@ stop, inconsistent model, or unverifiable provenance invalidates inference inste
 imputed as failure. Thus `hard_pass_rate = sum(H) / 120` and
 `semantic_success_rate = sum(S) / 120`; semantic quality is never conditioned only on rows that
 survived the hard gate.
+
+Each model contains exactly 480 rows. Every arm in every model must use the same exact canonical
+120-key population, and rows are ordered by raw scenario-UID SHA-256 bytes, case-ID UTF-8 bytes,
+locale UTF-8 bytes, repetition integer, then the fixed arm rank `baseline`, `caveman`, `if`,
+`concise`. Missing, duplicate, cross-arm, cross-model, or noncanonical rows invalidate inference.
+Pair denominators are immutable closed `hard` and `semantic` fields rather than a mutable mapping;
+runtime gate names outside those two values fail closed. The aggregation result contains exactly
+the three context-authorized generation models in UTF-8 byte order, and every row repeats its
+enclosing model ID. Integrity limitations are unique, use the literal order
+`cache_write_detail_missing`, `forbidden_cache_write_observed`, and are present iff a row has the
+corresponding closed cache-policy status.
+
+The H/S table may be materialized only from a loader-minted
+`VerifiedBenchmarkProviderEvidenceV1`. Before minting that nonserializable wrapper, the loader
+verifies the externally authority-bound generation context, all four exact 36-member layer roots,
+the judge-attempt root, every hard-score and judge-request attachment, and every final judge
+attachment. It byte-compares each accepted judge record—including its judgment and raw-attempt
+hash—with the sole terminal-success attempt in the matching verified boundary. Rehashing a changed
+`semantic_pass` or presenting bare self-hashed attachment sequences never creates an aggregation
+input, even when all substituted children are internally self-consistent. Before consuming the
+wrapper, aggregation invokes its provider-owner revalidator, which repeats all authority and root
+joins and reconstructs with the private capability. It rejects direct construction,
+`dataclasses.replace`, forged nested fields, and low-level creation or mutation.
+
+`provider_rejected` or `retry_exhausted` becomes a response-free zero-cost observation only when
+the verified attempts independently prove definitely-not-sent or definitely-rejected delivery.
+Such a row has null response-derived usage, latency, and character fields,
+`analytical_cost_usd=Decimal(0)`, and `cost_availability="definitely_rejected_zero"`. Unknown
+delivery, a response-received provider error, authentication stop, or any ambiguous provider error
+invalidates inference rather than being assigned zero quality or zero cost.
+
+For trusted complete usage, per-row `analytical_cost_usd` is the exact five-component estimate from
+the sealed snapshot. Convert each USD-per-million rate with `Decimal(str(rate)) * 1_000_000` to an
+integral micro-USD-per-million integer and reject nonintegral values. For each component compute
+`(tokens * rate + 999_999) // 1_000_000`; sum the five independently rounded integer values and
+divide exactly by `Decimal(1_000_000)`. A single ceiling after summation is forbidden. If a
+required accounting component is missing, the row instead applies one integer ceiling to the
+complete Section 8 reservation numerator, then labels the result
+`cost_availability="retained_worst_case"`, and propagates the corresponding integrity limitation.
+This is a conservative analytical exposure bound only. Runtime's append-only ledger and the final
+published spend total remain separately verified authority; a mismatch makes the campaign
+operationally invalid rather than changing the analytical row.
+Rates come only from the sealed snapshot for the exact context-authorized requested generation
+model. Returned model identity must match but is never used as a pricing alias or lookup key.
 
 For both `H` and `S`, the paired rate-difference estimator is the mean of `if - concise` over the
 120 matched planned keys. The lower 95% cluster-bootstrap bound for:
