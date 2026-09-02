@@ -125,6 +125,26 @@ if TYPE_CHECKING:
         recompute_hard_score_request_set_sha256,
         verify_hard_score_request_set,
     )
+    from laconian_eval.benchmark.judge import (  # noqa: F401 - PEP 562 typing surface
+        JUDGE_REQUESTED_SERVICE_TIER,
+        JUDGE_SERVICE_TIER_WIRE_FIELD,
+        BlindJudgeRequestV1,
+        JudgeAttachmentV1,
+        JudgeAttemptBoundaryV1,
+        JudgeAttemptEvidenceV1,
+        JudgeAttemptRootIndexV1,
+        JudgeAttemptRootMemberV1,
+        JudgeAttemptUsageV1,
+        JudgeProviderRequestV1,
+        JudgeRequestAttachmentV1,
+        VerifiedJudgeAttemptRootV1,
+        build_judge_attachment,
+        build_judge_request_attachment,
+        load_verified_judge_attempt_root,
+        verify_judge_attachment,
+        verify_judge_request_attachment,
+        write_judge_attempt_root,
+    )
 
 _CONTEXT_EXPORTS = frozenset(
     {
@@ -157,6 +177,29 @@ _HARD_SCORE_EXPORTS = frozenset(
         "verify_hard_score_request_set",
     }
 )
+JUDGE_LAZY_EXPORTS_V1 = (
+    "JUDGE_REQUESTED_SERVICE_TIER",
+    "JUDGE_SERVICE_TIER_WIRE_FIELD",
+    "BlindJudgeRequestV1",
+    "JudgeProviderRequestV1",
+    "JudgeRequestAttachmentV1",
+    "JudgeAttemptUsageV1",
+    "JudgeAttemptEvidenceV1",
+    "JudgeAttemptBoundaryV1",
+    "JudgeAttemptRootMemberV1",
+    "JudgeAttemptRootIndexV1",
+    "VerifiedJudgeAttemptRootV1",
+    "write_judge_attempt_root",
+    "load_verified_judge_attempt_root",
+    "JudgeAttachmentV1",
+    "build_judge_request_attachment",
+    "verify_judge_request_attachment",
+    "build_judge_attachment",
+    "verify_judge_attachment",
+)
+_JUDGE_EXPORTS = {
+    name: ("laconian_eval.benchmark.judge", name) for name in JUDGE_LAZY_EXPORTS_V1
+}
 
 
 def __getattr__(name: str) -> Any:
@@ -166,11 +209,23 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.context"
     elif name in _HARD_SCORE_EXPORTS:
         module_name = "laconian_eval.benchmark.hard_score"
+    elif name in _JUDGE_EXPORTS:
+        module_name, owner_name = _JUDGE_EXPORTS[name]
+        value = getattr(import_module(module_name), owner_name)
+        globals()[name] = value
+        return value
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(import_module(module_name), name)
     globals()[name] = value
     return value
+
+
+def __dir__() -> list[str]:
+    """Expose registered lazy owners without importing them."""
+
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = (
     "BENCHMARK_WORKFLOW_PATHS_V1",
@@ -285,4 +340,5 @@ __all__ = (
     "write_attachment_json",
     "write_generation_context_index",
     "write_layer_root_index",
+    *JUDGE_LAZY_EXPORTS_V1,
 )

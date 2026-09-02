@@ -37,9 +37,11 @@ from typing import (
 
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic.fields import FieldInfo
+from typing_extensions import is_typeddict
 
 import laconian_eval
 from laconian_eval.benchmark import canonical_json_v1 as _canonical_json_v1
+from laconian_eval.benchmark import parse_canonical_json_v1 as _parse_canonical_json_v1
 from laconian_eval.capsule.canonical import stable_digest
 from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1, bounded_utf8_length
 from laconian_eval.capsule.schema import CapsuleModel, Sha256
@@ -55,6 +57,7 @@ from laconian_eval.providers.base import (
     PublicBenchmarkRequestV1,
     ReasoningTokenAccounting,
     ServiceTierStatus,
+    StructuredOutputProviderRequestV1,
     TokenUsage,
     conservative_input_token_bound,
 )
@@ -78,6 +81,16 @@ BENCHMARK_OPENAI_REQUEST_FIELDS_V1 = (
     "text",
     "prompt_cache_options",
     "service_tier",
+)
+BENCHMARK_OPENAI_STRUCTURED_REQUEST_PATHS_V1 = (
+    "request.tools",
+    "request.text",
+    "request.text.verbosity",
+    "request.text.format",
+    "request.text.format.type",
+    "request.text.format.name",
+    "request.text.format.strict",
+    "request.text.format.schema",
 )
 BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1 = (
     "response.id",
@@ -106,6 +119,18 @@ BENCHMARK_OPENAI_SERIALIZER_PROJECTION_CANONICAL_JSON_V1 = (
 BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1 = (
     "c7f3d0d8d7b056226b10195e76e9974c213881e3678d09aee071ad3cbedb0211"
 )
+BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_CANONICAL_JSON_V1 = (
+    b'{"input":"sdk-contract-structured-input-v1","max_output_tokens":768,'
+    b'"model":"gpt-5.6-sol","prompt_cache_options":{"mode":"explicit","ttl":"30m"},'
+    b'"reasoning":{"effort":"low"},"service_tier":"default","store":false,'
+    b'"text":{"format":{"name":"sdk_contract_probe_v1","schema":'
+    b'{"additionalProperties":false,"properties":{"value":{"type":"string"}},'
+    b'"required":["value"],"type":"object"},"strict":true,"type":"json_schema"},'
+    b'"verbosity":"low"},"tools":[]}'
+)
+BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_SHA256_V1 = (
+    "6de8042f2e010f4e7128abe836374b60fa6b4f0c1818935ff1ab5095db148ab0"
+)
 BENCHMARK_OPENAI_LOCK_REGISTRY_V1 = "https://pypi.org/simple"
 BENCHMARK_OPENAI_LOCK_DEPENDENCIES_V1 = (
     "anyio",
@@ -129,6 +154,8 @@ BENCHMARK_OPENAI_LOCK_WHEELS_V1 = (
         "2026-08-19T16:31:32.812Z",
     ),
 )
+BENCHMARK_PYDANTIC_VERSION_V1 = "2.13.4"
+BENCHMARK_PYDANTIC_CORE_VERSION_V1 = "2.46.4"
 _OPENAI_WHEEL_RECORD_SIZE = 164_291
 _OPENAI_WHEEL_RECORD_SHA256 = "4a9a567d1c130100b9fd5bb48d4f6605d39f818d0466329225a853a7ff5ead31"
 _OPENAI_RECORD_PROJECTION_ROWS = 1_530
@@ -165,6 +192,8 @@ class VerifiedBenchmarkSDKContractV1(CapsuleModel):
     schema_version: Literal["VerifiedBenchmarkSDKContractV1"]
     distribution: Literal["openai"]
     installed_version: Literal["3.3.1"]
+    pydantic_version: Literal["2.13.4"]
+    pydantic_core_version: Literal["2.46.4"]
     c0_uv_lock_sha256: Sha256
     lock_version: Literal["3.3.1"]
     lock_registry: Literal["https://pypi.org/simple"]
@@ -208,6 +237,16 @@ class VerifiedBenchmarkSDKContractV1(CapsuleModel):
         Literal["prompt_cache_options"],
         Literal["service_tier"],
     ]
+    structured_request_paths: tuple[
+        Literal["request.tools"],
+        Literal["request.text"],
+        Literal["request.text.verbosity"],
+        Literal["request.text.format"],
+        Literal["request.text.format.type"],
+        Literal["request.text.format.name"],
+        Literal["request.text.format.strict"],
+        Literal["request.text.format.schema"],
+    ]
     response_paths: tuple[
         Literal["response.service_tier"],
         Literal["response.prompt_cache_options.mode"],
@@ -229,6 +268,9 @@ class VerifiedBenchmarkSDKContractV1(CapsuleModel):
     serializer_projection_sha256: Literal[
         "c7f3d0d8d7b056226b10195e76e9974c213881e3678d09aee071ad3cbedb0211"
     ]
+    structured_serializer_projection_sha256: Literal[
+        "6de8042f2e010f4e7128abe836374b60fa6b4f0c1818935ff1ab5095db148ab0"
+    ]
     contract_sha256: Sha256
 
     @field_validator("lock_sdist_size", "lock_wheel_size", mode="before")
@@ -248,6 +290,32 @@ class VerifiedBenchmarkSDKContractV1(CapsuleModel):
 
 def _installed_openai_version() -> object:
     return importlib.metadata.version("openai")
+
+
+def _installed_distribution_version(name: str) -> object:
+    return importlib.metadata.version(name)
+
+
+def _require_pinned_distribution(
+    *, packages: list[object], name: str, version: str
+) -> None:
+    try:
+        installed = _installed_distribution_version(name)
+    except Exception:
+        _fail("installed-version")
+    if type(installed) is not str or installed != version:
+        _fail("installed-version")
+    members = [
+        item
+        for item in packages
+        if type(item) is dict and item.get("name") == name
+    ]
+    if (
+        len(members) != 1
+        or members[0].get("version") != version
+        or members[0].get("source") != {"registry": BENCHMARK_OPENAI_LOCK_REGISTRY_V1}
+    ):
+        _fail("lock-entry")
 
 
 class _OpenAIRecordEntry(typing.NamedTuple):
@@ -411,6 +479,49 @@ def _public_benchmark_responses_kwargs(
     }
     result["service_tier"] = request.policy.service_tier
     return result
+
+
+def _structured_output_responses_kwargs(
+    request: StructuredOutputProviderRequestV1,
+) -> dict[str, object]:
+    """Build the closed Responses structured-output wire without benchmark ownership."""
+
+    if type(request) is not StructuredOutputProviderRequestV1:
+        raise _configuration_error("request must be an exact StructuredOutputProviderRequestV1")
+    try:
+        request = StructuredOutputProviderRequestV1.model_validate(request)
+    except (TypeError, ValueError):
+        raise _configuration_error(
+            "request must be a valid StructuredOutputProviderRequestV1"
+        ) from None
+    try:
+        schema = _parse_canonical_json_v1(request.structured_output_schema_canonical_json)
+    except Exception as error:
+        raise _configuration_error("structured-output schema is not canonical JSON v1") from error
+    if type(schema) is not dict:
+        raise _configuration_error("structured-output schema must be an object")
+    return {
+        "model": request.model,
+        "input": request.rendered_input,
+        "reasoning": {"effort": request.reasoning_effort},
+        "text": {
+            "verbosity": request.text_verbosity,
+            "format": {
+                "type": "json_schema",
+                "name": request.structured_output_name,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+        "max_output_tokens": request.max_output_tokens,
+        "store": request.store,
+        "tools": [],
+        "service_tier": request.service_tier,
+        "prompt_cache_options": {
+            "mode": request.prompt_cache_mode,
+            "ttl": request.prompt_cache_ttl,
+        },
+    }
 
 
 def _assert_no_public_benchmark_cache_control(value: object) -> None:
@@ -834,9 +945,32 @@ def _typed_source_has_usable_completed_output(entries: dict[str, object]) -> boo
     return True
 
 
+class _RequestedBenchmarkProjection(typing.NamedTuple):
+    requested_model_id: str
+    requested_service_tier: str
+
+
+def _benchmark_request_projection(
+    request: PublicBenchmarkRequestV1,
+) -> _RequestedBenchmarkProjection:
+    return _RequestedBenchmarkProjection(
+        requested_model_id=request.requested_model_id,
+        requested_service_tier=request.policy.service_tier,
+    )
+
+
+def _structured_output_request_projection(
+    request: StructuredOutputProviderRequestV1,
+) -> _RequestedBenchmarkProjection:
+    return _RequestedBenchmarkProjection(
+        requested_model_id=request.model,
+        requested_service_tier=request.service_tier,
+    )
+
+
 def _benchmark_error_payload(
     *,
-    request: PublicBenchmarkRequestV1,
+    request: _RequestedBenchmarkProjection,
     delivery_certainty: DeliveryCertainty,
     provider_request_id: str | None,
     response_id: str | None,
@@ -868,7 +1002,7 @@ def _benchmark_error_payload(
         "requested_model_id": request.requested_model_id,
         "returned_model_id": returned_model_id,
         "returned_model_source_sha256": placeholder,
-        "requested_service_tier": request.policy.service_tier,
+        "requested_service_tier": request.requested_service_tier,
         "returned_service_tier": returned_service_tier,
         "service_tier_status": service_tier_status,
         "service_tier_source_sha256": placeholder,
@@ -892,7 +1026,7 @@ def _benchmark_error_payload(
 
 
 def _projection_failure_evidence(
-    request: PublicBenchmarkRequestV1,
+    request: _RequestedBenchmarkProjection,
     response: object,
 ) -> PublicBenchmarkProviderErrorEvidenceV1:
     provider_request_id = _benchmark_provider_request_id(response)
@@ -919,7 +1053,7 @@ def _projection_failure_evidence(
 
 def _parse_benchmark_response(
     response: object,
-    request: PublicBenchmarkRequestV1,
+    request: _RequestedBenchmarkProjection,
 ) -> PublicBenchmarkResponseEvidenceV1 | PublicBenchmarkProviderErrorEvidenceV1:
     from laconian_eval.capsule.attempts import (
         PublicBenchmarkResponseEvidenceV1,
@@ -969,7 +1103,7 @@ def _parse_benchmark_response(
             "requested_model_id": request.requested_model_id,
             "returned_model_id": returned_model_id,
             "returned_model_source_sha256": raw_digest,
-            "requested_service_tier": request.policy.service_tier,
+            "requested_service_tier": request.requested_service_tier,
             "returned_service_tier": returned_service_tier,
             "service_tier_status": service_tier_status,
             "service_tier_source_sha256": raw_digest,
@@ -1011,7 +1145,7 @@ def _parse_benchmark_response(
 def _parse_benchmark_provider_error(
     error: Exception,
     classified: ProviderError,
-    request: PublicBenchmarkRequestV1,
+    request: _RequestedBenchmarkProjection,
 ) -> PublicBenchmarkProviderErrorEvidenceV1:
     raw_status = getattr(error, "status_code", None)
     structured_status = raw_status if type(raw_status) is int and 100 <= raw_status <= 599 else None
@@ -1329,6 +1463,69 @@ def _sdk_type_hints(value: type[object]) -> dict[str, object]:
     return get_type_hints(value, globalns=namespace, localns=namespace)
 
 
+def _typed_dict_field_annotation(owner: object, field_name: str) -> object:
+    if not isinstance(owner, type) or not is_typeddict(owner):
+        raise TypeError("SDK request node is not a TypedDict")
+    annotation = _sdk_type_hints(owner).get(field_name)
+    if annotation is None or _annotation_contains_any(annotation):
+        raise TypeError("SDK request field is missing or untyped")
+    return annotation
+
+
+def _annotation_contains_any(annotation: object) -> bool:
+    if annotation is Any:
+        return True
+    return any(_annotation_contains_any(item) for item in get_args(annotation))
+
+
+def _json_schema_format_branch(annotation: object) -> type[object]:
+    candidate: type[object] | None = None
+    claimed_discriminators: set[str] = set()
+    for branch in _annotation_branches(annotation):
+        if not isinstance(branch, type) or not is_typeddict(branch):
+            raise TypeError("SDK structured-output format branch is not a TypedDict")
+        discriminator = _typed_dict_field_annotation(branch, "type")
+        discriminator_values = get_args(discriminator)
+        if (
+            get_origin(discriminator) is not Literal
+            or not discriminator_values
+            or any(type(value) is not str or not value for value in discriminator_values)
+            or len(set(discriminator_values)) != len(discriminator_values)
+            or bool(claimed_discriminators.intersection(discriminator_values))
+        ):
+            raise TypeError("SDK structured-output format discriminator is unsafe")
+        claimed_discriminators.update(discriminator_values)
+        if "json_schema" in discriminator_values:
+            if discriminator_values != ("json_schema",) or candidate is not None:
+                raise TypeError("SDK json_schema format branch is overlapping")
+            candidate = branch
+    if candidate is None:
+        raise TypeError("SDK structured-output format branch is missing or ambiguous")
+    return candidate
+
+
+def _verify_structured_request_type_paths(root: object) -> bool:
+    try:
+        tools = _typed_dict_field_annotation(root, "tools")
+        text = _typed_dict_field_annotation(root, "text")
+        if _annotation_contains_any(tools) or _annotation_contains_any(text):
+            return False
+        if not isinstance(text, type) or not is_typeddict(text):
+            return False
+        verbosity = _typed_dict_field_annotation(text, "verbosity")
+        format_annotation = _typed_dict_field_annotation(text, "format")
+        format_branch = _json_schema_format_branch(format_annotation)
+        required = (
+            _typed_dict_field_annotation(format_branch, "type"),
+            _typed_dict_field_annotation(format_branch, "name"),
+            _typed_dict_field_annotation(format_branch, "strict"),
+            _typed_dict_field_annotation(format_branch, "schema"),
+        )
+        return not any(_annotation_contains_any(value) for value in (verbosity, *required))
+    except (KeyError, NameError, TypeError):
+        return False
+
+
 def _resolved_sdk_model_annotation(owner: type[BaseModel], annotation: object) -> object:
     if annotation is Any or annotation is object:
         return annotation
@@ -1449,6 +1646,9 @@ def _verify_sdk_type_seams_in_process() -> tuple[bool, bool, _AuthenticatedOpenA
                         field not in member_hints
                         for member_hints in hints
                         for field in BENCHMARK_OPENAI_REQUEST_FIELDS_V1
+                    ) or any(
+                        not _verify_structured_request_type_paths(member)
+                        for member in typed_expected
                     ):
                         request_failed = True
             except Exception:
@@ -1523,11 +1723,16 @@ def _private_openai_verifier_seams() -> tuple[object, ...]:
         _load_sdk_expected_response_anchor,
         _annotation_branches,
         _sdk_type_hints,
+        _typed_dict_field_annotation,
+        _annotation_contains_any,
+        _json_schema_format_branch,
+        _verify_structured_request_type_paths,
         _resolved_sdk_model_annotation,
         _sdk_model_field_annotation,
         _typed_path_exists,
         _verify_sdk_type_seams_in_process,
         _public_benchmark_responses_kwargs,
+        _structured_output_responses_kwargs,
         _canonical_json_v1,
     )
 
@@ -1578,6 +1783,16 @@ def _build_verified_benchmark_sdk_contract(
     packages = lock.get("package") if isinstance(lock, dict) else None
     if lock_failed or not isinstance(packages, list) or len(packages) > 4096:
         _fail("lock-entry")
+    _require_pinned_distribution(
+        packages=packages,
+        name="pydantic",
+        version=BENCHMARK_PYDANTIC_VERSION_V1,
+    )
+    _require_pinned_distribution(
+        packages=packages,
+        name="pydantic-core",
+        version=BENCHMARK_PYDANTIC_CORE_VERSION_V1,
+    )
     members = [item for item in packages if isinstance(item, dict) and item.get("name") == "openai"]
     expected_member = {
         "name": "openai",
@@ -1657,12 +1872,58 @@ def _build_verified_benchmark_sdk_contract(
         serializer_failed = True
     if serializer_failed:
         _fail("serializer-projection")
+    structured_serializer_failed = False
+    try:
+        structured_probe = StructuredOutputProviderRequestV1(
+            model="gpt-5.6-sol",
+            rendered_input="sdk-contract-structured-input-v1",
+            reasoning_effort="low",
+            text_verbosity="low",
+            structured_output_name="sdk_contract_probe_v1",
+            structured_output_schema_canonical_json=(
+                b'{"additionalProperties":false,"properties":{"value":{"type":"string"}},'
+                b'"required":["value"],"type":"object"}'
+            ),
+            max_output_tokens=768,
+            store=False,
+            tools=(),
+            service_tier="default",
+            prompt_cache_mode="explicit",
+            prompt_cache_ttl="30m",
+        )
+        structured_projection = _structured_output_responses_kwargs(structured_probe)
+        structured_serializer_failed = (
+            tuple(structured_projection)
+            != (
+                "model",
+                "input",
+                "reasoning",
+                "text",
+                "max_output_tokens",
+                "store",
+                "tools",
+                "service_tier",
+                "prompt_cache_options",
+            )
+            or _canonical_json_v1(structured_projection)
+            != BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_CANONICAL_JSON_V1
+            or hashlib.sha256(
+                BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_CANONICAL_JSON_V1
+            ).hexdigest()
+            != BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_SHA256_V1
+        )
+    except Exception:
+        structured_serializer_failed = True
+    if structured_serializer_failed:
+        _fail("serializer-projection")
     if authenticated_install is None:
         _fail("request-model")
     payload = {
         "schema_version": "VerifiedBenchmarkSDKContractV1",
         "distribution": "openai",
         "installed_version": "3.3.1",
+        "pydantic_version": BENCHMARK_PYDANTIC_VERSION_V1,
+        "pydantic_core_version": BENCHMARK_PYDANTIC_CORE_VERSION_V1,
         "c0_uv_lock_sha256": actual_digest,
         "lock_version": "3.3.1",
         "lock_registry": BENCHMARK_OPENAI_LOCK_REGISTRY_V1,
@@ -1680,10 +1941,14 @@ def _build_verified_benchmark_sdk_contract(
         ),
         "response_model_qualified_name": "openai.types.responses.response.Response",
         "request_fields": BENCHMARK_OPENAI_REQUEST_FIELDS_V1,
+        "structured_request_paths": BENCHMARK_OPENAI_STRUCTURED_REQUEST_PATHS_V1,
         "response_paths": BENCHMARK_OPENAI_RESPONSE_PATHS_V1,
         "returned_model_path": BENCHMARK_OPENAI_RETURNED_MODEL_PATH_V1,
         "response_content_paths": BENCHMARK_OPENAI_RESPONSE_CONTENT_PATHS_V1,
         "serializer_projection_sha256": BENCHMARK_OPENAI_SERIALIZER_PROJECTION_SHA256_V1,
+        "structured_serializer_projection_sha256": (
+            BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_SHA256_V1
+        ),
     }
     record = VerifiedBenchmarkSDKContractV1.model_validate(
         payload | {"contract_sha256": stable_digest("laconian-benchmark-sdk-contract-v1", payload)}
@@ -2247,8 +2512,33 @@ class OpenAIProvider:
             classified = _classify_api_error(exc)
             if classified is None:
                 raise
-            return _parse_benchmark_provider_error(exc, classified, request)
-        return _parse_benchmark_response(response, request)
+            return _parse_benchmark_provider_error(
+                exc,
+                classified,
+                _benchmark_request_projection(request),
+            )
+        return _parse_benchmark_response(response, _benchmark_request_projection(request))
+
+    def generate_structured_output(
+        self,
+        request: StructuredOutputProviderRequestV1,
+    ) -> laconian_eval.capsule.attempts.PublicBenchmarkProviderOutcomeV1:  # type: ignore[name-defined]
+        kwargs = _structured_output_responses_kwargs(request)
+        try:
+            hashlib.sha256(_canonical_json_v1(kwargs)).hexdigest()
+        except Exception:
+            raise _configuration_error(
+                "structured-output request is not canonical JSON v1"
+            ) from None
+        projection = _structured_output_request_projection(request)
+        try:
+            response = self._client.responses.create(**kwargs)
+        except Exception as exc:
+            classified = _classify_api_error(exc)
+            if classified is None:
+                raise
+            return _parse_benchmark_provider_error(exc, classified, projection)
+        return _parse_benchmark_response(response, projection)
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         self._validate_request(request)

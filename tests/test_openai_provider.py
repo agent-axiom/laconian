@@ -18,7 +18,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from laconian_eval.capsule.attempts import normalize_provider_outcome
 from laconian_eval.capsule.sanitizer import SanitizerPatterns
@@ -287,6 +287,8 @@ def test_benchmark_sdk_contract_accepts_frozen_openai_member(precredential_guard
         "schema_version",
         "distribution",
         "installed_version",
+        "pydantic_version",
+        "pydantic_core_version",
         "c0_uv_lock_sha256",
         "lock_version",
         "lock_registry",
@@ -302,10 +304,12 @@ def test_benchmark_sdk_contract_accepts_frozen_openai_member(precredential_guard
         "request_model_qualified_name",
         "response_model_qualified_name",
         "request_fields",
+        "structured_request_paths",
         "response_paths",
         "returned_model_path",
         "response_content_paths",
         "serializer_projection_sha256",
+        "structured_serializer_projection_sha256",
         "contract_sha256",
     )
     from laconian_eval.capsule.canonical import stable_digest
@@ -2240,6 +2244,390 @@ def test_generate_benchmark_has_the_attempts_owned_outcome_annotation() -> None:
 
     assert annotations["request"] is PublicBenchmarkRequestV1
     assert annotations["return"] is PublicBenchmarkProviderOutcomeV1
+
+
+def test_openai_structured_output_serializer_emits_exact_nine_key_wire_and_hash() -> None:
+    from laconian_eval.benchmark import canonical_json_v1
+    from laconian_eval.providers.base import StructuredOutputProviderRequestV1
+    from laconian_eval.providers.openai import _structured_output_responses_kwargs
+
+    request = StructuredOutputProviderRequestV1(
+        model="gpt-5.6-sol",
+        rendered_input="sdk-contract-structured-input-v1",
+        reasoning_effort="low",
+        text_verbosity="low",
+        structured_output_name="sdk_contract_probe_v1",
+        structured_output_schema_canonical_json=(
+            b'{"additionalProperties":false,"properties":{"value":{"type":"string"}},'
+            b'"required":["value"],"type":"object"}'
+        ),
+        max_output_tokens=768,
+        store=False,
+        tools=(),
+        service_tier="default",
+        prompt_cache_mode="explicit",
+        prompt_cache_ttl="30m",
+    )
+
+    wire = _structured_output_responses_kwargs(request)
+
+    assert tuple(wire) == (
+        "model",
+        "input",
+        "reasoning",
+        "text",
+        "max_output_tokens",
+        "store",
+        "tools",
+        "service_tier",
+        "prompt_cache_options",
+    )
+    assert "instructions" not in wire
+    assert hashlib.sha256(canonical_json_v1(wire)).hexdigest() == (
+        "6de8042f2e010f4e7128abe836374b60fa6b4f0c1818935ff1ab5095db148ab0"
+    )
+
+
+def test_structured_output_request_is_frozen_neutral_exact_and_rejects_instructions_or_extras(
+) -> None:
+    from laconian_eval.providers.base import StructuredOutputProviderRequestV1
+    from laconian_eval.providers.openai import _structured_output_responses_kwargs
+
+    values: dict[str, object] = {
+        "model": "gpt-5.6-sol",
+        "rendered_input": "judge input",
+        "reasoning_effort": "low",
+        "text_verbosity": "low",
+        "structured_output_name": "laconian_structured_judgment_v1",
+        "structured_output_schema_canonical_json": (
+            b'{"additionalProperties":false,"properties":{},"required":[],"type":"object"}'
+        ),
+        "max_output_tokens": 768,
+        "store": False,
+        "tools": (),
+        "service_tier": "default",
+        "prompt_cache_mode": "explicit",
+        "prompt_cache_ttl": "30m",
+    }
+    request = StructuredOutputProviderRequestV1(**values)  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError):
+        request.model = "gpt-5.6-terra"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        StructuredOutputProviderRequestV1(  # type: ignore[call-arg]
+            **values,
+            instructions="forbidden",
+        )
+    for false_like in (0, 0.0):
+        with pytest.raises(ValidationError):
+            StructuredOutputProviderRequestV1(  # type: ignore[arg-type]
+                **(values | {"store": false_like})
+            )
+
+    forged = StructuredOutputProviderRequestV1.model_construct(
+        **(
+            values
+            | {
+                "max_output_tokens": True,
+                "store": True,
+                "service_tier": "priority",
+            }
+        )
+    )
+    with pytest.raises(ProviderError) as caught:
+        _structured_output_responses_kwargs(forged)
+    assert caught.value.kind == "configuration"
+    assert caught.value.delivery_certainty == "definitely_not_sent"
+
+    client = StubClient(benchmark_response())
+    with pytest.raises(ProviderError):
+        OpenAIProvider(client=client).generate_structured_output(forged)
+    assert client.responses.calls == []
+
+
+def test_openai_structured_output_dispatch_reuses_attempts_owned_response_and_error_evidence(
+) -> None:
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkProviderErrorEvidenceV1,
+        PublicBenchmarkResponseEvidenceV1,
+    )
+    from laconian_eval.providers.base import StructuredOutputProviderRequestV1
+
+    request = StructuredOutputProviderRequestV1(
+        model="gpt-5.6-sol",
+        rendered_input="judge input",
+        reasoning_effort="low",
+        text_verbosity="low",
+        structured_output_name="laconian_structured_judgment_v1",
+        structured_output_schema_canonical_json=(
+            b'{"additionalProperties":false,"properties":{},"required":[],"type":"object"}'
+        ),
+        max_output_tokens=768,
+        store=False,
+        tools=(),
+        service_tier="default",
+        prompt_cache_mode="explicit",
+        prompt_cache_ttl="30m",
+    )
+
+    result = OpenAIProvider(client=StubClient(benchmark_response())).generate_structured_output(
+        request
+    )
+
+    assert type(result) is PublicBenchmarkResponseEvidenceV1
+    assert result.output_text == "Complete answer."
+
+    error = sdk_error_type("RateLimitError")("rate limited")
+    error.status_code = 429  # type: ignore[attr-defined]
+    error.request_id = "req-structured"  # type: ignore[attr-defined]
+    failure = OpenAIProvider(client=StubClient(error)).generate_structured_output(request)
+
+    assert type(failure) is PublicBenchmarkProviderErrorEvidenceV1
+    assert failure.requested_model_id == "gpt-5.6-sol"
+    assert failure.requested_service_tier == "default"
+    assert failure.structured_status == 429
+    assert failure.delivery_certainty == "definitely_rejected"
+    assert failure.provider_request_id == "req-structured"
+
+
+def test_sdk_contract_requires_typed_tools_text_format_members_and_structured_serializer_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    precredential_guard: None,
+) -> None:
+    from laconian_eval.providers import openai as provider_openai
+
+    assert provider_openai.BENCHMARK_OPENAI_STRUCTURED_REQUEST_PATHS_V1 == (
+        "request.tools",
+        "request.text",
+        "request.text.verbosity",
+        "request.text.format",
+        "request.text.format.type",
+        "request.text.format.name",
+        "request.text.format.strict",
+        "request.text.format.schema",
+    )
+    assert provider_openai.BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_SHA256_V1 == (
+        "6de8042f2e010f4e7128abe836374b60fa6b4f0c1818935ff1ab5095db148ab0"
+    )
+
+    lock = Path("uv.lock").read_bytes()
+    lock_digest = hashlib.sha256(lock).hexdigest()
+
+    def require_contract(candidate: bytes = lock) -> None:
+        provider_openai.require_benchmark_sdk_contract(
+            c0_uv_lock_bytes=candidate,
+            expected_c0_uv_lock_sha256=hashlib.sha256(candidate).hexdigest(),
+        )
+
+    def lock_member(name: str) -> tuple[int, int, bytes]:
+        marker = f'[[package]]\nname = "{name}"'.encode()
+        start = lock.index(marker)
+        end = lock.find(b"\n[[package]]", start + len(marker))
+        if end < 0:
+            end = len(lock)
+        return start, end, lock[start:end]
+
+    expected_versions = {
+        "pydantic": provider_openai.BENCHMARK_PYDANTIC_VERSION_V1,
+        "pydantic-core": provider_openai.BENCHMARK_PYDANTIC_CORE_VERSION_V1,
+    }
+    real_installed_distribution_version = provider_openai._installed_distribution_version
+    for distribution, expected_version in expected_versions.items():
+        for installed_value in (
+            f"{expected_version}-mismatch",
+            (expected_version, expected_version),
+        ):
+            with monkeypatch.context() as case_patch:
+
+                def installed_version(
+                    name: str,
+                    *,
+                    target: str = distribution,
+                    value: object = installed_value,
+                ) -> object:
+                    if name == target:
+                        return value
+                    return real_installed_distribution_version(name)
+
+                case_patch.setattr(
+                    provider_openai,
+                    "_installed_distribution_version",
+                    installed_version,
+                )
+                with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+                    require_contract()
+                _assert_sdk_error(caught.value, "installed-version")
+
+        start, end, member = lock_member(distribution)
+        version_line = f'version = "{expected_version}"'.encode()
+        assert member.count(version_line) == 1
+        locked_mismatch = (
+            lock[:start]
+            + member.replace(
+                version_line,
+                f'version = "{expected_version}-mismatch"'.encode(),
+                1,
+            )
+            + lock[end:]
+        )
+        locked_duplicate = lock[:end] + b"\n" + member + lock[end:]
+        for candidate in (locked_mismatch, locked_duplicate):
+            with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+                require_contract(candidate)
+            _assert_sdk_error(caught.value, "lock-entry")
+
+    original_hints = provider_openai._sdk_type_hints
+    original_structured_verifier = provider_openai._verify_structured_request_type_paths
+    request_member_names = (
+        "ResponseCreateParamsNonStreaming",
+        "ResponseCreateParamsStreaming",
+    )
+    for member_name in request_member_names:
+        for path in provider_openai.BENCHMARK_OPENAI_STRUCTURED_REQUEST_PATHS_V1:
+            mutation_target: list[tuple[object, str] | None] = [None]
+            mutation_applied: list[str] = []
+
+            def hints_with_one_missing_path(
+                owner: type[object],
+                *,
+                target_ref: list[tuple[object, str] | None] = mutation_target,
+                applied: list[str] = mutation_applied,
+                target_path: str = path,
+            ) -> dict[str, object]:
+                hints = dict(original_hints(owner))
+                target = target_ref[0]
+                if target is not None and owner is target[0]:
+                    applied.append(target_path)
+                    hints.pop(target[1])
+                return hints
+
+            def verify_with_one_missing_path(
+                root: object,
+                *,
+                target_member: str = member_name,
+                target_path: str = path,
+                target_ref: list[tuple[object, str] | None] = mutation_target,
+            ) -> bool:
+                if getattr(root, "__qualname__", None) != target_member:
+                    return original_structured_verifier(root)
+                root_hints = original_hints(root)  # type: ignore[arg-type]
+                text_owner = root_hints["text"]
+                text_hints = original_hints(text_owner)  # type: ignore[arg-type]
+                format_owner = provider_openai._json_schema_format_branch(text_hints["format"])
+                owner_and_field = {
+                    "request.tools": (root, "tools"),
+                    "request.text": (root, "text"),
+                    "request.text.verbosity": (text_owner, "verbosity"),
+                    "request.text.format": (text_owner, "format"),
+                    "request.text.format.type": (format_owner, "type"),
+                    "request.text.format.name": (format_owner, "name"),
+                    "request.text.format.strict": (format_owner, "strict"),
+                    "request.text.format.schema": (format_owner, "schema"),
+                }
+                target_ref[0] = owner_and_field[target_path]
+                try:
+                    return original_structured_verifier(root)
+                finally:
+                    target_ref[0] = None
+
+            with monkeypatch.context() as case_patch:
+                case_patch.setattr(provider_openai, "_sdk_type_hints", hints_with_one_missing_path)
+                case_patch.setattr(
+                    provider_openai,
+                    "_verify_structured_request_type_paths",
+                    verify_with_one_missing_path,
+                )
+                with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+                    provider_openai.require_benchmark_sdk_contract(
+                        c0_uv_lock_bytes=lock,
+                        expected_c0_uv_lock_sha256=lock_digest,
+                    )
+                _assert_sdk_error(caught.value, "request-model")
+            if not mutation_applied or set(mutation_applied) != {path}:
+                raise RuntimeError(
+                    f"unexpected structured path visits: {member_name=} {path=} "
+                    f"{mutation_applied=}"
+                )
+
+    for member_index in range(9):
+        with monkeypatch.context() as case_patch:
+            original_structured_builder = provider_openai._structured_output_responses_kwargs
+
+            def changed_member(
+                request: object,
+                *,
+                index: int = member_index,
+                builder: Any = original_structured_builder,
+            ) -> dict[str, object]:
+                projection = builder(request)
+                items = list(projection.items())
+                key, _value = items[index]
+                items[index] = (key, None)
+                return dict(items)
+
+            case_patch.setattr(
+                provider_openai,
+                "_structured_output_responses_kwargs",
+                changed_member,
+            )
+            with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+                require_contract()
+            _assert_sdk_error(caught.value, "serializer-projection")
+
+    with monkeypatch.context() as case_patch:
+        original_structured_builder = provider_openai._structured_output_responses_kwargs
+
+        def changed_order(request: object) -> dict[str, object]:
+            items = list(original_structured_builder(request).items())  # type: ignore[arg-type]
+            items[0], items[1] = items[1], items[0]
+            return dict(items)
+
+        case_patch.setattr(
+            provider_openai,
+            "_structured_output_responses_kwargs",
+            changed_order,
+        )
+        with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+            require_contract()
+        _assert_sdk_error(caught.value, "serializer-projection")
+
+    with monkeypatch.context() as case_patch:
+        case_patch.setattr(
+            provider_openai,
+            "BENCHMARK_OPENAI_STRUCTURED_SERIALIZER_PROJECTION_SHA256_V1",
+            "0" * 64,
+        )
+        with pytest.raises(provider_openai.BenchmarkSDKContractError) as caught:
+            require_contract()
+        _assert_sdk_error(caught.value, "serializer-projection")
+
+
+def test_structured_format_union_rejects_untyped_missing_or_overlapping_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from laconian_eval.providers import openai as provider_openai
+
+    class GoodJSONSchema(typing.TypedDict):
+        type: typing.Literal["json_schema"]
+        name: str
+        strict: bool
+        schema: dict[str, object]
+
+    class BroadFormat(typing.TypedDict):
+        type: Any
+
+    class MissingDiscriminator(typing.TypedDict):
+        value: str
+
+    class OverlappingFormat(typing.TypedDict):
+        type: typing.Literal["json_schema", "vendor_json_schema"]
+
+    monkeypatch.setattr(provider_openai, "_sdk_type_hints", typing.get_type_hints)
+
+    for unsafe_sibling in (BroadFormat, MissingDiscriminator, OverlappingFormat):
+        annotation = GoodJSONSchema | unsafe_sibling
+        with pytest.raises(TypeError):
+            provider_openai._json_schema_format_branch(annotation)
 
 
 def test_openai_benchmark_ignores_every_alternate_accounting_and_model_path() -> None:

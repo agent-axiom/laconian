@@ -3,6 +3,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -984,3 +985,90 @@ def test_slice1_final_capsule_public_names_are_stable() -> None:
         "VerifiedScoredCapsuleV2": "laconian_eval.capsule.sidecars",
         "load_verified_scored_capsule": "laconian_eval.capsule.sidecars",
     }
+
+
+def test_structured_output_provider_contract_has_one_foundation_owner() -> None:
+    import inspect
+
+    import laconian_eval.providers as providers
+    from laconian_eval.providers import base
+
+    assert providers.StructuredOutputProviderRequestV1 is base.StructuredOutputProviderRequestV1
+    assert providers.StructuredOutputProvider is base.StructuredOutputProvider
+    assert providers.__all__.count("StructuredOutputProviderRequestV1") == 1
+    assert providers.__all__.count("StructuredOutputProvider") == 1
+    signature = inspect.signature(base.StructuredOutputProvider.generate_structured_output)
+    assert signature.parameters["request"].annotation is base.StructuredOutputProviderRequestV1
+    assert signature.return_annotation == "PublicBenchmarkProviderOutcomeV1"
+
+
+def test_benchmark_package_uses_pep562_lazy_owner_identical_judge_exports() -> None:
+    import importlib
+
+    import laconian_eval.benchmark as benchmark
+
+    expected = (
+        "JUDGE_REQUESTED_SERVICE_TIER",
+        "JUDGE_SERVICE_TIER_WIRE_FIELD",
+        "BlindJudgeRequestV1",
+        "JudgeProviderRequestV1",
+        "JudgeRequestAttachmentV1",
+        "JudgeAttemptUsageV1",
+        "JudgeAttemptEvidenceV1",
+        "JudgeAttemptBoundaryV1",
+        "JudgeAttemptRootMemberV1",
+        "JudgeAttemptRootIndexV1",
+        "VerifiedJudgeAttemptRootV1",
+        "write_judge_attempt_root",
+        "load_verified_judge_attempt_root",
+        "JudgeAttachmentV1",
+        "build_judge_request_attachment",
+        "verify_judge_request_attachment",
+        "build_judge_attachment",
+        "verify_judge_attachment",
+    )
+    assert expected == benchmark.JUDGE_LAZY_EXPORTS_V1
+    assert all(name in benchmark.__all__ and name in dir(benchmark) for name in expected)
+
+    judge = importlib.import_module("laconian_eval.benchmark.judge")
+    for name in expected:
+        assert getattr(benchmark, name) is getattr(judge, name)
+        assert benchmark.__dict__[name] is getattr(judge, name)
+    with pytest.raises(AttributeError):
+        benchmark.__getattr__("unregistered_judge_export")
+
+
+def test_cold_provider_import_and_each_cold_judge_export_are_cycle_free() -> None:
+    import laconian_eval.benchmark as benchmark
+
+    provider_probe = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "import sys; import laconian_eval.providers.openai; "
+            "assert 'laconian_eval.benchmark.judge' not in sys.modules",
+        ),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert provider_probe.returncode == 0, provider_probe.stderr
+
+    for name in benchmark.JUDGE_LAZY_EXPORTS_V1:
+        export_probe = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                "import importlib, laconian_eval.benchmark as benchmark; "
+                f"value = getattr(benchmark, {name!r}); "
+                "judge = importlib.import_module('laconian_eval.benchmark.judge'); "
+                f"assert value is getattr(judge, {name!r}); "
+                f"assert benchmark.__dict__[{name!r}] is value",
+            ),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert export_probe.returncode == 0, f"{name}: {export_probe.stderr}"

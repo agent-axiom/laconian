@@ -1,8 +1,10 @@
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, runtime_checkable
 
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator, model_validator
 
+from laconian_eval.benchmark.attachments import canonical_json_v1, parse_canonical_json_v1
 from laconian_eval.capsule.schema import (
     CapsuleModel,
     PromptCacheMode,
@@ -13,6 +15,9 @@ from laconian_eval.capsule.schema import (
     ServiceTier,
     TextVerbosity,
 )
+
+if TYPE_CHECKING:
+    from laconian_eval.capsule.attempts import PublicBenchmarkProviderOutcomeV1
 
 INPUT_TOKEN_BOUND_VERSION = "openai-utf8-envelope-v1"
 OPENAI_RESPONSES_ENVELOPE_TOKEN_ALLOWANCE = 65_536
@@ -42,6 +47,72 @@ class PublicBenchmarkRequestPolicyV1(CapsuleModel):
         if type(value) is not int:
             raise ValueError("max_input_tokens must be an exact integer")
         return value
+
+
+class StructuredOutputProviderRequestV1(CapsuleModel):
+    """One sealed, benchmark-neutral Responses structured-output request."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    model: PublicBenchmarkModelId
+    rendered_input: str
+    reasoning_effort: ReasoningEffort
+    text_verbosity: TextVerbosity
+    structured_output_name: str
+    structured_output_schema_canonical_json: bytes
+    max_output_tokens: int
+    store: Literal[False]
+    tools: tuple[()]
+    service_tier: Literal["default"]
+    prompt_cache_mode: Literal["explicit"]
+    prompt_cache_ttl: Literal["30m"]
+
+    @field_validator("rendered_input", "structured_output_name")
+    @classmethod
+    def validate_exact_nfc_text(cls, value: str) -> str:
+        if type(value) is not str or not value:
+            raise ValueError("structured-output text must be a nonblank exact string")
+        try:
+            value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as error:
+            raise ValueError("structured-output text must be strict UTF-8") from error
+        if unicodedata.normalize("NFC", value) != value:
+            raise ValueError("structured-output text must already be NFC")
+        return value
+
+    @field_validator("max_output_tokens", mode="before")
+    @classmethod
+    def validate_positive_exact_output_limit(cls, value: object) -> object:
+        if type(value) is not int or value < 1:
+            raise ValueError("structured-output limit must be a positive exact integer")
+        return value
+
+    @field_validator("store", mode="before")
+    @classmethod
+    def validate_exact_false_store(cls, value: object) -> object:
+        if type(value) is not bool or value is not False:
+            raise ValueError("structured-output store must be exact false")
+        return value
+
+    @model_validator(mode="after")
+    def validate_canonical_schema(self) -> "StructuredOutputProviderRequestV1":
+        try:
+            schema = parse_canonical_json_v1(self.structured_output_schema_canonical_json)
+        except Exception as error:
+            raise ValueError("structured-output schema must be canonical JSON v1") from error
+        if (
+            type(schema) is not dict
+            or canonical_json_v1(schema) != self.structured_output_schema_canonical_json
+        ):
+            raise ValueError("structured-output schema must be one canonical JSON object")
+        return self
+
+
+@runtime_checkable
+class StructuredOutputProvider(Protocol):
+    def generate_structured_output(
+        self, request: StructuredOutputProviderRequestV1
+    ) -> "PublicBenchmarkProviderOutcomeV1": ...
 
 
 @dataclass(frozen=True, slots=True)

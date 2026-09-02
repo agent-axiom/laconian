@@ -251,7 +251,59 @@ def protocol_subject_values() -> dict[str, str]:
         )
         for kind in PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1[role]
     )
-    return {kind: sha256_marker(80_000 + ordinal) for ordinal, kind in enumerate(kinds)}
+    values = {kind: sha256_marker(80_000 + ordinal) for ordinal, kind in enumerate(kinds)}
+    values.update(
+        judge_prompt_sha256="6e5e97ef532bf45f3df7e6b8accc24557259e5527290793354de00ee50fd68db",
+        judge_schema_sha256="37418892e29c9af0a6f8a57348de07b26d8a83f9fd163fbb4b1a487a0120e95c",
+        identity_registry_bundle_sha256=(
+            protocol_identity_registry_bundle().identity_registry_bundle_sha256
+        ),
+    )
+    return values
+
+
+def protocol_identity_registry_bundle() -> Any:
+    """Build one deterministic self-bound identity bundle for judge request fixtures."""
+
+    from laconian_eval.benchmark.protocol_review import (
+        ProtocolReviewIdentityRegistryBundleV1,
+        protocol_review_digest,
+    )
+
+    dependency_lock_sha256 = hashlib.sha256(
+        (Path(__file__).parents[2] / "uv.lock").read_bytes()
+    ).hexdigest()
+    tool_sha256 = protocol_review_digest(
+        "laconian-protocol-signature-verifier-tool-v1",
+        {
+            "algorithm_profile": (
+                "ssh-ed25519-sshsig-git-sha512-or-openpgp-v4-ed25519-sha256-v1"
+            ),
+            "dependency_lock_path": "uv.lock",
+            "dependency_lock_sha256": dependency_lock_sha256,
+            "verifier_dependency_inventory_root": sha256_marker(80_100),
+            "entrypoint": (
+                "laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1"
+            ),
+            "verifier_source_path": "src/laconian_eval/benchmark/protocol_review.py",
+            "verifier_source_sha256": sha256_marker(80_101),
+        },
+    )
+    payload: dict[str, Any] = {
+        "schema_version": "ProtocolReviewIdentityRegistryBundleV1",
+        "keys": (),
+        "verifier_source_path": "src/laconian_eval/benchmark/protocol_review.py",
+        "verifier_source_sha256": sha256_marker(80_101),
+        "dependency_lock_path": "uv.lock",
+        "dependency_lock_sha256": dependency_lock_sha256,
+        "verifier_dependency_inventory_root": sha256_marker(80_100),
+        "protocol_signature_verifier_tool_sha256": tool_sha256,
+    }
+    payload["identity_registry_bundle_sha256"] = protocol_review_digest(
+        "laconian-protocol-review-identity-registry-bundle-v1",
+        payload,
+    )
+    return ProtocolReviewIdentityRegistryBundleV1.model_validate(payload)
 
 
 def verified_protocol_attestations(
@@ -444,7 +496,9 @@ def generation_context_index_payload(
         "input_tag_commit": git_oid_marker(102),
         "hard_scorer_source_sha256": sha256_marker(90_008),
         "hard_score_protocol_sha256": subjects["hard_score_protocol_sha256"],
-        "judge_protocol_sha256": sha256_marker(90_009),
+        "judge_protocol_sha256": (
+            "2aee6c1afaa8fb59958113566a73a547ae2b70c93b454fcd6afef2889c7563e8"
+        ),
         "judge_prompt_sha256": subjects["judge_prompt_sha256"],
         "judge_schema_sha256": subjects["judge_schema_sha256"],
         "judge_requested_service_tier": "default",
