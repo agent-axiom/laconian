@@ -154,15 +154,35 @@ def _seal_vector_metadata(
 def _revalidate_vector_metadata(
     metadata: BootstrapVectorsV1,
 ) -> BootstrapVectorsV1:
+    def require_exact_field_types(value: BootstrapVectorsV1) -> None:
+        if type(value.seed) is not int:
+            raise ValueError("bootstrap metadata seed must be an exact int")
+        if type(value.scenario_uids) is not tuple or any(
+            type(uid) is not str for uid in value.scenario_uids
+        ):
+            raise ValueError(
+                "bootstrap metadata scenario UIDs must be an exact tuple of exact strings"
+            )
+        if type(value.replicates) is not int:
+            raise ValueError("bootstrap metadata replicates must be an exact int")
+        if type(value.index_dtype) is not str:
+            raise ValueError("bootstrap metadata index dtype must be an exact string")
+        if type(value.indices_sha256) is not str:
+            raise ValueError("bootstrap metadata digest must be an exact string")
+
     if type(metadata) is not BootstrapVectorsV1:
         raise ValueError("bootstrap metadata must be an exact BootstrapVectorsV1")
+    require_exact_field_types(metadata)
     field_names = frozenset(BootstrapVectorsV1.model_fields)
     if frozenset(metadata.__dict__) != field_names:
         raise ValueError("bootstrap metadata contains missing or extra model state")
     try:
-        checked = BootstrapVectorsV1.model_validate(dict(metadata.__dict__))
+        checked = BootstrapVectorsV1.model_validate(
+            dict(metadata.__dict__), strict=True
+        )
     except ValueError as exc:
         raise ValueError("bootstrap metadata failed class-bound revalidation") from exc
+    require_exact_field_types(checked)
     if checked.__dict__ != metadata.__dict__:
         raise ValueError("bootstrap metadata changes under class-bound revalidation")
     return checked

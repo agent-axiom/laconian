@@ -101,6 +101,12 @@ def _identity_indices() -> np.ndarray:
 
 
 def test_cluster_vectors_keep_locales_repetitions_and_matched_arms_together() -> None:
+    class _Text(str):
+        pass
+
+    class _UIDTuple(tuple):
+        pass
+
     scenario_uids = tuple(_scenario_uid(index) for index in reversed(range(12)))
     metadata, indices = make_cluster_vectors(
         seed=20260830, scenario_uids=scenario_uids
@@ -148,7 +154,37 @@ def test_cluster_vectors_keep_locales_repetitions_and_matched_arms_together() ->
 
     changed = indices.copy(order="C")
     changed[0, 0] ^= np.uint8(1)
+    unit_seed_metadata, unit_seed_indices = make_cluster_vectors(
+        seed=1, scenario_uids=scenario_uids
+    )
     for bad_metadata, bad_indices in (
+        (unit_seed_metadata.model_copy(update={"seed": True}), unit_seed_indices),
+        (unit_seed_metadata.model_copy(update={"seed": 1.0}), unit_seed_indices),
+        (metadata.model_copy(update={"replicates": 10_000.0}), indices),
+        (metadata.model_copy(update={"replicates": True}), indices),
+        (
+            metadata.model_copy(update={"scenario_uids": list(metadata.scenario_uids)}),
+            indices,
+        ),
+        (
+            metadata.model_copy(update={"scenario_uids": _UIDTuple(metadata.scenario_uids)}),
+            indices,
+        ),
+        (
+            metadata.model_copy(
+                update={
+                    "scenario_uids": tuple(_Text(uid) for uid in metadata.scenario_uids)
+                }
+            ),
+            indices,
+        ),
+        (metadata.model_copy(update={"index_dtype": _Text("uint8")}), indices),
+        (
+            metadata.model_copy(
+                update={"indices_sha256": _Text(metadata.indices_sha256)}
+            ),
+            indices,
+        ),
         (metadata.model_copy(update={"replicates": 9_999}), indices),
         (metadata.model_copy(update={"index_dtype": "float64"}), indices),
         (metadata.model_copy(update={"seed": metadata.seed + 1}), indices),
