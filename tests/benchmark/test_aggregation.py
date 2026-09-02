@@ -464,6 +464,30 @@ def test_eligible_pairs_and_token_pairs_are_distinct(
     assert denominators.eligible_pairs == 120
     assert denominators.token_pairs == 119
 
+    malformed_shared = tuple(
+        PlannedObservationV1.model_validate(
+            {**row.model_dump(), "locale": "en"}
+        )
+        if row.arm in {"if", "concise"}
+        else row
+        for row in complete_rows
+    )
+    if_keys = {
+        (row.scenario_uid, row.case_id, row.locale, row.repetition)
+        for row in malformed_shared
+        if row.arm == "if"
+    }
+    concise_keys = {
+        (row.scenario_uid, row.case_id, row.locale, row.repetition)
+        for row in malformed_shared
+        if row.arm == "concise"
+    }
+    assert len(if_keys) == len(concise_keys) == 120
+    assert if_keys == concise_keys
+    assert len({key[0] for key in if_keys}) == 12
+    with pytest.raises(InferenceIntegrityError, match=r"locale|case"):
+        pair_denominators_for_gate(malformed_shared, gate="hard")
+
 
 @pytest.mark.parametrize(
     ("eligible_pairs", "token_pairs", "scenarios"),

@@ -423,6 +423,7 @@ def pair_denominators_for_gate(
         raise InferenceIntegrityError(
             "pair denominators require shared 120-key if and concise populations"
         )
+    _validate_key_shape(set(rows_by_arm["if"]))
     eligible_keys = {
         key
         for key, if_row in rows_by_arm["if"].items()
