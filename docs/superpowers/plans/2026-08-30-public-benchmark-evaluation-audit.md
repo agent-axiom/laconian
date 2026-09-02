@@ -230,6 +230,122 @@ indexes; a changed per-attempt returned-model source under a recomputed provider
 direct, replaced, low-level, and mutated audit-population wrappers. These are cases within the
 existing 51 tests, not alternate APIs or extra workflow behavior.
 
+**Task 8 verifier-batching amendment scope (separate approval required):** This amendment
+supersedes only the Task 8 file list and the requirement that provider verification invoke the
+three existing context-revalidating public wrappers once per boundary. It does not change any
+provider-index, attachment, context, bundle, fingerprint, root/vector/member join,
+terminal-attempt comparison, canonical-byte, or fail-closed authority rule. Task 8 additionally
+modifies `src/laconian_eval/benchmark/hard_score.py`,
+`src/laconian_eval/benchmark/judge.py`, `tests/benchmark/test_hard_score.py`, and
+`tests/benchmark/test_judge.py`.
+
+`provider_evidence.py` must class-bound reconstruct `VerifiedGenerationContextIndexV1` exactly
+once inside each fresh `_validate_complete_provider_graph` invocation and must use only that
+call-local checked object thereafter. It then visits ordinals `0..35` in canonical order and
+invokes the non-exported checked-authority hard-score, judge-request, and judge-final cores for
+every chain. Those cores are not alternate verification logic. Each existing singular public
+verifier delegates to its respective factored verifier core after its ordinary one-call context
+check. `build_hard_score_request_set` and `build_judge_request_attachment` and their verifier cores
+share the same non-exported checked-authority construction primitive; `build_judge_attachment`
+retains its attempt-root construction path and shares its applicable parent/record validation
+primitives. No checked-authority core constructs `VerifiedGenerationContextIndexV1` or calls a
+public builder or verifier that does so. The Task 8 batch delegates to those identical cores after
+its one complete context check. The request core still class-bound revalidates and C0-binds the
+complete identity bundle and replays the hard-score core. The final core replays the hard-score
+core and the exact `_request_attachment_from_context` structural/context semantics; because the
+unchanged public final-verifier signature has no identity bundle, the final core does not invoke
+the C0-bound request core. The provider batch invokes that request core immediately before the
+final core for the same boundary. All exact-owner checks, rebuilds, canonical-byte comparisons,
+boundary discovery, protocol checks, and parent joins remain unchanged. Each checked hard-score
+path derives the boundary ordinal from `member.ordinal`, requires its exact `int` type and range
+`0..35`, checks `index.ordered_generation_capsule_sha256s[member.ordinal]` against the member, and
+checks the member/evidence capsule join before using other boundary data. The non-exported
+signatures are:
+
+~~~python
+# hard_score.py
+def _build_hard_score_request_set_from_checked_authority(
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+) -> HardScoreRequestSetV1: ...
+
+
+def _verify_hard_score_request_set_from_checked_authority(
+    attachment: HardScoreRequestSetV1,
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+) -> None: ...
+
+
+# judge.py
+def _build_judge_request_attachment_from_checked_authority(
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+    request_set: HardScoreRequestSetV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+) -> JudgeRequestAttachmentV1: ...
+
+
+def _verify_judge_request_attachment_from_checked_authority(
+    attachment: JudgeRequestAttachmentV1,
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+    request_set: HardScoreRequestSetV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+) -> None: ...
+
+
+def _verify_judge_attachment_from_checked_authority(
+    attachment: JudgeAttachmentV1,
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+    request_set: HardScoreRequestSetV1,
+    request_attachment: JudgeRequestAttachmentV1,
+) -> None: ...
+
+
+# provider_evidence.py
+def _verify_provider_chains_from_checked_context(
+    *,
+    checked_context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+    hard_score_request_sets: tuple[HardScoreRequestSetV1, ...],
+    judge_request_attachments: tuple[JudgeRequestAttachmentV1, ...],
+    judge_attachments: tuple[JudgeAttachmentV1, ...],
+) -> None: ...
+~~~
+
+`expectation` remains in the batch signature so the batch rechecks equality against
+`checked_context.expectation` before reading any boundary. Private cores are absent from `__all__`,
+are not authority entry points, mint no capability, and their return values confer no authority;
+the provider owner calls them only after the exact call-local context reconstruction. The provider
+owner must freshly execute this complete batch during the durable loader and every in-memory owner
+revalidation. No result, checked context, capability, fingerprint decision, or per-boundary
+decision may be cached or reused across calls, stored in a registry, thread-local, or
+process-global. The batch is sequential and fail-fast; it creates no threads or subprocesses.
+Existing public signatures, exports, return contracts, and standalone rejection behavior remain
+unchanged.
+
+Regression tests must prove valid and mutated differential accept/reject equivalence between the
+singular public path and the shared checked-core path on one representative valid boundary plus
+focused mutations for each core. A separate batch spy proves that ordinals `0..35` each invoke all
+three cores once, `_validate_evidence_members` runs once per provider-graph validation, and the
+next provider consumption performs a fresh reconstruction. The differential oracle must not run
+all 108 singular public calls. These assertions extend existing named tests in
+`tests/benchmark/test_hard_score.py`, `tests/benchmark/test_judge.py`, and the existing 51 Task 8
+tests; the Task 8 named-test inventory remains exactly 51.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -4493,8 +4609,12 @@ git commit -m "feat: classify benchmark model outcomes"
 - Create: `tests/benchmark/test_provider_evidence.py`
 - Create: `tests/benchmark/test_audit_sampling.py`
 - Modify: `src/laconian_eval/benchmark/aggregation.py`
+- Modify: `src/laconian_eval/benchmark/hard_score.py`
+- Modify: `src/laconian_eval/benchmark/judge.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
 - Modify: `tests/benchmark/helpers.py`
+- Modify: `tests/benchmark/test_hard_score.py`
+- Modify: `tests/benchmark/test_judge.py`
 
 `provider_evidence.py` is the downstream post-judge bridge and imports `context.py`; the exact path
 lines above deliberately contain no commentary so task/staging audits can resolve them literally.
@@ -5523,15 +5643,16 @@ re-export those exact objects from `laconian_eval.benchmark`; do not define adap
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run ruff check src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run mypy src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
+uv run pytest -q tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run ruff check src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run mypy src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
+git diff --check
 ~~~
 
 Expected: all commands pass.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
 git commit -m "feat: verify benchmark evidence and freeze audit sampling"
 ~~~
 
