@@ -98,6 +98,7 @@ from laconian_eval.benchmark.protocol_review import (
 from laconian_eval.benchmark.seeds import derive_seed128
 
 if TYPE_CHECKING:
+    from laconian_eval.benchmark.aggregation import AggregatedModelV1
     from laconian_eval.benchmark.context import (
         AttachmentLayerRootMemberV1,
         BenchmarkProtocolBindingsV1,
@@ -177,6 +178,7 @@ _HARD_SCORE_EXPORTS = frozenset(
         "verify_hard_score_request_set",
     }
 )
+_AGGREGATION_EXPORTS = frozenset({"AggregatedModelV1"})
 JUDGE_LAZY_EXPORTS_V1 = (
     "JUDGE_REQUESTED_SERVICE_TIER",
     "JUDGE_SERVICE_TIER_WIRE_FIELD",
@@ -205,7 +207,9 @@ _JUDGE_EXPORTS = {
 def __getattr__(name: str) -> Any:
     """Load sidecar-dependent exports lazily to preserve capsule import acyclicity."""
 
-    if name in _CONTEXT_EXPORTS:
+    if name in _AGGREGATION_EXPORTS:
+        module_name = "laconian_eval.benchmark.aggregation"
+    elif name in _CONTEXT_EXPORTS:
         module_name = "laconian_eval.benchmark.context"
     elif name in _HARD_SCORE_EXPORTS:
         module_name = "laconian_eval.benchmark.hard_score"
@@ -232,6 +236,7 @@ __all__ = (
     "GITHUB_COMMIT_SIGNER_QUERY_V1",
     "GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1",
     "PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1",
+    "AggregatedModelV1",
     "ArchivedApiBlobV1",
     "ArchivedApiReceiptBindingV1",
     "ArchivedProtocolGitObjectV1",
