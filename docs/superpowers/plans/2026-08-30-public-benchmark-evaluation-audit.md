@@ -62,6 +62,13 @@ records that approval without changing normative behavior. Evaluation Task 8 and
 consumer of its provider/audit wrappers may proceed only from a handoff that records this
 successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
+On 2026-09-03 the maintainer/user explicitly approved the Task 8 verifier-batching amendment at
+normative commit `f4f04eb810a46dd0ad84f11d344eab555f9e196e` with exact message
+`Одобряю amendment f4f04eb810a46dd0ad84f11d344eab555f9e196e`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 8 and every downstream
+consumer of its checked-authority verifier cores may proceed only from a handoff that records this
+successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 **Approved normative amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider-dispatch, wire, and
