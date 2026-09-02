@@ -119,12 +119,47 @@ def test_cluster_vectors_keep_locales_repetitions_and_matched_arms_together() ->
         "090a03020b02070107040a070b0b0b050707060306070004"
         "08010008020203070a080109040b010309020b0404010402"
     )
+    assert metadata.indices_sha256 == (
+        "70b0ac50e2a650b3fd65c3dbedfbd8407b72f81be989e576f044f9fdcb7cbecd"
+    )
     assert _verify_cluster_vectors(metadata, indices) is indices
+
+    rows = _complete_rows()
+    zero_indices = np.zeros((10_000, 12), dtype=np.uint8)
+    ordered_uids = sorted({row.scenario_uid for row in rows}, key=lambda uid: uid.encode())
+    mixed_generation_uid = ordered_uids[0]
+    mixed_generation_rows = tuple(
+        row.model_copy(update={"generation_model": "model-b"})
+        if row.scenario_uid == mixed_generation_uid
+        else row
+        for row in rows
+    )
+
+    def must_not_estimate(_: tuple[PlannedObservationV1, ...]) -> float:
+        raise AssertionError("mixed-generation rows reached the estimator")
+
+    with pytest.raises(InferenceIntegrityError, match="generation model"):
+        cluster_percentile_interval(
+            point=0.0,
+            rows=mixed_generation_rows,
+            indices=zero_indices,
+            estimator=must_not_estimate,
+        )
 
     changed = indices.copy(order="C")
     changed[0, 0] ^= np.uint8(1)
     for bad_metadata, bad_indices in (
+        (metadata.model_copy(update={"replicates": 9_999}), indices),
+        (metadata.model_copy(update={"index_dtype": "float64"}), indices),
+        (metadata.model_copy(update={"seed": metadata.seed + 1}), indices),
+        (
+            metadata.model_copy(
+                update={"scenario_uids": tuple(reversed(metadata.scenario_uids))}
+            ),
+            indices,
+        ),
         (metadata.model_copy(update={"indices_sha256": "0" * 64}), indices),
+        (metadata.model_copy(update={"unexpected": "extra-state"}), indices),
         (metadata, changed),
         (metadata, indices.astype(np.int16)),
         (metadata, indices[:-1]),
@@ -132,9 +167,6 @@ def test_cluster_vectors_keep_locales_repetitions_and_matched_arms_together() ->
         with pytest.raises(ValueError):
             _verify_cluster_vectors(bad_metadata, bad_indices)
 
-    rows = _complete_rows()
-    zero_indices = np.zeros((10_000, 12), dtype=np.uint8)
-    ordered_uids = sorted({row.scenario_uid for row in rows}, key=lambda uid: uid.encode())
     calls = 0
 
     def inspect_complete_cluster(sampled: tuple[PlannedObservationV1, ...]) -> float:
@@ -209,28 +241,44 @@ def test_cluster_bootstrap_recomputes_complete_estimator_per_replicate() -> None
         paired_pass_rate_difference(rows, gate="unknown")  # type: ignore[arg-type]
 
     indices = _identity_indices()
-    indices[0] = 0
-    indices[1] = 11
+    indices[:300] = 0
+    indices[300:600] = 11
+    ordered_uids = tuple(
+        sorted({row.scenario_uid for row in rows}, key=lambda uid: uid.encode())
+    )
+    rank_by_uid = {scenario_uid: rank for rank, scenario_uid in enumerate(ordered_uids)}
     calls = 0
+    sampled_identity_sets: set[frozenset[str]] = set()
+    replicate_results: set[float] = set()
 
     def recompute(sampled: tuple[PlannedObservationV1, ...]) -> float:
         nonlocal calls
         calls += 1
         assert len(sampled) == 480
-        selected = [row.visible_output_tokens for row in sampled if row.arm == "if"]
-        assert all(value is not None for value in selected)
-        return sum(value for value in selected if value is not None) / 120
+        if calls == 1:
+            indices[1:] = 0
+        sampled_identity_sets.add(frozenset(row.scenario_uid for row in sampled))
+        selected_ranks = [
+            rank_by_uid[row.scenario_uid] for row in sampled if row.arm == "if"
+        ]
+        result = sum(selected_ranks) / 120
+        replicate_results.add(result)
+        return result
 
     interval = cluster_percentile_interval(
-        point=6.5,
+        point=5.5,
         rows=rows,
         indices=indices,
         estimator=recompute,
     )
     assert calls == 10_000
     assert interval.valid_replicates == 10_000
-    assert interval.lower == pytest.approx(6.5)
-    assert interval.upper == pytest.approx(6.5)
+    assert interval.lower == 0.0
+    assert interval.upper == 11.0
+    assert replicate_results == {0.0, 5.5, 11.0}
+    assert frozenset({ordered_uids[0]}) in sampled_identity_sets
+    assert frozenset({ordered_uids[11]}) in sampled_identity_sets
+    assert frozenset(ordered_uids) in sampled_identity_sets
 
 
 def test_fewer_than_9990_valid_replicates_is_inconclusive() -> None:
@@ -258,6 +306,27 @@ def test_fewer_than_9990_valid_replicates_is_inconclusive() -> None:
     assert not interval.available
     assert interval.lower is None
     assert interval.upper is None
+
+    threshold_calls = 0
+
+    def exactly_at_threshold(
+        _: tuple[PlannedObservationV1, ...],
+    ) -> float | None:
+        nonlocal threshold_calls
+        threshold_calls += 1
+        return None if threshold_calls <= 10 else 2.0
+
+    threshold_interval = cluster_percentile_interval(
+        point=2.0,
+        rows=_complete_rows(),
+        indices=_identity_indices(),
+        estimator=exactly_at_threshold,
+    )
+    assert threshold_calls == 10_000
+    assert threshold_interval.valid_replicates == 9_990
+    assert threshold_interval.available
+    assert threshold_interval.lower == 2.0
+    assert threshold_interval.upper == 2.0
 
 
 def test_bootstrap_interval_names_the_fixed_campaign_conditional_scenario_target() -> None:

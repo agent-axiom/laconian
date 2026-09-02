@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from laconian_eval.benchmark.aggregation import (
+    InferenceIntegrityError,
     PlannedObservationV1,
     _validate_population,
     _validated_exact_rows,
@@ -88,12 +89,17 @@ def _ordered_scenario_uids(scenario_uids: Sequence[str]) -> tuple[str, ...]:
     return ordered
 
 
-def _validate_index_matrix(indices: object) -> NDArray[np.uint8]:
+def _validate_index_matrix(
+    indices: object,
+    *,
+    replicates: int = BOOTSTRAP_REPLICATES,
+    index_dtype: str = "uint8",
+) -> NDArray[np.uint8]:
     if type(indices) is not np.ndarray:
         raise ValueError("bootstrap indices must be an exact ndarray")
-    if indices.dtype != np.dtype(np.uint8):
-        raise ValueError("bootstrap indices must have dtype uint8")
-    if indices.shape != (BOOTSTRAP_REPLICATES, BOOTSTRAP_CLUSTER_COUNT):
+    if indices.dtype != np.dtype(index_dtype):
+        raise ValueError(f"bootstrap indices must have dtype {index_dtype}")
+    if indices.shape != (replicates, BOOTSTRAP_CLUSTER_COUNT):
         raise ValueError("bootstrap indices must have shape (10000, 12)")
     if not indices.flags.c_contiguous:
         raise ValueError("bootstrap indices must use canonical C order")
@@ -103,7 +109,12 @@ def _validate_index_matrix(indices: object) -> NDArray[np.uint8]:
 
 
 def _indices_digest(
-    *, seed: int, scenario_uids: tuple[str, ...], indices: NDArray[np.uint8]
+    *,
+    seed: int,
+    scenario_uids: tuple[str, ...],
+    replicates: int,
+    index_dtype: str,
+    indices: NDArray[np.uint8],
 ) -> str:
     digest = hashlib.sha256()
     digest.update(_VECTOR_DIGEST_DOMAIN)
@@ -113,8 +124,9 @@ def _indices_digest(
         encoded = scenario_uid.encode("utf-8")
         digest.update(len(encoded).to_bytes(8, "big", signed=False))
         digest.update(encoded)
-    digest.update(b"uint8\0")
-    digest.update(BOOTSTRAP_REPLICATES.to_bytes(8, "big", signed=False))
+    digest.update(index_dtype.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(replicates.to_bytes(8, "big", signed=False))
     digest.update(BOOTSTRAP_CLUSTER_COUNT.to_bytes(8, "big", signed=False))
     digest.update(indices.tobytes(order="C"))
     return digest.hexdigest()
@@ -130,9 +142,30 @@ def _seal_vector_metadata(
         scenario_uids=scenario_uids,
         index_dtype="uint8",
         indices_sha256=_indices_digest(
-            seed=seed, scenario_uids=scenario_uids, indices=indices
+            seed=seed,
+            scenario_uids=scenario_uids,
+            replicates=BOOTSTRAP_REPLICATES,
+            index_dtype="uint8",
+            indices=indices,
         ),
     )
+
+
+def _revalidate_vector_metadata(
+    metadata: BootstrapVectorsV1,
+) -> BootstrapVectorsV1:
+    if type(metadata) is not BootstrapVectorsV1:
+        raise ValueError("bootstrap metadata must be an exact BootstrapVectorsV1")
+    field_names = frozenset(BootstrapVectorsV1.model_fields)
+    if frozenset(metadata.__dict__) != field_names:
+        raise ValueError("bootstrap metadata contains missing or extra model state")
+    try:
+        checked = BootstrapVectorsV1.model_validate(dict(metadata.__dict__))
+    except ValueError as exc:
+        raise ValueError("bootstrap metadata failed class-bound revalidation") from exc
+    if checked.__dict__ != metadata.__dict__:
+        raise ValueError("bootstrap metadata changes under class-bound revalidation")
+    return checked
 
 
 def _verify_cluster_vectors(
@@ -140,18 +173,23 @@ def _verify_cluster_vectors(
 ) -> NDArray[np.uint8]:
     """Reject any metadata, dtype, shape, range, or matrix substitution."""
 
-    if type(metadata) is not BootstrapVectorsV1:
-        raise ValueError("bootstrap metadata must be an exact BootstrapVectorsV1")
-    checked_indices = _validate_index_matrix(indices)
-    ordered = _ordered_scenario_uids(metadata.scenario_uids)
-    if ordered != metadata.scenario_uids:
+    checked_metadata = _revalidate_vector_metadata(metadata)
+    checked_indices = _validate_index_matrix(
+        indices,
+        replicates=checked_metadata.replicates,
+        index_dtype=checked_metadata.index_dtype,
+    )
+    ordered = _ordered_scenario_uids(checked_metadata.scenario_uids)
+    if ordered != checked_metadata.scenario_uids:
         raise ValueError("bootstrap scenario UIDs are not in canonical UTF-8 order")
     expected = _indices_digest(
-        seed=metadata.seed,
+        seed=checked_metadata.seed,
         scenario_uids=ordered,
+        replicates=checked_metadata.replicates,
+        index_dtype=checked_metadata.index_dtype,
         indices=checked_indices,
     )
-    if metadata.indices_sha256 != expected:
+    if checked_metadata.indices_sha256 != expected:
         raise ValueError("bootstrap index digest mismatch")
     return checked_indices
 
@@ -205,8 +243,13 @@ def cluster_percentile_interval(
     """Rebuild sampled scenario blocks and return frozen type-7 percentile endpoints."""
 
     checked_indices = _validate_index_matrix(indices)
+    index_snapshot = checked_indices.copy(order="C")
     checked_rows = _validated_exact_rows(rows)
     _validate_population(checked_rows)
+    if len({row.generation_model for row in checked_rows}) != 1:
+        raise InferenceIntegrityError(
+            "bootstrap source rows must share exactly one generation model"
+        )
     scenario_uids = tuple(
         sorted({row.scenario_uid for row in checked_rows}, key=lambda uid: uid.encode())
     )
@@ -220,7 +263,7 @@ def cluster_percentile_interval(
         raise ValueError("rows do not form twelve complete 40-row scenario blocks")
 
     estimates: list[float] = []
-    for replicate in checked_indices:
+    for replicate in index_snapshot:
         sampled = tuple(
             row for index in replicate for row in blocks[int(index)]
         )
