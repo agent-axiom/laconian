@@ -55,6 +55,13 @@ records that approval without changing normative behavior. Evaluation Task 5, th
 provider-evidence join, and their downstream consumers may proceed only from a handoff that records
 this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
+On 2026-09-02 the maintainer/user explicitly approved the Task 8 provider-evidence closure
+amendment at normative commit `60faf69c2a84d02c8d182d28e563f2aa2f81f758` with exact message
+`Одобряю amendment 60faf69c2a84d02c8d182d28e563f2aa2f81f758`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 8 and every downstream
+consumer of its provider/audit wrappers may proceed only from a handoff that records this
+successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 **Approved normative amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider-dispatch, wire, and
@@ -120,13 +127,12 @@ Runtime/publication authority must separately reproduce the campaign spend ledge
 mismatch is operationally invalid. Rows additionally preserve `output_characters`; characters
 remain descriptive and never substitute for visible tokens.
 
-**Current Task 8 provider-evidence closure amendment scope:** This amendment supersedes only the
+**Approved Task 8 provider-evidence closure amendment scope:** This amendment supersedes only the
 underspecified Task 8 in-memory authority inputs, retained root indexes, canonical identifiers,
 sampling arithmetic, and audit-population consumption boundary. It does not change the corpus,
 three models, four arms, repetitions, H/S definitions, 24 strata, certainty population, 144-record
 target, PCG64 seed family, audit metrics, spend caps, workflow inventory, or publication claims.
-Task 8 and every downstream consumer of its provider/audit wrappers remain blocked until the
-maintainer separately approves the exact normative commit containing this text.
+It is binding on Task 8 and every downstream consumer of its provider/audit wrappers.
 
 The provider loader takes the exact C0-authority-bound `ProtocolReviewIdentityRegistryBundleV1`
 content as an additional keyword-only argument. The bundle remains in memory only: it is retained by

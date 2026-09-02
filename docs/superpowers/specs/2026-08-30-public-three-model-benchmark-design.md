@@ -3,11 +3,9 @@
 **Date:** 2026-08-30
 
 **Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
-bounded-directory, source-backed protocol-signature evidence, protocol-evidence/judge-wire, and
-aggregation-authority amendments approved; the Task 8 provider-evidence closure amendment is
-pending separate approval. Evaluation Tasks 3–7 may proceed from their approved handoffs. Task 8
-and its downstream consumers remain blocked until this amendment receives an exact recorded
-approval.
+bounded-directory, source-backed protocol-signature evidence, protocol-evidence/judge-wire,
+aggregation-authority, and Task 8 provider-evidence closure amendments approved. Evaluation Tasks
+3–8 and their downstream consumers may proceed from their approved handoffs.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
@@ -71,6 +69,14 @@ records that approval without changing normative behavior. Evaluation Task 5, th
 provider-evidence join, and their downstream consumers may proceed only from a handoff that records
 this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
+**Current Task 8 provider-evidence closure amendment approval:** On 2026-09-02, the
+maintainer/user in this Codex task explicitly approved the normative amendment at commit
+`60faf69c2a84d02c8d182d28e563f2aa2f81f758` with the exact message
+`Одобряю amendment 60faf69c2a84d02c8d182d28e563f2aa2f81f758`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 8 and every downstream
+consumer of its provider/audit wrappers may proceed only from a handoff that records this
+successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 The prior approved protocol-signature revision replaces receipt-hash-only prefix inputs with exact
 source-bearing signature inputs. It requires the verifier to derive the stable REST and GraphQL
 projections from the retained GitHub response bytes, to use only the REST
@@ -125,14 +131,13 @@ models, arms, repetitions, H/S definitions, primary visible-token estimand, boot
 audit design, spend caps, workflow inventory, or publication claims. It is binding on Evaluation
 Task 5, the Task 8 authority-bearing join, and every downstream consumer of their rows.
 
-**Current Task 8 provider-evidence closure amendment scope:** This amendment closes only the
+**Approved Task 8 provider-evidence closure amendment scope:** This amendment closes only the
 underspecified Task 8 in-memory authority inputs, retained path-bearing indexes, canonical IDs and
 digest preimages, exact Hamilton arithmetic, and audit-population consumption authority. It does
 not change the corpus, models, arms, repetitions, H/S definitions, primary estimand, 24 strata,
 certainty population, 144-record target, PCG64 seed family, audit metrics, spend caps, workflow
-inventory, App inventory, or publication claims. Task 8 and every downstream consumer of its
-provider/audit wrappers remain blocked until the maintainer separately approves the exact
-normative commit containing this amendment.
+inventory, App inventory, or publication claims. It is binding on Task 8 and every downstream
+consumer of its provider/audit wrappers.
 
 The sole provider loader additionally requires the exact C0-authority-bound
 `ProtocolReviewIdentityRegistryBundleV1` content as a keyword-only argument. The loader exact-type
