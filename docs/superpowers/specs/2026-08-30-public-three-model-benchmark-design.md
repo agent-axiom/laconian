@@ -37,13 +37,21 @@ records that approval without changing normative behavior. Foundations Tasks 10�
 Runtime checkpoint work may proceed only from a handoff that records this successor's future full
 SHA as `PLAN_BASE_SHA`; the plan source does not invent or embed that SHA.
 
-**Current protocol-signature evidence amendment approval:** On 2026-09-02, the maintainer/user in
+**Prior protocol-signature evidence amendment approval:** On 2026-09-02, the maintainer/user in
 this Codex task explicitly approved the normative design at commit
 `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with the exact message
 `Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086`. This governance-only successor
 records that approval without changing normative behavior. Evaluation Task 3's affected
 protocol-review work and downstream consumers may proceed only from a handoff that records this
 successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
+**Current OpenPGP packet-type clarification approval:** On 2026-09-02, the maintainer/user in this
+Codex task explicitly approved the normative clarification at commit
+`ed89af2fd10da573864c4a96e27ed6718110da5d` with the exact message
+`Одобряю amendment ed89af2fd10da573864c4a96e27ed6718110da5d`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 3's OpenPGP acceptance
+path may proceed only from a handoff that records this successor's future full SHA as
+`PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
 The approved revision replaces receipt-hash-only prefix inputs with exact source-bearing signature
 inputs. It requires the verifier to derive the stable REST and GraphQL projections from the

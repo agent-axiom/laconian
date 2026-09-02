@@ -34,6 +34,13 @@ embed that SHA.
 This amendment explicitly supersedes the former 64-hex OpenPGP alternative: every OpenPGP binding
 in this campaign uses the v4 40-hex primary-fingerprint profile below.
 
+On 2026-09-02 the maintainer/user explicitly approved the OpenPGP packet-type clarification at
+normative commit `ed89af2fd10da573864c4a96e27ed6718110da5d` with exact message
+`Одобряю amendment ed89af2fd10da573864c4a96e27ed6718110da5d`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 3's OpenPGP acceptance
+path may proceed only from a handoff that records this successor's future full SHA as
+`PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
