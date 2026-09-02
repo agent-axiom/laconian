@@ -4,8 +4,8 @@
 
 **Status:** Legacy-v1 price-migration, Foundations preflight-closure, shard-checkpoint authority and
 bounded-directory, source-backed protocol-signature evidence, and protocol-evidence/judge-wire
-amendments approved; the aggregation-authority amendment is pending separate approval. Evaluation
-Tasks 3 and 4's affected paths and downstream consumers may
+and aggregation-authority amendments approved. Evaluation Tasks 3–5, the Task 8 provider-evidence
+join, and their downstream consumers may
 proceed only from a handoff that records this governance-only successor's full SHA as
 `PLAN_BASE_SHA`.
 
@@ -55,13 +55,21 @@ records that approval without changing normative behavior. Evaluation Task 3's O
 path may proceed only from a handoff that records this successor's future full SHA as
 `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
-**Current protocol-evidence and judge-wire amendment approval:** On 2026-09-02, the
+**Prior protocol-evidence and judge-wire amendment approval:** On 2026-09-02, the
 maintainer/user in this Codex task explicitly approved the normative amendment at commit
 `cd24a8d9682586c73e40a1fc01b11856fd1142f6` with the exact message
 `Одобряю amendment cd24a8d9682586c73e40a1fc01b11856fd1142f6`. This governance-only successor
 records that approval without changing normative behavior. Evaluation Tasks 3 and 4's affected
 paths and downstream consumers may proceed only from a handoff that records this successor's
 future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
+**Current aggregation-authority amendment approval:** On 2026-09-02, the maintainer/user in this
+Codex task explicitly approved the normative amendment at commit
+`5347e39dcbcd9d69b96e21824fb23d0e8e66064b` with the exact message
+`Одобряю amendment 5347e39dcbcd9d69b96e21824fb23d0e8e66064b`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 5, the Task 8
+provider-evidence join, and their downstream consumers may proceed only from a handoff that records
+this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
 The prior approved protocol-signature revision replaces receipt-hash-only prefix inputs with exact
 source-bearing signature inputs. It requires the verifier to derive the stable REST and GraphQL
@@ -110,13 +118,12 @@ dependency provenance, and the Task 4 blind-judge schema, provider dispatch, wir
 identity-bundle contract stated below. All other design, topology, authority, publication, and
 workflow rules remain unchanged.
 
-**Current aggregation-authority amendment scope:** This amendment closes the implementation-time
+**Approved aggregation-authority amendment scope:** This amendment closes the implementation-time
 authority, row-integrity, and analytical-cost ambiguities at the Task 5/Task 8 boundary. It also
 restores the already-required descriptive output-character count. It does not change the corpus,
 models, arms, repetitions, H/S definitions, primary visible-token estimand, bootstrap, thresholds,
-audit design, spend caps, workflow inventory, or publication claims. Evaluation Task 5, the Task 8
-authority-bearing join, and downstream consumers of their rows remain blocked until the maintainer
-separately approves the exact normative commit.
+audit design, spend caps, workflow inventory, or publication claims. It is binding on Evaluation
+Task 5, the Task 8 authority-bearing join, and every downstream consumer of their rows.
 
 No self-hashed `HardScoreRequestSetV1` or `JudgeAttachmentV1` sequence is a verified aggregation
 input. The sole public aggregation input is the loader-minted

@@ -48,6 +48,13 @@ records that approval without changing normative behavior. Evaluation Tasks 3 an
 paths and downstream consumers may proceed only from a handoff that records this successor's
 future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
+On 2026-09-02 the maintainer/user explicitly approved the aggregation-authority amendment at
+normative commit `5347e39dcbcd9d69b96e21824fb23d0e8e66064b` with exact message
+`Одобряю amendment 5347e39dcbcd9d69b96e21824fb23d0e8e66064b`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 5, the Task 8
+provider-evidence join, and their downstream consumers may proceed only from a handoff that records
+this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 **Approved normative amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider-dispatch, wire, and
@@ -88,12 +95,11 @@ provider-neutral evidence parser, and extended typed SDK gate. Judge re-exports 
 562 lazy registry. No provider imports `benchmark.judge`; no local compatibility alias, inferred
 provider default, unsealed kwarg, or alternate dependency lookup is permitted.
 
-**Current aggregation-authority amendment scope:** This amendment supersedes only the Task 5
+**Approved aggregation-authority amendment scope:** This amendment supersedes only the Task 5
 authority boundary, row-integrity validators, and analytical-cost ambiguity exposed during
 implementation. It does not change the frozen population, H/S definitions, primary estimand,
-bootstrap, outcome thresholds, audit, or publication claims. Amendment-dependent Task 5, the Task
-8 provider-evidence join, and their downstream consumers remain blocked until the maintainer
-separately approves the exact normative commit.
+bootstrap, outcome thresholds, audit, or publication claims. The amendment is binding on Task 5,
+the Task 8 provider-evidence join, and every downstream consumer of their rows.
 
 Task 5 must not accept independently self-hashed `HardScoreRequestSetV1` and `JudgeAttachmentV1`
 sequences as if their semantic decisions were verified. Those types become authoritative for
