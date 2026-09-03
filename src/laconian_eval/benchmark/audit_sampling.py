@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import stat
 import types
-from collections.abc import Mapping, Sequence
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Literal, Self, Union, cast, get_args, get_origin, get_type_hints
 from uuid import uuid4
@@ -35,6 +36,7 @@ from laconian_eval.benchmark.provider_evidence import (
     _load_verified_audit_population_from_bytes,
     _revalidate_verified_audit_population_v1,
     _revalidate_verified_provider_evidence_v1,
+    _run_teardown,
     _stream_directory_allowlist,
 )
 from laconian_eval.benchmark.seeds import derive_seed128
@@ -43,6 +45,7 @@ from laconian_eval.capsule.canonical import stable_digest
 from laconian_eval.capsule.filesystem import (
     DestinationCollisionError,
     FilesystemPosixOps,
+    OwnedStaging,
     cleanup_owned_staging,
     create_owned_staging,
     publish_owned_staging,
@@ -60,6 +63,19 @@ _AUDIT_SAMPLE_MEMBER_MAX_BYTES = {
     "sample-manifest.json": 16 * 1024 * 1024,
     "blind-packet.json": 64 * 1024 * 1024,
 }
+
+
+@contextmanager
+def _owned_descriptor(descriptor: int) -> Iterator[int]:
+    """Close one owned descriptor without masking the with-body exception."""
+
+    try:
+        yield descriptor
+    except BaseException as error:
+        _run_teardown((partial(os.close, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(os.close, descriptor),))
 
 
 class _StrictFrozenModel(BaseModel):
@@ -853,11 +869,9 @@ def _write_sample_member(directory_fd: int, name: str, data: bytes) -> None:
         0o600,
         dir_fd=directory_fd,
     )
-    try:
+    with _owned_descriptor(descriptor):
         _write_all(descriptor, data)
         os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 _FileIdentity = tuple[int, int, int, int, int, int, int]
@@ -889,7 +903,7 @@ def _read_member(directory_fd: int, name: str) -> tuple[bytes, _FileIdentity]:
         os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
         dir_fd=directory_fd,
     )
-    try:
+    with _owned_descriptor(descriptor):
         before = os.fstat(descriptor)
         if _file_identity(before) != expected:
             raise ValueError("audit sample member is not a unique regular file")
@@ -911,8 +925,6 @@ def _read_member(directory_fd: int, name: str) -> tuple[bytes, _FileIdentity]:
         if _file_identity(after) != expected or _file_identity(visible_after) != expected:
             raise ValueError("audit sample member changed while reading")
         return b"".join(chunks), expected
-    finally:
-        os.close(descriptor)
 
 
 def _canonical_model_from_member(
@@ -1050,8 +1062,11 @@ def load_verified_audit_sample_root(
                     != audit_identity
                 ):
                     raise ValueError("audit sample directory changed while loading")
-            finally:
-                os.close(audit_fd)
+            except BaseException as error:
+                _run_teardown((partial(os.close, audit_fd),), error)
+                raise AssertionError("unreachable") from error
+            else:
+                _run_teardown((partial(os.close, audit_fd),))
             if (
                 _file_identity(os.fstat(root_fd)) != root_identity
                 or _file_identity(os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False))
@@ -1068,10 +1083,16 @@ def load_verified_audit_sample_root(
                     packet,
                 ),
             )
-        finally:
-            os.close(root_fd)
-    finally:
-        os.close(parent_fd)
+        except BaseException as error:
+            _run_teardown((partial(os.close, root_fd),), error)
+            raise AssertionError("unreachable") from error
+        else:
+            _run_teardown((partial(os.close, root_fd),))
+    except BaseException as error:
+        _run_teardown((partial(os.close, parent_fd),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(os.close, parent_fd),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1146,8 +1167,11 @@ def _validate_staged_sample_tree(
             audit_identity=audit_identity,
             member_identities={name: identity for name, (_, identity) in snapshots.items()},
         )
-    finally:
-        os.close(audit_fd)
+    except BaseException as error:
+        _run_teardown((partial(os.close, audit_fd),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(os.close, audit_fd),))
 
 
 def _remove_published_sample(
@@ -1206,8 +1230,11 @@ def _remove_published_sample(
                     raise ValueError("published audit member changed before rollback")
                 os.unlink(name, dir_fd=audit_fd)
             os.fsync(audit_fd)
-        finally:
-            os.close(audit_fd)
+        except BaseException as error:
+            _run_teardown((partial(os.close, audit_fd),), error)
+            raise AssertionError("unreachable") from error
+        else:
+            _run_teardown((partial(os.close, audit_fd),))
         os.rmdir("audit", dir_fd=root_fd)
         os.fsync(root_fd)
         os.rmdir(quarantine, dir_fd=parent_fd)
@@ -1258,18 +1285,21 @@ def write_audit_sample_root(
     ):
         raise ValueError("audit sample output must be one safe parent child")
     parent_fd = open_directory_no_follow(output_root.parent)
-    posix = cast(FilesystemPosixOps, PosixOps())
-    staging = create_owned_staging(parent_fd, uuid4())
-    published = False
+    posix: FilesystemPosixOps | None = None
+    staging: OwnedStaging | None = None
     witness: _SampleTreeWitness | None = None
+    result: VerifiedAuditSampleRootV1 | None = None
+    primary_error: BaseException | None = None
     try:
+        posix = cast(FilesystemPosixOps, PosixOps())
+        staging = create_owned_staging(parent_fd, uuid4())
         os.mkdir("audit", 0o700, dir_fd=staging.descriptor)
         audit_fd = os.open(
             "audit",
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             dir_fd=staging.descriptor,
         )
-        try:
+        with _owned_descriptor(audit_fd):
             _write_sample_member(
                 audit_fd,
                 "population-attachment.json",
@@ -1291,8 +1321,6 @@ def write_audit_sample_root(
                 canonical_json_v1(checked_packet.model_dump(mode="json")) + b"\n",
             )
             os.fsync(audit_fd)
-        finally:
-            os.close(audit_fd)
         os.fsync(staging.descriptor)
         witness = _validate_staged_sample_tree(
             staging.descriptor,
@@ -1317,9 +1345,8 @@ def write_audit_sample_root(
                 except BaseException as rollback_error:
                     error.add_note(f"audit sample rollback failed: {rollback_error}")
             raise
-        published = True
         try:
-            return load_verified_audit_sample_root(output_root, provider_evidence=evidence)
+            result = load_verified_audit_sample_root(output_root, provider_evidence=evidence)
         except BaseException as error:
             assert witness is not None
             try:
@@ -1330,18 +1357,23 @@ def write_audit_sample_root(
                     witness,
                     posix=posix,
                 )
-                published = False
             except BaseException as rollback_error:
                 error.add_note(f"audit sample rollback failed: {rollback_error}")
             raise
-    except BaseException:
-        if not published and staging.state == "owned":
-            cleanup_owned_staging(staging, posix=posix)
-        raise
-    finally:
-        if staging.state == "published":
-            staging.close()
-        os.close(parent_fd)
+    except BaseException as error:
+        primary_error = error
+    closers: list[Callable[[], None]] = []
+    if staging is not None:
+        if staging.state == "owned":
+            assert posix is not None
+            closers.append(partial(cleanup_owned_staging, staging, posix=posix))
+        elif staging.state == "published":
+            closers.append(staging.close)
+    closers.append(partial(os.close, parent_fd))
+    _run_teardown(tuple(closers), primary_error)
+    if result is None:
+        raise AssertionError("audit sample writer completed without a result")
+    return result
 
 
 __all__ = (

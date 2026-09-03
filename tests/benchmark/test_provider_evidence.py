@@ -434,6 +434,7 @@ def test_provider_index_copies_expectation_digest_and_bound_final_authority_root
 def test_provider_writer_requires_the_same_live_expectation_wrapper_and_final_root(
     provider_fixture: CompleteProviderEvidenceFixture,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from laconian_eval.benchmark.context import VerifiedGenerationContextExpectationV1
 
@@ -447,11 +448,59 @@ def test_provider_writer_requires_the_same_live_expectation_wrapper_and_final_ro
             output, provider_fixture.provider_index, generation_expectation=wrong
         )
     assert not output.exists()
+
+    real_close = provider_module.os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("provider descriptor cleanup failure")
+
+    def fail_provider_write(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("primary provider writer failure")
+
+    def open_parent_without_intermediate_closes(path: Path) -> Any:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        return descriptor, provider_module._filesystem_identity(os.fstat(descriptor))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            provider_module,
+            "_open_retained_directory",
+            open_parent_without_intermediate_closes,
+        )
+        patch.setattr(provider_module, "_write_attachment_at", fail_provider_write)
+        patch.setattr(provider_module.os, "close", close_then_fail)
+        with pytest.raises(ValueError, match="primary provider writer failure"):
+            write_provider_evidence_index(
+                output,
+                provider_fixture.provider_index,
+                generation_expectation=provider_fixture.expectation,
+            )
+
     write_provider_evidence_index(
         output,
         provider_fixture.provider_index,
         generation_expectation=provider_fixture.expectation,
     )
+
+    loader_close_calls: list[int] = []
+    real_close_descriptor = provider_module._close_descriptor
+
+    def close_loader_descriptor_then_fail(descriptor: int) -> None:
+        real_close_descriptor(descriptor)
+        loader_close_calls.append(descriptor)
+        raise OSError("provider loader descriptor cleanup failure")
+
+    def fail_provider_load(_descriptor: int) -> Any:
+        raise ValueError("primary provider loader failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module, "_load_provider_evidence_index_at", fail_provider_load)
+        patch.setattr(provider_module, "_close_descriptor", close_loader_descriptor_then_fail)
+        with pytest.raises(ValueError, match="primary provider loader failure"):
+            provider_module.load_provider_evidence_index(output)
+    assert len(loader_close_calls) == 1
+
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
         write_provider_evidence_index(
@@ -749,8 +798,12 @@ def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_ow
             return next(self.entries)
 
     descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    retained_tree_member_limit = provider_module._RETAINED_TREE_MEMBER_LIMIT
+    real_scandir = provider_module.os.scandir
     try:
         assert provider_module._RETAINED_TREE_MEMBER_LIMIT == 100_000
+        assert provider_module._RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT == 1_024
+        assert provider_module._RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT == 64 * 1024 * 1024
         monkeypatch.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 2, raising=False)
         monkeypatch.setattr(
             provider_module.os,
@@ -761,8 +814,80 @@ def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_ow
         monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: PoisonAfterBoundary())
         with pytest.raises(ValueError, match="resource limits"):
             provider_module._retained_tree_snapshot(descriptor)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 10)
+            scoped.setattr(provider_module, "_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT", 1)
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 10)
+            scoped.setattr(provider_module.os, "scandir", lambda _fd: FiniteEntries(("a",)))
+            assert len(provider_module._retained_tree_snapshot(descriptor)) == 1
+
+        stat_calls: list[str] = []
+        real_stat = provider_module.os.stat
+
+        def reject_member_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+            stat_calls.append(str(path))
+            return real_stat(path, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 10)
+            scoped.setattr(provider_module, "_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT", 1)
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 10)
+            scoped.setattr(provider_module.os, "scandir", lambda _fd: FiniteEntries(("aa",)))
+            scoped.setattr(provider_module.os, "stat", reject_member_stat)
+            with pytest.raises(ValueError, match="resource limits"):
+                provider_module._retained_tree_snapshot(descriptor)
+        assert stat_calls == []
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 10)
+            scoped.setattr(provider_module, "_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT", 10)
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 2)
+            scoped.setattr(provider_module.os, "scandir", lambda _fd: PoisonAfterBoundary())
+            with pytest.raises(ValueError, match="resource limits"):
+                provider_module._retained_tree_snapshot(descriptor)
     finally:
         os.close(descriptor)
+    monkeypatch.setattr(
+        provider_module,
+        "_RETAINED_TREE_MEMBER_LIMIT",
+        retained_tree_member_limit,
+    )
+    monkeypatch.setattr(provider_module.os, "scandir", real_scandir)
+
+    recursive_root = tmp_path / "recursive"
+    (recursive_root / "a/b/c/d").mkdir(parents=True)
+    (recursive_root / "a/b/c/d/e").write_bytes(b"e")
+    recursive_fd = os.open(recursive_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 5)
+            scoped.setattr(provider_module, "_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT", 9)
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 25)
+            assert len(provider_module._retained_tree_snapshot(recursive_fd)) == 5
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 4)
+            with pytest.raises(ValueError, match="resource limits"):
+                provider_module._retained_tree_snapshot(recursive_fd)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT", 8)
+            with pytest.raises(ValueError, match="resource limits"):
+                provider_module._retained_tree_snapshot(recursive_fd)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 24)
+            with pytest.raises(ValueError, match="resource limits"):
+                provider_module._retained_tree_snapshot(recursive_fd)
+    finally:
+        os.close(recursive_fd)
+
+    witness = provider_module._RetainedTreeWitness.open(recursive_root)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_module, "_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT", 24)
+            with pytest.raises(ValueError, match="resource limits"):
+                witness.recheck()
+    finally:
+        witness.close()
 
     close_calls: list[int] = []
 
@@ -808,14 +933,38 @@ def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_ow
             except StopIteration as error:
                 raise AssertionError("allowlist advanced after unknown name") from error
 
-    monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: UnknownThenPoison())
-    with pytest.raises(ValueError, match="allowlist mismatch"):
-        provider_module._stream_directory_allowlist(
-            descriptor,
-            allowed=frozenset({"expected"}),
-            required=frozenset({"expected"}),
-            error_message="allowlist mismatch",
+    allowlist_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: UnknownThenPoison())
+        with pytest.raises(ValueError, match="allowlist mismatch"):
+            provider_module._stream_directory_allowlist(
+                allowlist_descriptor,
+                allowed=frozenset({"expected"}),
+                required=frozenset({"expected"}),
+                error_message="allowlist mismatch",
+            )
+        monkeypatch.setattr(
+            provider_module.os,
+            "scandir",
+            lambda _fd: FiniteEntries(("expected", "expected")),
         )
+        with pytest.raises(ValueError, match="allowlist mismatch"):
+            provider_module._stream_directory_allowlist(
+                allowlist_descriptor,
+                allowed=frozenset({"expected"}),
+                required=frozenset({"expected"}),
+                error_message="allowlist mismatch",
+            )
+        monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: FiniteEntries(()))
+        with pytest.raises(ValueError, match="allowlist mismatch"):
+            provider_module._stream_directory_allowlist(
+                allowlist_descriptor,
+                allowed=frozenset({"expected"}),
+                required=frozenset({"expected"}),
+                error_message="allowlist mismatch",
+            )
+    finally:
+        os.close(allowlist_descriptor)
 
 
 def test_benchmark_provider_projection_loads_exact_four_layer_roots_and_attempt_root_vector(

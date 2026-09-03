@@ -407,6 +407,145 @@ def test_audit_population_writer_and_loader_use_the_same_exact_two_member_layout
     with pytest.raises(ValueError):
         write_audit_population(tmp_path / "poisoned", poisoned)
 
+    collision_probe_root = tmp_path / "collision-probe"
+    collision_probe_root.mkdir()
+    collision_probe_fd = os.open(collision_probe_root, os.O_RDONLY | os.O_DIRECTORY)
+    probed_names: list[str] = []
+
+    def report_missing(name: str, *_args: Any, **_kwargs: Any) -> Any:
+        probed_names.append(name)
+        raise FileNotFoundError(name)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(provider_module.os, "stat", report_missing)
+            provider_module._reject_streaming_name_collisions(
+                collision_probe_fd,
+                forbidden=frozenset({"population-attachment.json", "population.jsonl"}),
+                error_message="collision probe",
+            )
+        assert probed_names == ["population-attachment.json", "population.jsonl"]
+
+        def report_denied(*_args: Any, **_kwargs: Any) -> Any:
+            raise PermissionError("injected collision probe denial")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(provider_module.os, "stat", report_denied)
+            with pytest.raises(PermissionError, match="collision probe denial"):
+                provider_module._reject_streaming_name_collisions(
+                    collision_probe_fd,
+                    forbidden=frozenset({"population-attachment.json"}),
+                    error_message="collision probe",
+                )
+    finally:
+        os.close(collision_probe_fd)
+
+    attachment_race = tmp_path / "attachment-race"
+    attachment_sentinel = b"attacker attachment\n"
+    real_collision_probe = provider_module._reject_streaming_name_collisions
+
+    def plant_attachment_after_probe(
+        descriptor: int,
+        *,
+        forbidden: frozenset[str],
+        error_message: str,
+    ) -> None:
+        real_collision_probe(
+            descriptor,
+            forbidden=forbidden,
+            error_message=error_message,
+        )
+        planted = os.open(
+            "population-attachment.json",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=descriptor,
+        )
+        try:
+            assert os.write(planted, attachment_sentinel) == len(attachment_sentinel)
+        finally:
+            os.close(planted)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            provider_module,
+            "_reject_streaming_name_collisions",
+            plant_attachment_after_probe,
+        )
+        with pytest.raises(FileExistsError):
+            write_audit_population(attachment_race, population)
+    assert (attachment_race / "population-attachment.json").read_bytes() == attachment_sentinel
+    assert not (attachment_race / "population.jsonl").exists()
+
+    population_race = tmp_path / "population-race-after-probe"
+    population_sentinel = b"attacker population\n"
+    real_population_jsonl = provider_module._canonical_population_jsonl
+    population_planted = False
+
+    def plant_population_before_open(records: Any) -> bytes:
+        nonlocal population_planted
+        data = real_population_jsonl(records)
+        attachment = population_race / "population-attachment.json"
+        if attachment.is_file() and not population_planted:
+            (population_race / "population.jsonl").write_bytes(population_sentinel)
+            population_planted = True
+        return data
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module, "_canonical_population_jsonl", plant_population_before_open)
+        with pytest.raises(FileExistsError):
+            write_audit_population(population_race, population)
+    assert population_planted
+    assert (population_race / "population.jsonl").read_bytes() == population_sentinel
+
+    real_close_descriptor = provider_module._close_descriptor
+    writer_close_calls: list[int] = []
+
+    def close_writer_descriptor_then_fail(descriptor: int) -> None:
+        real_close_descriptor(descriptor)
+        writer_close_calls.append(descriptor)
+        raise OSError("population writer descriptor cleanup failure")
+
+    def fail_population_write(_descriptor: int, _data: bytes) -> int:
+        raise ValueError("primary population writer failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module, "_write_attachment_at", lambda *_args, **_kwargs: None)
+        patch.setattr(provider_module.os, "write", fail_population_write)
+        patch.setattr(
+            provider_module,
+            "_close_descriptor",
+            close_writer_descriptor_then_fail,
+        )
+        with pytest.raises(ValueError, match="primary population writer failure"):
+            write_audit_population(tmp_path / "population-writer-cleanup", population)
+    assert len(writer_close_calls) == 2
+
+    loader_close_calls: list[int] = []
+
+    def close_loader_descriptor_then_fail(descriptor: int) -> None:
+        real_close_descriptor(descriptor)
+        loader_close_calls.append(descriptor)
+        raise OSError("population loader descriptor cleanup failure")
+
+    def fail_population_load(**_kwargs: Any) -> Any:
+        raise ValueError("primary population loader failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            provider_module,
+            "_load_verified_audit_population_from_bytes",
+            fail_population_load,
+        )
+        patch.setattr(
+            provider_module,
+            "_close_descriptor",
+            close_loader_descriptor_then_fail,
+        )
+        with pytest.raises(ValueError, match="primary population loader failure"):
+            load_verified_audit_population(audit_root, provider_evidence=evidence)
+    assert len(loader_close_calls) == 1
+
     oversized = tmp_path / "population-oversized"
     shutil.copytree(audit_root, oversized)
     oversized_records = oversized / "population.jsonl"
@@ -975,6 +1114,98 @@ def test_audit_sample_root_writer_is_failure_atomic_no_replace_and_fresh_reloads
         population=population,
         provider_evidence=_provider(provider_fixture),
     )
+    captured_parent: list[int] = []
+    close_attempts: list[int] = []
+    real_open_parent = audit_module.open_directory_no_follow
+    real_close = audit_module.os.close
+
+    def capture_parent(path: Path) -> int:
+        descriptor = real_open_parent(path)
+        close_attempts.clear()
+        captured_parent.append(descriptor)
+        return descriptor
+
+    def record_close(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        real_close(descriptor)
+
+    def fail_posix() -> Any:
+        raise RuntimeError("injected PosixOps acquisition failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module, "open_directory_no_follow", capture_parent)
+            patch.setattr(audit_module, "PosixOps", fail_posix)
+            patch.setattr(audit_module.os, "close", record_close)
+            with pytest.raises(RuntimeError, match="PosixOps acquisition"):
+                write_audit_sample_root(
+                    tmp_path / "posix-acquisition",
+                    population=population,
+                    manifest=manifest,
+                    packet=packet,
+                    provider_evidence=_provider(provider_fixture),
+                )
+        assert close_attempts == captured_parent
+    finally:
+        for descriptor in captured_parent:
+            if descriptor not in close_attempts:
+                real_close(descriptor)
+
+    captured_parent.clear()
+    close_attempts.clear()
+
+    def fail_staging(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("injected staging acquisition failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module, "open_directory_no_follow", capture_parent)
+            patch.setattr(audit_module, "create_owned_staging", fail_staging)
+            patch.setattr(audit_module.os, "close", record_close)
+            with pytest.raises(RuntimeError, match="staging acquisition"):
+                write_audit_sample_root(
+                    tmp_path / "staging-acquisition",
+                    population=population,
+                    manifest=manifest,
+                    packet=packet,
+                    provider_evidence=_provider(provider_fixture),
+                )
+        assert close_attempts == captured_parent
+    finally:
+        for descriptor in captured_parent:
+            if descriptor not in close_attempts:
+                real_close(descriptor)
+
+    member_root = tmp_path / "member-cleanup"
+    member_root.mkdir()
+    member_root_fd = os.open(member_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        def fail_member_write(_descriptor: int, _data: bytes) -> None:
+            raise ValueError("primary member write failure")
+
+        def close_then_fail(descriptor: int) -> None:
+            real_close(descriptor)
+            raise OSError("member cleanup failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module, "_write_all", fail_member_write)
+            patch.setattr(audit_module.os, "close", close_then_fail)
+            with pytest.raises(ValueError, match="primary member write failure"):
+                audit_module._write_sample_member(member_root_fd, "member.json", b"{}\n")
+
+        (member_root / "blind-packet.json").write_bytes(b"{}\n")
+
+        def fail_member_read(_descriptor: int, _size: int) -> bytes:
+            raise ValueError("primary member read failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module.os, "read", fail_member_read)
+            patch.setattr(audit_module.os, "close", close_then_fail)
+            with pytest.raises(ValueError, match="primary member read failure"):
+                audit_module._read_member(member_root_fd, "blind-packet.json")
+    finally:
+        real_close(member_root_fd)
+
     existing = tmp_path / "existing"
     existing.mkdir()
     sentinel = existing / "sentinel"
@@ -1000,9 +1231,19 @@ def test_audit_sample_root_writer_is_failure_atomic_no_replace_and_fresh_reloads
             raise OSError("injected write failure")
         original_write(*args, **kwargs)
 
+    real_cleanup_staging = audit_module.cleanup_owned_staging
+    cleanup_calls = 0
+
+    def fail_cleanup(staging: Any, *, posix: Any) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        real_cleanup_staging(staging, posix=posix)
+        raise OSError("injected staging cleanup failure")
+
     with monkeypatch.context() as patch:
         patch.setattr(audit_module, "_write_sample_member", fail_third)
-        with pytest.raises(OSError, match="injected"):
+        patch.setattr(audit_module, "cleanup_owned_staging", fail_cleanup)
+        with pytest.raises(OSError, match="injected write failure"):
             write_audit_sample_root(
                 failing,
                 population=population,
@@ -1010,6 +1251,7 @@ def test_audit_sample_root_writer_is_failure_atomic_no_replace_and_fresh_reloads
                 packet=packet,
                 provider_evidence=_provider(provider_fixture),
             )
+    assert cleanup_calls == 1
     assert not failing.exists()
     assert not any(path.name.startswith(".laconian-stage.") for path in tmp_path.iterdir())
 
@@ -1096,6 +1338,35 @@ def test_audit_sample_root_writer_is_failure_atomic_no_replace_and_fresh_reloads
     assert (swapped_audit / "audit/attacker").read_text(encoding="utf-8") == "keep"
     assert (swapped_audit / "owned-audit/blind-packet.json").is_file()
 
+    cleanup_failure = tmp_path / "successful-cleanup-failure"
+    real_staging_close = audit_module.OwnedStaging.close
+    staging_close_calls = 0
+    captured_parent.clear()
+    close_attempts.clear()
+
+    def fail_staging_close(staging: Any) -> None:
+        nonlocal staging_close_calls
+        staging_close_calls += 1
+        real_staging_close(staging)
+        raise OSError("injected published staging close failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit_module, "open_directory_no_follow", capture_parent)
+        patch.setattr(audit_module.OwnedStaging, "close", fail_staging_close)
+        patch.setattr(audit_module.os, "close", record_close)
+        with pytest.raises(OSError, match="published staging close failure"):
+            write_audit_sample_root(
+                cleanup_failure,
+                population=population,
+                manifest=manifest,
+                packet=packet,
+                provider_evidence=_provider(provider_fixture),
+            )
+    assert staging_close_calls == 1
+    assert captured_parent
+    writer_parent_fd = captured_parent[0]
+    assert close_attempts.count(writer_parent_fd) == 1
+
     successful = tmp_path / "successful"
     real_loader = audit_module.load_verified_audit_sample_root
     loads = 0
@@ -1136,6 +1407,90 @@ def test_audit_sample_root_loader_rejects_extra_missing_alias_or_parent_substitu
         packet=packet,
         provider_evidence=evidence,
     )
+
+    real_run_teardown = audit_module._run_teardown
+    cleanup_errors: list[OSError] = []
+
+    def teardown_with_close_failures(
+        closers: Any,
+        primary: BaseException | None = None,
+    ) -> None:
+        wrapped = []
+        for closer in closers:
+            def close_then_fail(close: Any = closer) -> None:
+                close()
+                error = OSError(f"injected audit cleanup {len(cleanup_errors) + 1}")
+                cleanup_errors.append(error)
+                raise error
+
+            wrapped.append(close_then_fail)
+        real_run_teardown(tuple(wrapped), primary)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit_module, "_run_teardown", teardown_with_close_failures)
+        with pytest.raises(OSError, match="injected audit cleanup 1") as caught:
+            load_verified_audit_sample_root(baseline, provider_evidence=evidence)
+    assert caught.value is cleanup_errors[0]
+    assert len(cleanup_errors) == 4
+
+    staged_root_fd = os.open(baseline, os.O_RDONLY | os.O_DIRECTORY)
+    cleanup_errors.clear()
+
+    def fail_staged_read(_descriptor: int, _name: str) -> Any:
+        raise ValueError("primary staged validation failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module, "_read_member", fail_staged_read)
+            patch.setattr(audit_module, "_run_teardown", teardown_with_close_failures)
+            with pytest.raises(ValueError, match="primary staged validation failure"):
+                audit_module._validate_staged_sample_tree(
+                    staged_root_fd,
+                    population=population,
+                    manifest=manifest,
+                    packet=packet,
+                )
+        assert len(cleanup_errors) == 1
+    finally:
+        os.close(staged_root_fd)
+
+    rollback = tmp_path / "rollback-cleanup"
+    shutil.copytree(baseline, rollback)
+    rollback_parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    rollback_root_fd = os.open(
+        rollback.name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=rollback_parent_fd,
+    )
+    try:
+        witness = audit_module._validate_staged_sample_tree(
+            rollback_root_fd,
+            population=population,
+            manifest=manifest,
+            packet=packet,
+        )
+        cleanup_errors.clear()
+
+        def fail_rollback_allowlist(*_args: Any, **_kwargs: Any) -> Any:
+            raise ValueError("primary rollback validation failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_module, "_stream_directory_allowlist", fail_rollback_allowlist)
+            patch.setattr(audit_module, "_run_teardown", teardown_with_close_failures)
+            with pytest.raises(ValueError, match="primary rollback validation failure"):
+                audit_module._remove_published_sample(
+                    rollback_parent_fd,
+                    rollback.name,
+                    rollback_root_fd,
+                    witness,
+                    posix=audit_module.PosixOps(),
+                )
+        assert len(cleanup_errors) == 1
+        assert rollback.is_dir()
+        assert not any(path.name.startswith(".laconian-rollback.") for path in tmp_path.iterdir())
+    finally:
+        os.close(rollback_root_fd)
+        os.close(rollback_parent_fd)
 
     extra = tmp_path / "extra"
     shutil.copytree(baseline, extra)

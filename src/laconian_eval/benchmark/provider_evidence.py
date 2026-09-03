@@ -9,8 +9,8 @@ import re
 import stat
 import threading
 import weakref
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import InitVar, dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -71,6 +71,7 @@ from laconian_eval.benchmark.protocol_review import (
 from laconian_eval.capsule.attempts import ProviderMetadataString
 from laconian_eval.capsule.bounded_io import _descriptor_bound_path
 from laconian_eval.capsule.canonical import stable_digest
+from laconian_eval.capsule.limits import RESOURCE_LIMITS_V1
 from laconian_eval.capsule.sidecars import VerifiedScoredCapsuleV2
 from laconian_eval.models import WarningSeverity
 from laconian_eval.providers import (
@@ -87,6 +88,8 @@ _CANONICAL_MODELS = tuple(sorted(_PUBLIC_MODELS, key=str.encode))
 _AUDIT_POPULATION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
 _AUDIT_POPULATION_JSONL_MAX_BYTES = 128 * 1024 * 1024
 _RETAINED_TREE_MEMBER_LIMIT = 100_000
+_RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT = RESOURCE_LIMITS_V1.bounded_string_bytes
+_RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT = 64 * 1024 * 1024
 
 
 def _run_teardown(
@@ -110,6 +113,17 @@ def _run_teardown(
 
 def _close_descriptor(descriptor: int) -> None:
     os.close(descriptor)
+
+
+@contextmanager
+def _owned_descriptor(descriptor: int) -> Iterator[int]:
+    try:
+        yield descriptor
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(_close_descriptor, descriptor),))
 
 
 def _stream_directory_allowlist(
@@ -1558,8 +1572,11 @@ def write_provider_evidence_index(
             descriptor,
             _filesystem_identity(os.fstat(descriptor)),
         )
-    finally:
-        os.close(descriptor)
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(_close_descriptor, descriptor),))
 
 
 def _load_provider_evidence_index_at(
@@ -1601,8 +1618,11 @@ def load_provider_evidence_index(provider_index_path: Path) -> ProviderEvidenceI
             raise ValueError("provider evidence index changed while loading")
         _recheck_retained_path(parent, descriptor, identity)
         return index
-    finally:
-        os.close(descriptor)
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(_close_descriptor, descriptor),))
 
 
 @dataclass(slots=True)
@@ -1649,21 +1669,38 @@ def _retained_tree_snapshot(
 ) -> tuple[tuple[str, _FilesystemIdentity], ...]:
     rows: list[tuple[str, _FilesystemIdentity]] = []
     member_count = 0
+    cumulative_path_bytes = 0
 
-    def walk(current: int, prefix: str, depth: int) -> None:
-        nonlocal member_count
+    def walk(current: int, prefix: str, prefix_bytes: int, depth: int) -> None:
+        nonlocal cumulative_path_bytes, member_count
         if depth > 128:
             raise ValueError("retained evidence tree exceeds resource limits")
         before = _filesystem_identity(os.fstat(current))
-        names: list[str] = []
+        names: list[tuple[str, bytes, int]] = []
         with os.scandir(current) as entries:
             for entry in entries:
                 member_count += 1
                 if member_count > _RETAINED_TREE_MEMBER_LIMIT:
                     raise ValueError("retained evidence tree exceeds resource limits")
-                names.append(entry.name)
-        names.sort(key=str.encode)
-        for name in names:
+                name = entry.name
+                if type(name) is not str:
+                    raise ValueError("retained evidence tree exceeds resource limits")
+                try:
+                    name_bytes = name.encode("utf-8", errors="strict")
+                except UnicodeEncodeError as error:
+                    raise ValueError(
+                        "retained evidence tree exceeds resource limits"
+                    ) from error
+                relative_bytes = prefix_bytes + (1 if prefix else 0) + len(name_bytes)
+                if relative_bytes > _RETAINED_TREE_RELATIVE_PATH_BYTE_LIMIT:
+                    raise ValueError("retained evidence tree exceeds resource limits")
+                prospective_total = cumulative_path_bytes + relative_bytes
+                if prospective_total > _RETAINED_TREE_CUMULATIVE_PATH_BYTE_LIMIT:
+                    raise ValueError("retained evidence tree exceeds resource limits")
+                cumulative_path_bytes = prospective_total
+                names.append((name, name_bytes, relative_bytes))
+        names.sort(key=lambda row: row[1])
+        for name, _name_bytes, relative_bytes in names:
             try:
                 visible = os.stat(name, dir_fd=current, follow_symlinks=False)
             except OSError as error:
@@ -1685,7 +1722,7 @@ def _retained_tree_snapshot(
                 try:
                     if _filesystem_identity(os.fstat(child)) != identity:
                         raise ValueError("retained evidence directory changed while opening")
-                    walk(child, relative, depth + 1)
+                    walk(child, relative, relative_bytes, depth + 1)
                     if _filesystem_identity(os.fstat(child)) != identity:
                         raise ValueError("retained evidence directory changed while scanning")
                 except BaseException as error:
@@ -1702,7 +1739,7 @@ def _retained_tree_snapshot(
         if _filesystem_identity(os.fstat(current)) != before:
             raise ValueError("retained evidence directory changed while scanning")
 
-    walk(descriptor, "", 0)
+    walk(descriptor, "", 0, 0)
     return tuple(sorted(rows, key=lambda row: row[0].encode("utf-8")))
 
 
@@ -2440,7 +2477,7 @@ def write_audit_population(
         records = _canonical_population_jsonl(checked.records)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
         output = os.open("population.jsonl", flags, 0o600, dir_fd=descriptor)
-        try:
+        with _owned_descriptor(output):
             view = memoryview(records)
             while view:
                 written = os.write(output, view)
@@ -2448,16 +2485,17 @@ def write_audit_population(
                     raise OSError("short audit population write")
                 view = view[written:]
             os.fsync(output)
-        finally:
-            os.close(output)
         os.fsync(descriptor)
         _recheck_retained_path(
             audit_root,
             descriptor,
             _filesystem_identity(os.fstat(descriptor)),
         )
-    finally:
-        os.close(descriptor)
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(_close_descriptor, descriptor),))
 
 
 def _bounded_population_member_snapshot(
@@ -2583,8 +2621,11 @@ def load_verified_audit_population(
             raise ValueError("audit population changed while loading")
         _recheck_retained_path(audit_root, descriptor, identity)
         return population
-    finally:
-        os.close(descriptor)
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
+    else:
+        _run_teardown((partial(_close_descriptor, descriptor),))
 
 
 __all__ = (
