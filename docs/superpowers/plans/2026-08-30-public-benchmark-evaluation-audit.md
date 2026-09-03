@@ -353,6 +353,77 @@ all 108 singular public calls. These assertions extend existing named tests in
 `tests/benchmark/test_hard_score.py`, `tests/benchmark/test_judge.py`, and the existing 51 Task 8
 tests; the Task 8 named-test inventory remains exactly 51.
 
+**Task 8 descriptor-bound child-loader amendment scope (separate approval required):** This
+amendment supersedes only the retained generation-root and judge-attempt-root child-loader opening
+mechanism and the Task 8 file/test list. It changes no serialized schema, digest or preimage,
+owner/mint/fingerprint rule, public signature or export, root/vector/member join, canonical-byte
+validation, fail-closed result, batching rule, or exact 51 named Task 8 benchmark tests. Task 8
+additionally modifies `src/laconian_eval/capsule/bounded_io.py`,
+`src/laconian_eval/capsule/sidecars.py`, `src/laconian_eval/capsule/verify.py`,
+`tests/capsule/test_bounded_io.py`, `tests/capsule/test_sidecars.py`, and
+`tests/capsule/test_verify_sealed.py`; `src/laconian_eval/benchmark/judge.py`,
+`tests/benchmark/test_judge.py`, `src/laconian_eval/benchmark/provider_evidence.py`, and
+`tests/benchmark/test_provider_evidence.py` are already in Task 8 scope.
+
+`bounded_io.py` owns a non-exported exact `_DescriptorBoundPath`, its non-exported
+`_descriptor_bound_path` factory, and its non-exported exact-owner predicate. The capability stores
+only one borrowed retained-directory descriptor, the complete same-descriptor identity `(device,
+inode, mode, link_count, size, mtime_ns, ctime_ns)`, and immutable normalized relative
+components. Its factory accepts one exact nonnegative `int`, verifies that the descriptor is an
+open directory, and captures that identity. Its `/` operation accepts only one or more safe
+relative POSIX components under the existing `normalize_source_path` grammar; absolute, empty,
+dot, dot-dot, backslash, control-character, non-string, or over-limit operands fail before a new
+object exists. `.parent` is clamped at the capability root, while `.name` and `.parts` expose only
+the immutable lexical tail required by the existing loaders. Copying its `os.fspath` spelling into
+a `str` or `Path` never recreates authority.
+
+`open_directory_no_follow` recognizes only `type(value) is _DescriptorBoundPath` before ordinary
+`os.fspath` conversion. It duplicates the borrowed descriptor, requires the duplicate's complete
+identity to equal the captured directory identity, and opens every relative component with the
+existing `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` flags. It closes only descriptors it owns and
+never closes the borrowed root. A subclass, copied filesystem spelling, plain string or `Path`,
+bare `/dev/fd/<decimal>`, malformed fd spelling, unsafe component, stale or reused descriptor,
+non-directory descriptor, symlink component, or identity mismatch confers no capability and fails
+under the existing ordinary no-follow rules. The capability is never serialized or retained past
+its owner's `finally`, and no registry, cache, thread-local, process-global token, pathname
+authority, thread, or subprocess is introduced.
+
+After lexically absolutizing external caller paths once and opening/snapshotting the generation and
+judge-attempt roots, `provider_evidence.py` constructs one borrowed capability for each retained
+tree. It invokes the existing `load_verified_generation_context_index` with the capability root and
+its fixed `generation-context.json` child, then invokes the existing
+`load_verified_judge_attempt_root` with the attempt capability. A local `cast(Path, ...)` is only a
+static typing accommodation and creates no runtime `Path`. `context.py` remains unchanged: its
+existing equality, `/`, `.parts`, and descriptor-relative operations consume the capability.
+`sidecars.py` preserves the exact capability instead of coercing it through
+`os.fspath`/`os.path.abspath` in both `_artifact_path` and `_recheck_external_parent`;
+`verify.py` preserves it at `verified_sealed_capsule_source`; all ordinary caller paths retain
+their current normalization. `judge.py::_open_attempt_root` admits only an ordinary `Path` or the
+exact private capability and still rejects parent aliases. No downstream evidence read, stat,
+scan, or open uses the capability's string spelling; after the capability-aware opener all I/O is
+descriptor-relative.
+
+The provider removes the absolute-path `_RetainedPathLineage` experiment and retains the complete
+`_RetainedTreeWitness` for both roots. It rechecks each retained tree immediately before and after
+its child loader and again before mint, and it rechecks each original visible retained root. A
+direct or ancestor rename, exchange, or substitution cannot redirect either child loader.
+Non-restored visible-root changes and every detectable retained-root or member mutation fail;
+unrelated metadata changes in ancestors outside the retained trees do not invalidate an otherwise
+identical read-only load.
+
+Regression tests first fail against the pre-amendment implementation and then prove: exact
+capability construction, safe derivation, duplicate-not-borrowed descriptor ownership, root-clamped
+parents, and no descriptor leak; rejection of a foreign owner, copied/plain `/dev/fd` spelling,
+unsafe tail, symlink tail, non-directory descriptor, stale/reused descriptor, and identity
+mismatch; sealed-capsule entry and exit rechecks through the capability; scored-sidecar loading
+through every repeated `_recheck_external_parent`; judge-attempt initial and final reopening through
+the capability; and one real full provider load whose common visible ancestor is renamed, occupied
+by an empty substitute, and restored while both generation and attempt child loaders continue to
+consume only the retained roots. Retained member mutation and a non-restored visible-root
+substitution still reject. Provider cases extend the existing tests around the valid projection and
+missing/reordered/cross-parent projection tests, so the Task 8 benchmark inventory remains exactly
+51 named tests.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -4615,10 +4686,16 @@ git commit -m "feat: classify benchmark model outcomes"
 - Create: `src/laconian_eval/benchmark/provider_evidence.py`
 - Create: `tests/benchmark/test_provider_evidence.py`
 - Create: `tests/benchmark/test_audit_sampling.py`
+- Modify: `src/laconian_eval/capsule/bounded_io.py`
+- Modify: `src/laconian_eval/capsule/sidecars.py`
+- Modify: `src/laconian_eval/capsule/verify.py`
 - Modify: `src/laconian_eval/benchmark/aggregation.py`
 - Modify: `src/laconian_eval/benchmark/hard_score.py`
 - Modify: `src/laconian_eval/benchmark/judge.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
+- Modify: `tests/capsule/test_bounded_io.py`
+- Modify: `tests/capsule/test_sidecars.py`
+- Modify: `tests/capsule/test_verify_sealed.py`
 - Modify: `tests/benchmark/helpers.py`
 - Modify: `tests/benchmark/test_hard_score.py`
 - Modify: `tests/benchmark/test_judge.py`
@@ -5650,16 +5727,16 @@ re-export those exact objects from `laconian_eval.benchmark`; do not define adap
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run ruff check src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
-uv run mypy src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
+uv run pytest -q tests/capsule/test_bounded_io.py tests/capsule/test_sidecars.py tests/capsule/test_verify_sealed.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run ruff check src/laconian_eval/capsule/bounded_io.py src/laconian_eval/capsule/sidecars.py src/laconian_eval/capsule/verify.py src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/capsule/test_bounded_io.py tests/capsule/test_sidecars.py tests/capsule/test_verify_sealed.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+uv run mypy src/laconian_eval/capsule/bounded_io.py src/laconian_eval/capsule/sidecars.py src/laconian_eval/capsule/verify.py src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py
 git diff --check
 ~~~
 
 Expected: all commands pass.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
+git add src/laconian_eval/capsule/bounded_io.py src/laconian_eval/capsule/sidecars.py src/laconian_eval/capsule/verify.py src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/hard_score.py src/laconian_eval/benchmark/judge.py src/laconian_eval/benchmark/aggregation.py src/laconian_eval/benchmark/provider_evidence.py src/laconian_eval/benchmark/audit_sampling.py tests/capsule/test_bounded_io.py tests/capsule/test_sidecars.py tests/capsule/test_verify_sealed.py tests/benchmark/helpers.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py
 git commit -m "feat: verify benchmark evidence and freeze audit sampling"
 ~~~
 
