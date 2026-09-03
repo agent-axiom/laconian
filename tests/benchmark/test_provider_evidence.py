@@ -845,6 +845,28 @@ def test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent
     displaced = ancestor.with_name(ancestor.name + ".aba-displaced")
     real_generation_loader = provider_module.load_verified_generation_context_index
     real_attempt_loader = provider_module.load_verified_judge_attempt_root
+
+    inflight = _clone(provider_fixture, tmp_path, "inflight-generation-member")
+    generation_member = inflight.generation_root / "generation-context.json"
+    original_member_bytes = generation_member.read_bytes()
+
+    def mutate_generation_member_after_load(*args: object, **kwargs: object) -> object:
+        loaded_context = real_generation_loader(*args, **kwargs)
+        generation_member.write_bytes(original_member_bytes + b" ")
+        return loaded_context
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                provider_module,
+                "load_verified_generation_context_index",
+                mutate_generation_member_after_load,
+            )
+            with pytest.raises(ValueError, match="retained evidence tree changed"):
+                _load(inflight)
+    finally:
+        generation_member.write_bytes(original_member_bytes)
+
     substitutions = 0
 
     def through_empty_substitute(call: Any, *args: object, **kwargs: object) -> object:
