@@ -35,6 +35,7 @@ from laconian_eval.benchmark.provider_evidence import (
     _load_verified_audit_population_from_bytes,
     _revalidate_verified_audit_population_v1,
     _revalidate_verified_provider_evidence_v1,
+    _stream_directory_allowlist,
 )
 from laconian_eval.benchmark.seeds import derive_seed128
 from laconian_eval.capsule.bounded_io import open_directory_no_follow
@@ -972,9 +973,12 @@ def load_verified_audit_sample_root(
                 visible_root.st_mode
             ):
                 raise ValueError("audit sample root identity changed while opening")
-            with os.scandir(root_fd) as entries:
-                if {entry.name for entry in entries} != {"audit"}:
-                    raise ValueError("audit sample root allowlist mismatch")
+            _stream_directory_allowlist(
+                root_fd,
+                allowed=frozenset({"audit"}),
+                required=frozenset({"audit"}),
+                error_message="audit sample root allowlist mismatch",
+            )
             try:
                 visible_audit = os.stat(
                     "audit",
@@ -994,10 +998,13 @@ def load_verified_audit_sample_root(
                     visible_audit.st_mode
                 ):
                     raise ValueError("audit sample directory identity changed while opening")
-                expected_names = set(_AUDIT_SAMPLE_MEMBER_MAX_BYTES)
-                with os.scandir(audit_fd) as entries:
-                    if {entry.name for entry in entries} != expected_names:
-                        raise ValueError("audit sample member allowlist mismatch")
+                expected_names = frozenset(_AUDIT_SAMPLE_MEMBER_MAX_BYTES)
+                _stream_directory_allowlist(
+                    audit_fd,
+                    allowed=expected_names,
+                    required=expected_names,
+                    error_message="audit sample member allowlist mismatch",
+                )
                 member_snapshots = {name: _read_member(audit_fd, name) for name in expected_names}
                 if len(
                     {(identity[0], identity[1]) for _, identity in member_snapshots.values()}
@@ -1028,9 +1035,12 @@ def load_verified_audit_sample_root(
                     population=population,
                     provider_evidence=evidence,
                 )
-                with os.scandir(audit_fd) as entries:
-                    if {entry.name for entry in entries} != expected_names:
-                        raise ValueError("audit sample member allowlist changed while loading")
+                _stream_directory_allowlist(
+                    audit_fd,
+                    allowed=expected_names,
+                    required=expected_names,
+                    error_message="audit sample member allowlist changed while loading",
+                )
                 for name, expected_snapshot in member_snapshots.items():
                     if _read_member(audit_fd, name) != expected_snapshot:
                         raise ValueError("audit sample member changed while loading")
@@ -1078,9 +1088,12 @@ def _validate_staged_sample_tree(
     manifest: AuditSampleManifestV1,
     packet: BlindAuditPacketV1,
 ) -> _SampleTreeWitness:
-    with os.scandir(root_fd) as entries:
-        if {entry.name for entry in entries} != {"audit"}:
-            raise ValueError("staged audit root allowlist mismatch")
+    _stream_directory_allowlist(
+        root_fd,
+        allowed=frozenset({"audit"}),
+        required=frozenset({"audit"}),
+        error_message="staged audit root allowlist mismatch",
+    )
     visible_audit = os.stat("audit", dir_fd=root_fd, follow_symlinks=False)
     audit_fd = os.open(
         "audit",
@@ -1091,9 +1104,13 @@ def _validate_staged_sample_tree(
         audit_identity = _file_identity(os.fstat(audit_fd))
         if audit_identity != _file_identity(visible_audit):
             raise ValueError("staged audit directory changed while opening")
-        with os.scandir(audit_fd) as entries:
-            if {entry.name for entry in entries} != set(_AUDIT_SAMPLE_MEMBER_MAX_BYTES):
-                raise ValueError("staged audit member allowlist mismatch")
+        expected_names = frozenset(_AUDIT_SAMPLE_MEMBER_MAX_BYTES)
+        _stream_directory_allowlist(
+            audit_fd,
+            allowed=expected_names,
+            required=expected_names,
+            error_message="staged audit member allowlist mismatch",
+        )
         expected = {
             "population-attachment.json": canonical_json_v1(
                 population.attachment.model_dump(mode="json")
@@ -1166,8 +1183,12 @@ def _remove_published_sample(
             dir_fd=root_fd,
         )
         try:
-            with os.scandir(audit_fd) as entries:
-                names = {entry.name for entry in entries}
+            names = _stream_directory_allowlist(
+                audit_fd,
+                allowed=frozenset(witness.member_identities),
+                required=frozenset(witness.member_identities),
+                error_message="published audit root changed before rollback",
+            )
             if (
                 names != set(witness.member_identities)
                 or _file_identity(os.fstat(audit_fd)) != witness.audit_identity

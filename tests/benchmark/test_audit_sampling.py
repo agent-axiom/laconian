@@ -442,6 +442,57 @@ def test_audit_population_writer_and_loader_use_the_same_exact_two_member_layout
             load_verified_audit_population(raced, provider_evidence=evidence)
     assert replaced
 
+    real_scandir = provider_module.os.scandir
+    root_identity = (audit_root.stat().st_dev, audit_root.stat().st_ino)
+
+    class UnknownThenPoison:
+        yielded = False
+
+        def __enter__(self) -> UnknownThenPoison:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> UnknownThenPoison:
+            return self
+
+        def __next__(self) -> Any:
+            if self.yielded:
+                raise AssertionError("population scan advanced after unknown name")
+            self.yielded = True
+            return type("Entry", (), {"name": "unknown-first"})()
+
+    def hostile_population_scan(target: Any) -> Any:
+        if isinstance(target, int):
+            opened = os.fstat(target)
+            if (opened.st_dev, opened.st_ino) == root_identity:
+                return UnknownThenPoison()
+        return real_scandir(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module.os, "scandir", hostile_population_scan)
+        with pytest.raises(ValueError, match="audit population root allowlist mismatch"):
+            load_verified_audit_population(audit_root, provider_evidence=evidence)
+
+    population_scans = 0
+
+    def hostile_final_population_scan(target: Any) -> Any:
+        nonlocal population_scans
+        if isinstance(target, int):
+            opened = os.fstat(target)
+            if (opened.st_dev, opened.st_ino) == root_identity:
+                population_scans += 1
+                if population_scans == 2:
+                    return UnknownThenPoison()
+        return real_scandir(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module.os, "scandir", hostile_final_population_scan)
+        with pytest.raises(ValueError, match="audit population root allowlist mismatch"):
+            load_verified_audit_population(audit_root, provider_evidence=evidence)
+    assert population_scans == 2
+
 
 def test_audit_sample_has_144_records_six_per_stratum_and_all_critical_certainty_units(
     provider_fixture: CompleteProviderEvidenceFixture,
@@ -1123,6 +1174,57 @@ def test_audit_sample_root_loader_rejects_extra_missing_alias_or_parent_substitu
     attachment_path.write_bytes(canonical_json_v1(payload) + b"\n")
     with pytest.raises(ValueError):
         load_verified_audit_sample_root(parent, provider_evidence=evidence)
+
+    audit_identity = ((baseline / "audit").stat().st_dev, (baseline / "audit").stat().st_ino)
+    real_scandir = audit_module.os.scandir
+
+    class UnknownThenPoison:
+        yielded = False
+
+        def __enter__(self) -> UnknownThenPoison:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> UnknownThenPoison:
+            return self
+
+        def __next__(self) -> Any:
+            if self.yielded:
+                raise AssertionError("sample scan advanced after unknown name")
+            self.yielded = True
+            return type("Entry", (), {"name": "unknown-first"})()
+
+    def hostile_sample_scan(target: Any) -> Any:
+        if isinstance(target, int):
+            opened = os.fstat(target)
+            if (opened.st_dev, opened.st_ino) == audit_identity:
+                return UnknownThenPoison()
+        return real_scandir(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit_module.os, "scandir", hostile_sample_scan)
+        with pytest.raises(ValueError, match="audit sample member allowlist mismatch"):
+            load_verified_audit_sample_root(baseline, provider_evidence=evidence)
+
+    audit_scans = 0
+
+    def hostile_final_sample_scan(target: Any) -> Any:
+        nonlocal audit_scans
+        if isinstance(target, int):
+            opened = os.fstat(target)
+            if (opened.st_dev, opened.st_ino) == audit_identity:
+                audit_scans += 1
+                if audit_scans == 2:
+                    return UnknownThenPoison()
+        return real_scandir(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit_module.os, "scandir", hostile_final_sample_scan)
+        with pytest.raises(ValueError, match="allowlist changed while loading"):
+            load_verified_audit_sample_root(baseline, provider_evidence=evidence)
+    assert audit_scans == 2
 
     oversized = tmp_path / "oversized"
     shutil.copytree(baseline, oversized)

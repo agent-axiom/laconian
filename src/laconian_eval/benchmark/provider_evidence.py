@@ -9,11 +9,12 @@ import re
 import stat
 import threading
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import InitVar, dataclass
 from datetime import date, datetime
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Self, TypeAlias, cast, get_args, get_type_hints
@@ -85,6 +86,67 @@ _PUBLIC_MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
 _CANONICAL_MODELS = tuple(sorted(_PUBLIC_MODELS, key=str.encode))
 _AUDIT_POPULATION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
 _AUDIT_POPULATION_JSONL_MAX_BYTES = 128 * 1024 * 1024
+_RETAINED_TREE_MEMBER_LIMIT = 100_000
+
+
+def _run_teardown(
+    closers: Sequence[Callable[[], None]],
+    primary: BaseException | None = None,
+) -> None:
+    """Attempt every closer once without masking an active failure."""
+
+    cleanup_error: BaseException | None = None
+    for close in closers:
+        try:
+            close()
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+    if primary is not None:
+        raise primary.with_traceback(primary.__traceback__)
+    if cleanup_error is not None:
+        raise cleanup_error.with_traceback(cleanup_error.__traceback__)
+
+
+def _close_descriptor(descriptor: int) -> None:
+    os.close(descriptor)
+
+
+def _stream_directory_allowlist(
+    descriptor: int,
+    *,
+    allowed: frozenset[str],
+    required: frozenset[str],
+    error_message: str,
+) -> frozenset[str]:
+    """Validate a directory without retaining attacker-controlled names."""
+
+    if not required <= allowed:
+        raise ValueError("directory allowlist contract is invalid")
+    seen: set[str] = set()
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            name = entry.name
+            if type(name) is not str or name not in allowed or name in seen:
+                raise ValueError(error_message)
+            seen.add(name)
+    if not required <= seen:
+        raise ValueError(error_message)
+    return frozenset(seen)
+
+
+def _reject_streaming_name_collisions(
+    descriptor: int,
+    *,
+    forbidden: frozenset[str],
+    error_message: str,
+) -> None:
+    for name in sorted(forbidden, key=str.encode):
+        try:
+            os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise FileExistsError(error_message)
 RequestedModelIdV1: TypeAlias = Literal["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
 
@@ -1557,9 +1619,14 @@ class _LoadedAttachmentLayer:
     rows: tuple[BaseModel, ...]
 
     def recheck(self) -> None:
-        with os.scandir(self.descriptor) as entries:
-            if frozenset(entry.name for entry in entries) != self.root_names:
-                raise ValueError("provider layer root allowlist changed while loading")
+        names = _stream_directory_allowlist(
+            self.descriptor,
+            allowed=self.root_names,
+            required=self.root_names,
+            error_message="provider layer root allowlist changed while loading",
+        )
+        if names != self.root_names:
+            raise ValueError("provider layer root allowlist changed while loading")
         _validate_layer_tree(self.descriptor, self.index)
         index_raw, index_identity = _stable_regular_file_snapshot(
             self.descriptor,
@@ -1581,13 +1648,21 @@ def _retained_tree_snapshot(
     descriptor: int,
 ) -> tuple[tuple[str, _FilesystemIdentity], ...]:
     rows: list[tuple[str, _FilesystemIdentity]] = []
+    member_count = 0
 
     def walk(current: int, prefix: str, depth: int) -> None:
-        if depth > 128 or len(rows) > 100_000:
+        nonlocal member_count
+        if depth > 128:
             raise ValueError("retained evidence tree exceeds resource limits")
         before = _filesystem_identity(os.fstat(current))
+        names: list[str] = []
         with os.scandir(current) as entries:
-            names = sorted((entry.name for entry in entries), key=str.encode)
+            for entry in entries:
+                member_count += 1
+                if member_count > _RETAINED_TREE_MEMBER_LIMIT:
+                    raise ValueError("retained evidence tree exceeds resource limits")
+                names.append(entry.name)
+        names.sort(key=str.encode)
         for name in names:
             try:
                 visible = os.stat(name, dir_fd=current, follow_symlinks=False)
@@ -1606,14 +1681,16 @@ def _retained_tree_snapshot(
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                     dir_fd=current,
                 )
+                child_error: BaseException | None = None
                 try:
                     if _filesystem_identity(os.fstat(child)) != identity:
                         raise ValueError("retained evidence directory changed while opening")
                     walk(child, relative, depth + 1)
                     if _filesystem_identity(os.fstat(child)) != identity:
                         raise ValueError("retained evidence directory changed while scanning")
-                finally:
-                    os.close(child)
+                except BaseException as error:
+                    child_error = error
+                _run_teardown((partial(_close_descriptor, child),), child_error)
             else:
                 raise ValueError("retained evidence tree contains a special file")
             if (
@@ -1646,9 +1723,9 @@ class _RetainedTreeWitness:
                 root_identity=identity,
                 tree=_retained_tree_snapshot(descriptor),
             )
-        except BaseException:
-            os.close(descriptor)
-            raise
+        except BaseException as error:
+            _run_teardown((partial(_close_descriptor, descriptor),), error)
+            raise AssertionError("unreachable") from error
 
     def recheck(self) -> None:
         if _retained_tree_snapshot(self.descriptor) != self.tree:
@@ -1676,15 +1753,18 @@ def _load_attachment_layer(
 ) -> _LoadedAttachmentLayer:
     descriptor, identity = _open_retained_directory(root)
     try:
-        with os.scandir(descriptor) as entries:
-            names = {entry.name for entry in entries}
         directory = {
             "hard-score": "hard-score",
             "judge-request": "judge-requests",
             "judge": "judge",
         }[kind]
-        if names != {directory, *extra_root_children}:
-            raise ValueError("provider layer root allowlist mismatch")
+        expected_names = frozenset({directory, *extra_root_children})
+        names = _stream_directory_allowlist(
+            descriptor,
+            allowed=expected_names,
+            required=expected_names,
+            error_message="provider layer root allowlist mismatch",
+        )
         index = _load_layer_root_index_at(descriptor, expected_kind=kind)
         index_path = f"{directory}/index.json"
         index_raw, index_identity = _stable_regular_file_snapshot(
@@ -1728,7 +1808,7 @@ def _load_attachment_layer(
             root=root,
             descriptor=descriptor,
             root_identity=identity,
-            root_names=frozenset(names),
+            root_names=names,
             index_path=index_path,
             index_raw=index_raw,
             index_identity=index_identity,
@@ -1738,9 +1818,9 @@ def _load_attachment_layer(
         )
         loaded.recheck()
         return loaded
-    except BaseException:
-        os.close(descriptor)
-        raise
+    except BaseException as error:
+        _run_teardown((partial(_close_descriptor, descriptor),), error)
+        raise AssertionError("unreachable") from error
 
 
 def load_verified_benchmark_provider_evidence(
@@ -1768,6 +1848,8 @@ def load_verified_benchmark_provider_evidence(
         raise ValueError("provider index is not the fixed judge-root child")
     retained_layers: list[_LoadedAttachmentLayer] = []
     retained_trees: list[_RetainedTreeWitness] = []
+    result: VerifiedBenchmarkProviderEvidenceV1 | None = None
+    primary_error: BaseException | None = None
     try:
         generation_witness = _RetainedTreeWitness.open(generation_root)
         retained_trees.append(generation_witness)
@@ -1846,15 +1928,19 @@ def load_verified_benchmark_provider_evidence(
         )
         if reloaded_index != index_raw or reloaded_identity != index_identity:
             raise ValueError("provider evidence index changed before mint")
-        return _mint_provider(
+        result = _mint_provider(
             checked_snapshot,
             fingerprint=_provider_fingerprint(checked_snapshot),
         )
-    finally:
-        for retained_layer in reversed(retained_layers):
-            retained_layer.close()
-        for retained_tree in reversed(retained_trees):
-            retained_tree.close()
+    except BaseException as error:
+        primary_error = error
+    closers = tuple(layer.close for layer in reversed(retained_layers)) + tuple(
+        tree.close for tree in reversed(retained_trees)
+    )
+    _run_teardown(closers, primary_error)
+    if result is None:
+        raise AssertionError("provider evidence loader completed without a result")
+    return result
 
 
 class AuditPopulationAttachmentV1(_StrictFrozenModel):
@@ -2341,12 +2427,11 @@ def write_audit_population(
         audit_root.mkdir(mode=0o700)
     descriptor, _ = _open_retained_directory(audit_root)
     try:
-        with os.scandir(descriptor) as entries:
-            if {entry.name for entry in entries} & {
-                "population-attachment.json",
-                "population.jsonl",
-            }:
-                raise FileExistsError("audit population already exists")
+        _reject_streaming_name_collisions(
+            descriptor,
+            forbidden=frozenset({"population-attachment.json", "population.jsonl"}),
+            error_message="audit population already exists",
+        )
         _write_attachment_at(
             descriptor,
             "population-attachment.json",
@@ -2445,12 +2530,14 @@ def load_verified_audit_population(
     evidence = _revalidate_verified_provider_evidence_v1(provider_evidence)
     descriptor, identity = _open_retained_directory(audit_root)
     try:
-        with os.scandir(descriptor) as entries:
-            names = {entry.name for entry in entries}
-        required = {"population-attachment.json", "population.jsonl"}
-        allowed = {*required, "sample-manifest.json", "blind-packet.json"}
-        if not required <= names or names - allowed:
-            raise ValueError("audit population root allowlist mismatch")
+        required = frozenset({"population-attachment.json", "population.jsonl"})
+        allowed = required | frozenset({"sample-manifest.json", "blind-packet.json"})
+        names = _stream_directory_allowlist(
+            descriptor,
+            allowed=allowed,
+            required=required,
+            error_message="audit population root allowlist mismatch",
+        )
         attachment_raw, attachment_identity = _bounded_population_member_snapshot(
             descriptor,
             "population-attachment.json",
@@ -2480,8 +2567,12 @@ def load_verified_audit_population(
             "population.jsonl",
             limit=_AUDIT_POPULATION_JSONL_MAX_BYTES,
         )
-        with os.scandir(descriptor) as entries:
-            final_names = {entry.name for entry in entries}
+        final_names = _stream_directory_allowlist(
+            descriptor,
+            allowed=names,
+            required=names,
+            error_message="audit population root allowlist mismatch",
+        )
         if (
             reloaded_attachment != attachment_raw
             or reloaded_attachment_identity != attachment_identity

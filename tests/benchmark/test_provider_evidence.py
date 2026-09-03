@@ -7,6 +7,7 @@ import gc
 import importlib
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -693,9 +694,10 @@ assert ProviderEvidenceIndexV1.__module__ == 'laconian_eval.benchmark.provider_e
     subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True)
 
 
-def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_owner_modules() -> (
-    None
-):
+def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_owner_modules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from laconian_eval.benchmark.context import GenerationContextIndexV1
 
     assert GenerationContextIndexV1.__module__ == "laconian_eval.benchmark.context"
@@ -704,6 +706,116 @@ def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_ow
     names = aggregate_verified_evidence.__code__.co_names
     assert "VerifiedBenchmarkProviderEvidenceV1" in names
     assert "_revalidate_verified_provider_evidence_v1" in names
+
+    (tmp_path / "a").write_bytes(b"a")
+    (tmp_path / "b").write_bytes(b"b")
+
+    class Entry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class PoisonAfterBoundary:
+        def __enter__(self) -> PoisonAfterBoundary:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> PoisonAfterBoundary:
+            return self
+
+        def __next__(self) -> Entry:
+            names = ("a", "b", "c")
+            if getattr(self, "position", 0) == len(names):
+                raise AssertionError("iterator advanced after over-limit entry")
+            position = getattr(self, "position", 0)
+            self.position = position + 1
+            return Entry(names[position])
+
+    class FiniteEntries:
+        def __init__(self, names: tuple[str, ...]) -> None:
+            self.entries = iter(Entry(name) for name in names)
+
+        def __enter__(self) -> FiniteEntries:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> FiniteEntries:
+            return self
+
+        def __next__(self) -> Entry:
+            return next(self.entries)
+
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert provider_module._RETAINED_TREE_MEMBER_LIMIT == 100_000
+        monkeypatch.setattr(provider_module, "_RETAINED_TREE_MEMBER_LIMIT", 2, raising=False)
+        monkeypatch.setattr(
+            provider_module.os,
+            "scandir",
+            lambda _fd: FiniteEntries(("a", "b")),
+        )
+        assert len(provider_module._retained_tree_snapshot(descriptor)) == 2
+        monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: PoisonAfterBoundary())
+        with pytest.raises(ValueError, match="resource limits"):
+            provider_module._retained_tree_snapshot(descriptor)
+    finally:
+        os.close(descriptor)
+
+    close_calls: list[int] = []
+
+    def closer(ordinal: int, failure: BaseException | None = None) -> Any:
+        def close() -> None:
+            close_calls.append(ordinal)
+            if failure is not None:
+                raise failure
+
+        return close
+
+    primary = ValueError("primary verification failure")
+    with pytest.raises(ValueError, match="primary verification failure") as captured:
+        provider_module._run_teardown(
+            (
+                closer(5, OSError("first cleanup failure")),
+                closer(4),
+                closer(3),
+                closer(2),
+                closer(1, OSError("later cleanup failure")),
+            ),
+            primary,
+        )
+    assert captured.value is primary
+    assert close_calls == [5, 4, 3, 2, 1]
+
+    close_calls.clear()
+    first_cleanup = OSError("first cleanup failure")
+    with pytest.raises(OSError, match="first cleanup failure") as captured_cleanup:
+        provider_module._run_teardown(
+            (closer(5, first_cleanup), closer(4), closer(3, OSError("later"))),
+        )
+    assert captured_cleanup.value is first_cleanup
+    assert close_calls == [5, 4, 3]
+
+    class UnknownThenPoison(FiniteEntries):
+        def __init__(self) -> None:
+            super().__init__(("unknown",))
+
+        def __next__(self) -> Entry:
+            try:
+                return super().__next__()
+            except StopIteration as error:
+                raise AssertionError("allowlist advanced after unknown name") from error
+
+    monkeypatch.setattr(provider_module.os, "scandir", lambda _fd: UnknownThenPoison())
+    with pytest.raises(ValueError, match="allowlist mismatch"):
+        provider_module._stream_directory_allowlist(
+            descriptor,
+            allowed=frozenset({"expected"}),
+            required=frozenset({"expected"}),
+            error_message="allowlist mismatch",
+        )
 
 
 def test_benchmark_provider_projection_loads_exact_four_layer_roots_and_attempt_root_vector(
@@ -793,6 +905,55 @@ def test_benchmark_provider_projection_loads_exact_four_layer_roots_and_attempt_
             )
     assert calls == []
 
+    real_layer_close = provider_evidence._LoadedAttachmentLayer.close
+    real_tree_close = provider_evidence._RetainedTreeWitness.close
+
+    def exercise_cleanup(*, primary: bool) -> list[str]:
+        closed: list[str] = []
+
+        def layer_close(layer: Any) -> None:
+            real_layer_close(layer)
+            closed.append(f"layer:{layer.index.layer_kind}")
+            if len(closed) == 1:
+                raise OSError("injected cleanup failure")
+
+        def tree_close(tree: Any) -> None:
+            real_tree_close(tree)
+            closed.append(f"tree:{tree.root.name}")
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(provider_evidence._LoadedAttachmentLayer, "close", layer_close)
+            scoped.setattr(provider_evidence._RetainedTreeWitness, "close", tree_close)
+            if primary:
+                scoped.setattr(
+                    provider_evidence,
+                    "_mint_provider",
+                    lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        ValueError("primary verification failure")
+                    ),
+                )
+                with pytest.raises(ValueError, match="primary verification failure"):
+                    _load(provider_fixture)
+            else:
+                with pytest.raises(OSError, match="injected cleanup failure"):
+                    _load(provider_fixture)
+        return closed
+
+    assert exercise_cleanup(primary=False) == [
+        "layer:judge-request",
+        "layer:hard-score",
+        "layer:judge",
+        "tree:ATTEMPTS",
+        "tree:GENERATION",
+    ]
+    assert exercise_cleanup(primary=True) == [
+        "layer:judge-request",
+        "layer:hard-score",
+        "layer:judge",
+        "tree:ATTEMPTS",
+        "tree:GENERATION",
+    ]
+
 
 def test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent_members(
     provider_fixture: CompleteProviderEvidenceFixture,
@@ -840,6 +1001,43 @@ def test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent
     _rehash_provider_index(provider_payload)
     _write_json(crossed.provider_index_path, provider_payload)
     _assert_load_rejects(crossed)
+
+    allowlist = _clone(provider_fixture, tmp_path, "streamed-layer-allowlist")
+    judge_identity = (allowlist.judge_root.stat().st_dev, allowlist.judge_root.stat().st_ino)
+    real_scandir = provider_module.os.scandir
+
+    class UnknownLayerEntry:
+        name = "unknown-first"
+
+    class UnknownLayerThenPoison:
+        exhausted = False
+
+        def __enter__(self) -> UnknownLayerThenPoison:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> UnknownLayerThenPoison:
+            return self
+
+        def __next__(self) -> UnknownLayerEntry:
+            if self.exhausted:
+                raise AssertionError("provider layer scan advanced after unknown name")
+            self.exhausted = True
+            return UnknownLayerEntry()
+
+    def hostile_layer_scandir(target: Any) -> Any:
+        if isinstance(target, int):
+            opened = os.fstat(target)
+            if (opened.st_dev, opened.st_ino) == judge_identity:
+                return UnknownLayerThenPoison()
+        return real_scandir(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module.os, "scandir", hostile_layer_scandir)
+        with pytest.raises(ValueError, match="provider layer root allowlist mismatch"):
+            _load(allowlist)
 
     ancestor = provider_fixture.workspace_root
     displaced = ancestor.with_name(ancestor.name + ".aba-displaced")
