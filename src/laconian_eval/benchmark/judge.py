@@ -25,7 +25,7 @@ from laconian_eval.benchmark.context import (
 )
 from laconian_eval.benchmark.hard_score import (
     HardScoreRequestSetV1,
-    verify_hard_score_request_set,
+    _verify_hard_score_request_set_from_checked_authority,
 )
 from laconian_eval.benchmark.protocol_review import ProtocolReviewIdentityRegistryBundleV1
 from laconian_eval.capsule.attempts import ProviderMetadataString
@@ -889,22 +889,16 @@ def _validate_attempt_root_structure(
         raise ValueError("successful judge model IDs differ across the campaign")
 
 
-def _checked_context(
-    context: VerifiedGenerationContextIndexV1,
+def _context_member_from_checked(
+    checked: VerifiedGenerationContextIndexV1,
     expectation: VerifiedGenerationContextExpectationV1,
     boundary_ordinal: int,
 ) -> tuple[GenerationContextIndexV1, GenerationLayerRootMemberV1, VerifiedScoredCapsuleV2]:
     if (
-        type(context) is not VerifiedGenerationContextIndexV1
+        type(checked) is not VerifiedGenerationContextIndexV1
         or type(expectation) is not VerifiedGenerationContextExpectationV1
     ):
         raise ValueError("unverified generation context")
-    checked = VerifiedGenerationContextIndexV1(
-        expectation=context.expectation,
-        index=context.index,
-        root_index=context.root_index,
-        generation_evidence=context.generation_evidence,
-    )
     if (
         checked.expectation != expectation
         or type(boundary_ordinal) is not int
@@ -920,6 +914,22 @@ def _checked_context(
     if type(member) is not GenerationLayerRootMemberV1:
         raise ValueError("generation member type mismatch")
     return checked.index, member, checked.generation_evidence[boundary_ordinal]
+
+
+def _checked_context(
+    context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    boundary_ordinal: int,
+) -> tuple[GenerationContextIndexV1, GenerationLayerRootMemberV1, VerifiedScoredCapsuleV2]:
+    if type(context) is not VerifiedGenerationContextIndexV1:
+        raise ValueError("unverified generation context")
+    checked = VerifiedGenerationContextIndexV1(
+        expectation=context.expectation,
+        index=context.index,
+        root_index=context.root_index,
+        generation_evidence=context.generation_evidence,
+    )
+    return _context_member_from_checked(checked, expectation, boundary_ordinal)
 
 
 def _check_identity_bundle(
@@ -985,21 +995,20 @@ def _derive_blind_requests(
     return tuple(blind_requests)
 
 
-def build_judge_request_attachment(
+def _build_judge_request_attachment_from_checked_authority(
     *,
-    context: VerifiedGenerationContextIndexV1,
-    expectation: VerifiedGenerationContextExpectationV1,
-    boundary_ordinal: int,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
     request_set: HardScoreRequestSetV1,
     identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
 ) -> JudgeRequestAttachmentV1:
-    index, member, evidence = _checked_context(context, expectation, boundary_ordinal)
     bundle = _check_identity_bundle(index, identity_registry_bundle)
-    verify_hard_score_request_set(
+    _verify_hard_score_request_set_from_checked_authority(
         request_set,
-        context=context,
-        expectation=expectation,
-        boundary_ordinal=boundary_ordinal,
+        index=index,
+        member=member,
+        evidence=evidence,
     )
     request_set = HardScoreRequestSetV1.model_validate(
         HardScoreRequestSetV1.model_dump(
@@ -1063,19 +1072,37 @@ def build_judge_request_attachment(
     return JudgeRequestAttachmentV1.model_validate(payload)
 
 
-def verify_judge_request_attachment(
-    attachment: JudgeRequestAttachmentV1,
+def build_judge_request_attachment(
     *,
     context: VerifiedGenerationContextIndexV1,
     expectation: VerifiedGenerationContextExpectationV1,
     boundary_ordinal: int,
     request_set: HardScoreRequestSetV1,
     identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+) -> JudgeRequestAttachmentV1:
+    index, member, evidence = _checked_context(context, expectation, boundary_ordinal)
+    return _build_judge_request_attachment_from_checked_authority(
+        index=index,
+        member=member,
+        evidence=evidence,
+        request_set=request_set,
+        identity_registry_bundle=identity_registry_bundle,
+    )
+
+
+def _verify_judge_request_attachment_from_checked_authority(
+    attachment: JudgeRequestAttachmentV1,
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+    request_set: HardScoreRequestSetV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
 ) -> None:
-    expected = build_judge_request_attachment(
-        context=context,
-        expectation=expectation,
-        boundary_ordinal=boundary_ordinal,
+    expected = _build_judge_request_attachment_from_checked_authority(
+        index=index,
+        member=member,
+        evidence=evidence,
         request_set=request_set,
         identity_registry_bundle=identity_registry_bundle,
     )
@@ -1093,6 +1120,26 @@ def verify_judge_request_attachment(
         expected.model_dump(mode="json")
     ):
         raise ValueError("judge request attachment mismatch")
+
+
+def verify_judge_request_attachment(
+    attachment: JudgeRequestAttachmentV1,
+    *,
+    context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    boundary_ordinal: int,
+    request_set: HardScoreRequestSetV1,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+) -> None:
+    index, member, evidence = _checked_context(context, expectation, boundary_ordinal)
+    _verify_judge_request_attachment_from_checked_authority(
+        attachment,
+        index=index,
+        member=member,
+        evidence=evidence,
+        request_set=request_set,
+        identity_registry_bundle=identity_registry_bundle,
+    )
 
 
 def _request_attachment_from_context(
@@ -1586,6 +1633,38 @@ class JudgeAttachmentV1(_StrictModel):
         return self
 
 
+def _checked_judge_attachment_parents(
+    *,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
+    request_set: HardScoreRequestSetV1,
+    request_attachment: JudgeRequestAttachmentV1,
+) -> tuple[HardScoreRequestSetV1, JudgeRequestAttachmentV1]:
+    _verify_hard_score_request_set_from_checked_authority(
+        request_set,
+        index=index,
+        member=member,
+        evidence=evidence,
+    )
+    checked_request_set = HardScoreRequestSetV1.model_validate(
+        HardScoreRequestSetV1.model_dump(
+            request_set,
+            mode="python",
+            round_trip=True,
+            warnings=False,
+        )
+    )
+    checked_request_attachment = _request_attachment_from_context(
+        request_attachment,
+        index=index,
+        member=member,
+        evidence=evidence,
+        request_set=checked_request_set,
+    )
+    return checked_request_set, checked_request_attachment
+
+
 def build_judge_attachment(
     *,
     context: VerifiedGenerationContextIndexV1,
@@ -1596,26 +1675,12 @@ def build_judge_attachment(
     boundary_ordinal: int,
 ) -> JudgeAttachmentV1:
     index, member, evidence = _checked_context(context, expectation, boundary_ordinal)
-    verify_hard_score_request_set(
-        request_set,
-        context=context,
-        expectation=expectation,
-        boundary_ordinal=boundary_ordinal,
-    )
-    request_set = HardScoreRequestSetV1.model_validate(
-        HardScoreRequestSetV1.model_dump(
-            request_set,
-            mode="python",
-            round_trip=True,
-            warnings=False,
-        )
-    )
-    request_attachment = _request_attachment_from_context(
-        request_attachment,
+    request_set, request_attachment = _checked_judge_attachment_parents(
         index=index,
         member=member,
         evidence=evidence,
         request_set=request_set,
+        request_attachment=request_attachment,
     )
     if type(attempt_root) is not VerifiedJudgeAttemptRootV1:
         raise ValueError("attempt root is not verified")
@@ -1715,64 +1780,21 @@ def build_judge_attachment(
     return JudgeAttachmentV1.model_validate(payload)
 
 
-def verify_judge_attachment(
+def _verify_judge_attachment_from_checked_authority(
     attachment: JudgeAttachmentV1,
     *,
-    context: VerifiedGenerationContextIndexV1,
-    expectation: VerifiedGenerationContextExpectationV1,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
     request_set: HardScoreRequestSetV1,
     request_attachment: JudgeRequestAttachmentV1,
 ) -> None:
-    if (
-        type(context) is not VerifiedGenerationContextIndexV1
-        or type(expectation) is not VerifiedGenerationContextExpectationV1
-        or type(request_set) is not HardScoreRequestSetV1
-    ):
-        raise ValueError("judge attachment requires the exact hard-score owner")
-    try:
-        checked_context = VerifiedGenerationContextIndexV1(
-            expectation=context.expectation,
-            index=context.index,
-            root_index=context.root_index,
-            generation_evidence=context.generation_evidence,
-        )
-        checked_request_set = HardScoreRequestSetV1.model_validate(
-            HardScoreRequestSetV1.model_dump(
-                request_set,
-                mode="python",
-                round_trip=True,
-                warnings=False,
-            )
-        )
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("judge attachment requires verified parents") from error
-    matches = tuple(
-        i
-        for i, row in enumerate(checked_context.root_index.members)
-        if type(row) is GenerationLayerRootMemberV1
-        and row.generation_capsule_sha256 == checked_request_set.generation_capsule_sha256
-    )
-    if len(matches) != 1:
-        raise ValueError("judge attachment generation member is ambiguous")
-    boundary_ordinal = matches[0]
-    index, member, evidence = _checked_context(
-        checked_context,
-        expectation,
-        boundary_ordinal,
-    )
-    verify_hard_score_request_set(
-        checked_request_set,
-        context=checked_context,
-        expectation=expectation,
-        boundary_ordinal=boundary_ordinal,
-    )
-    request_set = checked_request_set
-    request_attachment = _request_attachment_from_context(
-        request_attachment,
+    request_set, request_attachment = _checked_judge_attachment_parents(
         index=index,
         member=member,
         evidence=evidence,
         request_set=request_set,
+        request_attachment=request_attachment,
     )
     if type(attachment) is not JudgeAttachmentV1:
         raise ValueError("judge attachment requires the exact owner")
@@ -1828,6 +1850,61 @@ def verify_judge_attachment(
         )
     ):
         raise ValueError("judge attachment mismatch")
+
+
+def verify_judge_attachment(
+    attachment: JudgeAttachmentV1,
+    *,
+    context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    request_set: HardScoreRequestSetV1,
+    request_attachment: JudgeRequestAttachmentV1,
+) -> None:
+    if (
+        type(context) is not VerifiedGenerationContextIndexV1
+        or type(expectation) is not VerifiedGenerationContextExpectationV1
+        or type(request_set) is not HardScoreRequestSetV1
+    ):
+        raise ValueError("judge attachment requires the exact hard-score owner")
+    try:
+        checked_context = VerifiedGenerationContextIndexV1(
+            expectation=context.expectation,
+            index=context.index,
+            root_index=context.root_index,
+            generation_evidence=context.generation_evidence,
+        )
+        checked_request_set = HardScoreRequestSetV1.model_validate(
+            HardScoreRequestSetV1.model_dump(
+                request_set,
+                mode="python",
+                round_trip=True,
+                warnings=False,
+            )
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("judge attachment requires verified parents") from error
+    matches = tuple(
+        i
+        for i, row in enumerate(checked_context.root_index.members)
+        if type(row) is GenerationLayerRootMemberV1
+        and row.generation_capsule_sha256 == checked_request_set.generation_capsule_sha256
+    )
+    if len(matches) != 1:
+        raise ValueError("judge attachment generation member is ambiguous")
+    boundary_ordinal = matches[0]
+    index, member, evidence = _context_member_from_checked(
+        checked_context,
+        expectation,
+        boundary_ordinal,
+    )
+    _verify_judge_attachment_from_checked_authority(
+        attachment,
+        index=index,
+        member=member,
+        evidence=evidence,
+        request_set=checked_request_set,
+        request_attachment=request_attachment,
+    )
 
 
 __all__ = (  # noqa: RUF022 - protocol order is frozen and owner-significant

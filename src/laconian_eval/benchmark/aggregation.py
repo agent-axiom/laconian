@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from statistics import median
-from typing import Any, Literal, Self, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,6 +17,13 @@ from laconian_eval.providers import (
     CacheWriteStatus,
     ServiceTierStatus,
 )
+
+if TYPE_CHECKING:
+    from laconian_eval.benchmark.provider_evidence import (
+        VerifiedBenchmarkProviderEvidenceV1,
+    )
+    from laconian_eval.capsule.manifest_models import ResolvedPriceSnapshotV1
+    from laconian_eval.capsule.scorable import ScoredAttemptV2
 
 TerminalZeroReason: TypeAlias = Literal[
     "provider_rejected",
@@ -173,13 +180,8 @@ class PlannedObservationV1(_StrictFrozenModel):
                 raise ValueError("reported cache components require input tokens")
             assert self.cache_read_tokens is not None
             assert self.cache_write_tokens is not None
-            expected_uncached = (
-                self.input_tokens - self.cache_read_tokens - self.cache_write_tokens
-            )
-            if (
-                expected_uncached < 0
-                or self.ordinary_uncached_input_tokens != expected_uncached
-            ):
+            expected_uncached = self.input_tokens - self.cache_read_tokens - self.cache_write_tokens
+            if expected_uncached < 0 or self.ordinary_uncached_input_tokens != expected_uncached:
                 raise ValueError("uncached input projection mismatch")
         elif self.ordinary_uncached_input_tokens is not None:
             raise ValueError("uncached input requires complete cache detail")
@@ -219,9 +221,7 @@ class PlannedObservationV1(_StrictFrozenModel):
                 self.cache_policy_status != "missing_write_detail"
                 or self.cost_availability != "retained_worst_case"
             ):
-                raise ValueError(
-                    "missing cache-write detail must retain worst-case cost"
-                )
+                raise ValueError("missing cache-write detail must retain worst-case cost")
         elif self.cache_write_status in _REPORTED_CACHE_STATUSES:
             expected_policy = (
                 "conformant_zero_write"
@@ -257,9 +257,7 @@ class PlannedObservationV1(_StrictFrozenModel):
                 "trusted_usage" if trusted_cost_shape else "retained_worst_case"
             )
             if self.cost_availability != expected_cost_availability:
-                raise ValueError(
-                    "response cost availability does not match accounting shape"
-                )
+                raise ValueError("response cost availability does not match accounting shape")
         elif self.cost_availability != "definitely_rejected_zero":
             raise ValueError("response-free row requires definitely rejected zero cost")
 
@@ -321,9 +319,7 @@ def _validated_exact_rows(rows: Iterable[PlannedObservationV1]) -> tuple[Planned
     projected = tuple(rows)
     if any(type(row) is not PlannedObservationV1 for row in projected):
         raise InferenceIntegrityError("rows must be exact PlannedObservationV1 instances")
-    return tuple(
-        PlannedObservationV1.model_validate(row.model_dump()) for row in projected
-    )
+    return tuple(PlannedObservationV1.model_validate(row.model_dump()) for row in projected)
 
 
 def _validate_key_shape(keys: set[RowKey]) -> None:
@@ -339,15 +335,11 @@ def _validate_key_shape(keys: set[RowKey]) -> None:
         raise InferenceIntegrityError("planned population must contain exactly 12 scenarios")
     for scenario_uid, locales in scenario_locales.items():
         if len(locales) != 2:
-            raise InferenceIntegrityError(
-                "each scenario requires two locales and five repetitions"
-            )
+            raise InferenceIntegrityError("each scenario requires two locales and five repetitions")
         for locale in locales:
             scenario_locale = (scenario_uid, locale)
             if len(case_ids_by_scenario_locale[scenario_locale]) != 1:
-                raise InferenceIntegrityError(
-                    "case ID must be stable across locale repetitions"
-                )
+                raise InferenceIntegrityError("case ID must be stable across locale repetitions")
             if repetitions_by_scenario_locale[scenario_locale] != set(range(5)):
                 raise InferenceIntegrityError(
                     "each scenario requires two locales and five repetitions"
@@ -389,9 +381,7 @@ def _require_arm(arm: object) -> ArmName:
         return "if"
     if arm == "concise":
         return "concise"
-    raise InferenceIntegrityError(
-        "arm must be exactly 'baseline', 'caveman', 'if', or 'concise'"
-    )
+    raise InferenceIntegrityError("arm must be exactly 'baseline', 'caveman', 'if', or 'concise'")
 
 
 def _gate_pass(row: PlannedObservationV1, gate: GateName) -> bool:
@@ -409,9 +399,7 @@ def _validated_bootstrap_population(
             "bootstrap estimator requires 480 rows from twelve sampled blocks"
         )
     if len({row.generation_model for row in checked_rows}) != 1:
-        raise InferenceIntegrityError(
-            "bootstrap estimator rows must share one generation model"
-        )
+        raise InferenceIntegrityError("bootstrap estimator rows must share one generation model")
 
     counters: dict[ArmName, Counter[RowKey]] = {}
     grouped: dict[tuple[ArmName, RowKey], list[PlannedObservationV1]] = {}
@@ -454,43 +442,29 @@ def _validated_bootstrap_population(
         )
     for scenario_uid, locales in scenario_locales.items():
         if len(locales) != 2:
-            raise InferenceIntegrityError(
-                "each sampled scenario block requires both locales"
-            )
-        scenario_multiplicities = {
-            reference[key] for key in scenario_keys[scenario_uid]
-        }
+            raise InferenceIntegrityError("each sampled scenario block requires both locales")
+        scenario_multiplicities = {reference[key] for key in scenario_keys[scenario_uid]}
         if len(scenario_keys[scenario_uid]) != 10 or len(scenario_multiplicities) != 1:
             raise InferenceIntegrityError(
                 "each sampled scenario block must be duplicated as a whole"
             )
         for locale in locales:
             scenario_locale = (scenario_uid, locale)
-            if len(case_ids[scenario_locale]) != 1 or repetitions[
-                scenario_locale
-            ] != set(range(5)):
+            if len(case_ids[scenario_locale]) != 1 or repetitions[scenario_locale] != set(range(5)):
                 raise InferenceIntegrityError(
                     "each sampled scenario block requires five matched repetitions per locale"
                 )
     return checked_rows
 
 
-def median_visible_delta(
-    rows: Sequence[PlannedObservationV1], *, gate: GateName
-) -> float | None:
+def median_visible_delta(rows: Sequence[PlannedObservationV1], *, gate: GateName) -> float | None:
     """Return median concise-minus-if visible tokens among jointly eligible token pairs."""
 
     checked_gate = _require_gate(gate)
     checked_rows = _validated_bootstrap_population(rows)
-    if_rows = {
-        _row_key(row): row for row in checked_rows if row.arm == "if"
-    }
-    concise_rows = {
-        _row_key(row): row for row in checked_rows if row.arm == "concise"
-    }
-    multiplicities = Counter(
-        _row_key(row) for row in checked_rows if row.arm == "if"
-    )
+    if_rows = {_row_key(row): row for row in checked_rows if row.arm == "if"}
+    concise_rows = {_row_key(row): row for row in checked_rows if row.arm == "concise"}
+    multiplicities = Counter(_row_key(row) for row in checked_rows if row.arm == "if")
     deltas: list[int] = []
     for key, count in multiplicities.items():
         if_row = if_rows[key]
@@ -502,8 +476,7 @@ def median_visible_delta(
             and concise_row.visible_output_tokens is not None
         ):
             deltas.extend(
-                [concise_row.visible_output_tokens - if_row.visible_output_tokens]
-                * count
+                [concise_row.visible_output_tokens - if_row.visible_output_tokens] * count
             )
     return None if not deltas else float(median(deltas))
 
@@ -516,28 +489,18 @@ def arm_pass_proportion(
     checked_arm = _require_arm(arm)
     checked_gate = _require_gate(gate)
     checked_rows = _validated_bootstrap_population(rows)
-    successes = sum(
-        _gate_pass(row, checked_gate) for row in checked_rows if row.arm == checked_arm
-    )
+    successes = sum(_gate_pass(row, checked_gate) for row in checked_rows if row.arm == checked_arm)
     return successes / 120
 
 
-def paired_pass_rate_difference(
-    rows: Sequence[PlannedObservationV1], *, gate: GateName
-) -> float:
+def paired_pass_rate_difference(rows: Sequence[PlannedObservationV1], *, gate: GateName) -> float:
     """Return mean if-minus-concise success over all 120 matched planned keys."""
 
     checked_gate = _require_gate(gate)
     checked_rows = _validated_bootstrap_population(rows)
-    if_rows = {
-        _row_key(row): row for row in checked_rows if row.arm == "if"
-    }
-    concise_rows = {
-        _row_key(row): row for row in checked_rows if row.arm == "concise"
-    }
-    multiplicities = Counter(
-        _row_key(row) for row in checked_rows if row.arm == "if"
-    )
+    if_rows = {_row_key(row): row for row in checked_rows if row.arm == "if"}
+    concise_rows = {_row_key(row): row for row in checked_rows if row.arm == "concise"}
+    multiplicities = Counter(_row_key(row) for row in checked_rows if row.arm == "if")
     total = sum(
         (
             int(_gate_pass(if_rows[key], checked_gate))
@@ -549,9 +512,7 @@ def paired_pass_rate_difference(
     return total / 120
 
 
-def arm_pass_rate(
-    rows: Sequence[PlannedObservationV1], *, gate: GateName
-) -> Fraction:
+def arm_pass_rate(rows: Sequence[PlannedObservationV1], *, gate: GateName) -> Fraction:
     """Return one arm's pass rate over the fixed 120 planned observations."""
 
     checked_gate = _require_gate(gate)
@@ -692,11 +653,7 @@ def _sealed_micro_usd_per_million(rate: object) -> int:
         projected = Decimal(str(rate)) * Decimal(1_000_000)
     except (InvalidOperation, ValueError) as exc:
         raise InferenceIntegrityError("rate is not a finite decimal") from exc
-    if (
-        not projected.is_finite()
-        or projected < 0
-        or projected != projected.to_integral_value()
-    ):
+    if not projected.is_finite() or projected < 0 or projected != projected.to_integral_value():
         raise InferenceIntegrityError(
             "rate must project to integral nonnegative micro-USD-per-million"
         )
@@ -725,9 +682,7 @@ def _trusted_analytical_cost_usd(
 ) -> Decimal:
     """Price five trusted components with five independent micro-USD ceilings."""
 
-    tokens, rates = _checked_cost_components(
-        component_tokens, rates_micro_usd_per_million
-    )
+    tokens, rates = _checked_cost_components(component_tokens, rates_micro_usd_per_million)
     micro_usd = sum(
         (token_count * rate + 999_999) // 1_000_000
         for token_count, rate in zip(tokens, rates, strict=True)
@@ -743,10 +698,302 @@ def _retained_worst_case_analytical_cost_usd(
     _, rates = _checked_cost_components((0, 0, 0, 0, 0), rates_micro_usd_per_million)
     input_rate = max(rates[:3])
     output_rate = max(rates[3:])
-    micro_usd = (
-        272_000 * input_rate + 1_024 * output_rate + 999_999
-    ) // 1_000_000
+    micro_usd = (272_000 * input_rate + 1_024 * output_rate + 999_999) // 1_000_000
     return Decimal(micro_usd) / Decimal(1_000_000)
+
+
+def _provider_row_cost(
+    *,
+    scored: ScoredAttemptV2,
+    price_snapshot: ResolvedPriceSnapshotV1,
+) -> tuple[
+    Decimal,
+    CostAvailabilityV1,
+    CachePolicyStatusV1,
+    int | None,
+]:
+    """Price one already-verified generation attempt from its requested-model snapshot."""
+
+    try:
+        raw = scored.raw
+        usage = raw.usage
+        rates = tuple(
+            _sealed_micro_usd_per_million(getattr(price_snapshot, name))
+            for name in (
+                "ordinary_uncached_input_per_million",
+                "cache_read_input_per_million",
+                "cache_write_input_per_million",
+                "visible_output_per_million",
+                "reasoning_output_per_million",
+            )
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise InferenceIntegrityError(
+            "generation row lacks a sealed five-rate price snapshot"
+        ) from error
+    if (
+        getattr(price_snapshot, "currency", None) != "USD"
+        or getattr(price_snapshot, "service_tier", None) != "default"
+    ):
+        raise InferenceIntegrityError("generation price snapshot is not the requested default tier")
+
+    if scored.terminal_reason in {"provider_rejected", "retry_exhausted"}:
+        statuses = (
+            raw.applied_cache_control_status,
+            usage.cache_read_status,
+            usage.cache_write_status,
+            raw.service_tier_status,
+        )
+        expected = {
+            "definitely_not_sent": "not_applicable_definitely_not_sent",
+            "definitely_rejected": "not_applicable_definitely_rejected",
+        }.get(raw.delivery_certainty)
+        if expected is None or any(status != expected for status in statuses):
+            raise InferenceIntegrityError("provider failure has ambiguous delivery or accounting")
+        return Decimal(0), "definitely_rejected_zero", "terminal_no_usage", None
+
+    if usage.output_tokens is not None and usage.reasoning_tokens is not None:
+        visible = usage.output_tokens - usage.reasoning_tokens
+        if visible < 0:
+            raise InferenceIntegrityError("reasoning tokens exceed output tokens")
+    else:
+        visible = None
+    if usage.cache_write_status == "reported_zero":
+        policy: CachePolicyStatusV1 = "conformant_zero_write"
+    elif usage.cache_write_status == "reported_nonzero":
+        policy = "forbidden_nonzero_write"
+    elif usage.cache_write_status in {"missing", "invalid"}:
+        policy = "missing_write_detail"
+    else:
+        raise InferenceIntegrityError("response has an inapplicable cache-write status")
+    components = (
+        usage.ordinary_uncached_input_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        visible,
+        usage.reasoning_tokens,
+    )
+    trusted = (
+        all(value is not None for value in components)
+        and raw.applied_cache_control_status == "reported_exact"
+        and raw.service_tier_status == "reported_default"
+        and usage.cache_read_status in {"reported_zero", "reported_nonzero"}
+        and usage.cache_write_status in {"reported_zero", "reported_nonzero"}
+    )
+    if trusted:
+        return (
+            _trusted_analytical_cost_usd(cast(tuple[int, ...], components), rates),
+            "trusted_usage",
+            policy,
+            visible,
+        )
+    return (
+        _retained_worst_case_analytical_cost_usd(rates),
+        "retained_worst_case",
+        policy,
+        visible,
+    )
+
+
+def aggregate_verified_evidence(
+    *,
+    provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
+) -> tuple[AggregatedModelV1, ...]:
+    """Project only loader-minted provider evidence into the frozen 1,440-row table."""
+
+    from laconian_eval.benchmark.provider_evidence import (
+        _revalidate_verified_provider_evidence_v1,
+    )
+
+    try:
+        evidence = _revalidate_verified_provider_evidence_v1(provider_evidence)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise InferenceIntegrityError("provider evidence is not a valid loader mint") from error
+
+    allowed_judge_dispositions = {"success", "retry_scheduled"}
+    for boundary in evidence.judge_attempt_root.boundaries:
+        for attempt in boundary.attempts:
+            if attempt.disposition not in allowed_judge_dispositions:
+                raise InferenceIntegrityError(
+                    "judge evidence contains an authentication, delivery, or response incident"
+                )
+            if attempt.disposition == "retry_scheduled" and attempt.delivery_certainty not in {
+                "definitely_not_sent",
+                "definitely_rejected",
+            }:
+                raise InferenceIntegrityError("judge retry has ambiguous delivery")
+
+    rows_by_model: dict[str, list[PlannedObservationV1]] = {
+        model: [] for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra")
+    }
+    for ordinal, (
+        generation_member,
+        capsule,
+        hard_set,
+        request_attachment,
+        boundary,
+        judge_attachment,
+    ) in enumerate(
+        zip(
+            evidence.generation_context.root_index.members,
+            evidence.generation_evidence,
+            evidence.hard_score_request_sets,
+            evidence.judge_request_attachments,
+            evidence.judge_attempt_root.boundaries,
+            evidence.judge_attachments,
+            strict=True,
+        )
+    ):
+        model = generation_member.generation_model
+        if model not in rows_by_model or capsule.manifest.provider.model != model:
+            raise InferenceIntegrityError("provider chain uses a non-authorized generation model")
+        if (
+            len(capsule.plan) != 40
+            or len(capsule.scored_attempts) != 40
+            or len(hard_set.records) != 40
+            or boundary.boundary_ordinal != ordinal
+        ):
+            raise InferenceIntegrityError("provider chain is not one exact 40-row shard")
+        if capsule.manifest.price_snapshot is None:
+            raise InferenceIntegrityError(
+                "requested generation model lacks a sealed price snapshot"
+            )
+        request_by_id = {
+            wrapper.blind_request.judge_request_id: wrapper
+            for wrapper in request_attachment.requests
+        }
+        judgment_by_id = {record.judge_request_id: record for record in judge_attachment.records}
+        if request_by_id.keys() != judgment_by_id.keys():
+            raise InferenceIntegrityError("judge request/final-record join differs")
+        for plan, scored, hard in zip(
+            capsule.plan,
+            capsule.scored_attempts,
+            hard_set.records,
+            strict=True,
+        ):
+            raw = scored.raw
+            case = capsule.cases_by_uid.get(plan.case_uid)
+            if (
+                case is None
+                or plan.ordinal != scored.ordinal
+                or plan.ordinal != hard.ordinal
+                or plan.plan_item_id != scored.plan_item_id
+                or plan.plan_item_id != hard.plan_item_id
+                or scored.attempt_id != hard.attempt_id
+                or scored.response_id != hard.response_id
+                or scored.terminal_reason != hard.terminal_reason
+                or scored.hard_pass != hard.hard_pass
+                or raw.case_id != plan.case_id
+                or raw.locale != plan.locale
+                or raw.arm != plan.arm
+                or raw.repetition != plan.repetition
+                or raw.scenario_uid != plan.scenario_uid
+            ):
+                raise InferenceIntegrityError("generation plan/attempt/hard-score join mismatch")
+            cost, availability, cache_policy, visible = _provider_row_cost(
+                scored=scored,
+                price_snapshot=capsule.manifest.price_snapshot,
+            )
+            if scored.terminal_reason in {"provider_rejected", "retry_exhausted"}:
+                terminal_zero: TerminalZeroReason | None = cast(
+                    TerminalZeroReason, scored.terminal_reason
+                )
+                semantic_success = False
+            elif not hard.hard_pass:
+                terminal_zero = (
+                    "blank_response"
+                    if raw.output_text is None or not raw.output_text.strip()
+                    else "hard_fail"
+                )
+                semantic_success = False
+            else:
+                terminal_zero = None
+                request_id = hard.judge_request_id
+                if request_id is None:
+                    raise InferenceIntegrityError("hard-pass row lacks a judge request")
+                wrapper = request_by_id.get(request_id)
+                record = judgment_by_id.get(request_id)
+                history = tuple(
+                    attempt
+                    for attempt in boundary.attempts
+                    if attempt.judge_request_id == request_id
+                )
+                if (
+                    wrapper is None
+                    or record is None
+                    or not history
+                    or history[-1].disposition != "success"
+                    or record.raw_judge_attempt_sha256 != history[-1].judge_attempt_evidence_sha256
+                    or record.judgment != history[-1].judgment
+                ):
+                    raise InferenceIntegrityError("hard-pass row lacks exact terminal judgment")
+                semantic_success = record.judgment.semantic_pass
+            usage = raw.usage
+            if scored.terminal_reason in {"provider_rejected", "retry_exhausted"}:
+                input_tokens = output_tokens = reasoning_tokens = None
+                cache_read_tokens = cache_write_tokens = ordinary_tokens = total_tokens = None
+                latency = output_characters = None
+            else:
+                input_tokens = usage.input_tokens
+                output_tokens = usage.output_tokens
+                reasoning_tokens = usage.reasoning_tokens
+                cache_read_tokens = usage.cache_read_tokens
+                cache_write_tokens = usage.cache_write_tokens
+                ordinary_tokens = usage.ordinary_uncached_input_tokens
+                total_tokens = usage.total_tokens
+                latency = raw.elapsed_ms
+                output_characters = None if raw.output_text is None else len(raw.output_text)
+            try:
+                row = PlannedObservationV1(
+                    generation_model=model,
+                    scenario_uid=plan.scenario_uid,
+                    case_id=plan.case_id,
+                    locale=plan.locale,
+                    repetition=plan.repetition,
+                    arm=plan.arm,
+                    response_id=scored.response_id,
+                    hard_pass=hard.hard_pass,
+                    semantic_success=semantic_success,
+                    terminal_zero_reason=terminal_zero,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    ordinary_uncached_input_tokens=ordinary_tokens,
+                    total_tokens=total_tokens,
+                    visible_output_tokens=visible,
+                    applied_cache_control_status=raw.applied_cache_control_status,
+                    cache_read_status=usage.cache_read_status,
+                    cache_write_status=usage.cache_write_status,
+                    service_tier_status=raw.service_tier_status,
+                    cache_policy_status=cache_policy,
+                    analytical_cost_usd=cost,
+                    cost_availability=availability,
+                    latency_ms=latency,
+                    output_characters=output_characters,
+                )
+            except ValueError as error:
+                raise InferenceIntegrityError(
+                    "verified evidence cannot form a closed row"
+                ) from error
+            rows_by_model[model].append(row)
+
+    aggregates = tuple(
+        _build_aggregated_model_from_rows(generation_model=model, rows=rows_by_model[model])
+        for model in sorted(rows_by_model, key=str.encode)
+    )
+    key_sets = tuple(
+        {
+            (row.scenario_uid, row.case_id, row.locale, row.repetition)
+            for row in aggregate.rows
+            if row.arm == "if"
+        }
+        for aggregate in aggregates
+    )
+    if any(keys != key_sets[0] for keys in key_sets[1:]):
+        raise InferenceIntegrityError("generation models do not share the canonical 120 keys")
+    return aggregates
 
 
 __all__ = (
@@ -761,6 +1008,7 @@ __all__ = (
     "PairDenominatorsV1",
     "PlannedObservationV1",
     "TerminalZeroReason",
+    "aggregate_verified_evidence",
     "arm_pass_proportion",
     "arm_pass_rate",
     "cache_integrity_limitations",

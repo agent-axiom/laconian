@@ -10,6 +10,7 @@ from pydantic import Field, StrictBool, model_validator
 from laconian_eval.benchmark.attachments import canonical_json_v1
 from laconian_eval.benchmark.context import (
     BenchmarkProtocolBindingsV1,
+    GenerationContextIndexV1,
     GenerationLayerRootMemberV1,
     VerifiedGenerationContextExpectationV1,
     VerifiedGenerationContextIndexV1,
@@ -339,17 +340,25 @@ def _record_from_scored(
     )
 
 
-def _build_hard_score_request_set(
+def _build_hard_score_request_set_from_checked_authority(
     *,
-    context: VerifiedGenerationContextIndexV1,
-    expectation: VerifiedGenerationContextExpectationV1,
-    boundary_ordinal: int,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
 ) -> HardScoreRequestSetV1:
-    checked_context, member, evidence = _checked_authority(
-        context,
-        expectation,
-        boundary_ordinal,
-    )
+    """Build from one caller-checked context member without minting authority."""
+
+    if (
+        type(index) is not GenerationContextIndexV1
+        or type(member) is not GenerationLayerRootMemberV1
+        or type(evidence) is not VerifiedScoredCapsuleV2
+        or type(member.ordinal) is not int
+        or not 0 <= member.ordinal < 36
+        or index.ordered_generation_capsule_sha256s[member.ordinal]
+        != member.generation_capsule_sha256
+        or evidence.capsule_sha256 != member.generation_capsule_sha256
+    ):
+        raise HardScoreError
     if len(evidence.plan) != 40 or len(evidence.scored_attempts) != 40:
         raise HardScoreError
     checked_plan = tuple(_strict_model_copy(PlanRowV1, row) for row in evidence.plan)
@@ -373,7 +382,6 @@ def _build_hard_score_request_set(
         or evidence.capsule_sha256 != member.generation_capsule_sha256
     ):
         raise HardScoreError
-    index = checked_context.index
     records = tuple(
         _record_from_scored(
             campaign_id=index.campaign_id,
@@ -407,6 +415,24 @@ def _build_hard_score_request_set(
         payload,
     )
     return HardScoreRequestSetV1.model_validate(payload)
+
+
+def _build_hard_score_request_set(
+    *,
+    context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    boundary_ordinal: int,
+) -> HardScoreRequestSetV1:
+    checked_context, member, evidence = _checked_authority(
+        context,
+        expectation,
+        boundary_ordinal,
+    )
+    return _build_hard_score_request_set_from_checked_authority(
+        index=checked_context.index,
+        member=member,
+        evidence=evidence,
+    )
 
 
 def build_hard_score_request_set(
@@ -452,14 +478,14 @@ def recompute_hard_score_request_set_sha256(
     )
 
 
-def verify_hard_score_request_set(
+def _verify_hard_score_request_set_from_checked_authority(
     attachment: HardScoreRequestSetV1,
     *,
-    context: VerifiedGenerationContextIndexV1,
-    expectation: VerifiedGenerationContextExpectationV1,
-    boundary_ordinal: int,
+    index: GenerationContextIndexV1,
+    member: GenerationLayerRootMemberV1,
+    evidence: VerifiedScoredCapsuleV2,
 ) -> None:
-    """Rebuild from verified parents and require exact canonical attachment equality."""
+    """Verify against one caller-checked context member without minting authority."""
 
     if type(attachment) is not HardScoreRequestSetV1:
         raise HardScoreError
@@ -471,15 +497,42 @@ def verify_hard_score_request_set(
             warnings=False,
         )
         checked = HardScoreRequestSetV1.model_validate(payload)
-        expected = _build_hard_score_request_set(
-            context=context,
-            expectation=expectation,
-            boundary_ordinal=boundary_ordinal,
+        expected = _build_hard_score_request_set_from_checked_authority(
+            index=index,
+            member=member,
+            evidence=evidence,
         )
         if canonical_json_v1(checked.model_dump(mode="json")) != canonical_json_v1(
             expected.model_dump(mode="json")
         ):
             raise HardScoreError
+    except HardScoreError:
+        raise
+    except Exception:
+        raise HardScoreError from None
+
+
+def verify_hard_score_request_set(
+    attachment: HardScoreRequestSetV1,
+    *,
+    context: VerifiedGenerationContextIndexV1,
+    expectation: VerifiedGenerationContextExpectationV1,
+    boundary_ordinal: int,
+) -> None:
+    """Rebuild from verified parents and require exact canonical attachment equality."""
+
+    try:
+        checked_context, member, evidence = _checked_authority(
+            context,
+            expectation,
+            boundary_ordinal,
+        )
+        _verify_hard_score_request_set_from_checked_authority(
+            attachment,
+            index=checked_context.index,
+            member=member,
+            evidence=evidence,
+        )
     except HardScoreError:
         raise
     except Exception:

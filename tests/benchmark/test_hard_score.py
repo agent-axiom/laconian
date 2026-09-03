@@ -239,6 +239,8 @@ def test_judge_request_id_has_exact_noncyclic_domain_payload() -> None:
 
 def test_hard_score_builder_has_no_raw_identity_or_protocol_scalar_parameters() -> None:
     from laconian_eval.benchmark.hard_score import (
+        _build_hard_score_request_set_from_checked_authority,
+        _verify_hard_score_request_set_from_checked_authority,
         build_hard_score_request_set,
         recompute_hard_score_request_set_sha256,
         verify_hard_score_request_set,
@@ -258,6 +260,16 @@ def test_hard_score_builder_has_no_raw_identity_or_protocol_scalar_parameters() 
         "expectation",
         "boundary_ordinal",
     )
+    assert tuple(
+        inspect.signature(
+            _build_hard_score_request_set_from_checked_authority
+        ).parameters
+    ) == ("index", "member", "evidence")
+    assert tuple(
+        inspect.signature(
+            _verify_hard_score_request_set_from_checked_authority
+        ).parameters
+    ) == ("attachment", "index", "member", "evidence")
 
 
 def test_hard_score_request_set_covers_all_40_plan_rows_and_only_hard_passes(
@@ -450,6 +462,8 @@ def test_hard_score_verifier_rebuilds_and_rejects_rehashed_attachment_substituti
     from laconian_eval.benchmark.hard_score import (
         HardScoreError,
         HardScoreRequestSetV1,
+        _build_hard_score_request_set_from_checked_authority,
+        _verify_hard_score_request_set_from_checked_authority,
         build_hard_score_request_set,
         verify_hard_score_request_set,
     )
@@ -458,6 +472,19 @@ def test_hard_score_verifier_rebuilds_and_rejects_rehashed_attachment_substituti
         context=scored_scenario.context,
         expectation=scored_scenario.expectation,
         boundary_ordinal=scored_scenario.boundary_ordinal,
+    )
+    member = scored_scenario.context.root_index.members[scored_scenario.boundary_ordinal]
+    checked_built = _build_hard_score_request_set_from_checked_authority(
+        index=scored_scenario.context.index,
+        member=member,
+        evidence=scored_scenario.evidence,
+    )
+    assert checked_built == attachment
+    _verify_hard_score_request_set_from_checked_authority(
+        attachment,
+        index=scored_scenario.context.index,
+        member=member,
+        evidence=scored_scenario.evidence,
     )
     payload = attachment.model_dump(mode="json")
     payload["generation_model"] = "forged-generation-model"
@@ -477,6 +504,13 @@ def test_hard_score_verifier_rebuilds_and_rejects_rehashed_attachment_substituti
             context=scored_scenario.context,
             expectation=scored_scenario.expectation,
             boundary_ordinal=scored_scenario.boundary_ordinal,
+        )
+    with pytest.raises(HardScoreError):
+        _verify_hard_score_request_set_from_checked_authority(
+            forged,
+            index=scored_scenario.context.index,
+            member=member,
+            evidence=scored_scenario.evidence,
         )
 
 
@@ -965,7 +999,11 @@ def test_hard_score_builder_rejects_boolean_or_out_of_range_boundary(
     scored_scenario: SealedScoredScenario,
     boundary_ordinal: object,
 ) -> None:
-    from laconian_eval.benchmark.hard_score import HardScoreError, build_hard_score_request_set
+    from laconian_eval.benchmark.hard_score import (
+        HardScoreError,
+        _build_hard_score_request_set_from_checked_authority,
+        build_hard_score_request_set,
+    )
 
     with pytest.raises(HardScoreError):
         build_hard_score_request_set(
@@ -973,3 +1011,31 @@ def test_hard_score_builder_rejects_boolean_or_out_of_range_boundary(
             expectation=scored_scenario.expectation,
             boundary_ordinal=boundary_ordinal,  # type: ignore[arg-type]
         )
+    member = scored_scenario.context.root_index.members[scored_scenario.boundary_ordinal]
+    hostile_payload = {name: getattr(member, name) for name in type(member).model_fields}
+    hostile_payload["ordinal"] = boundary_ordinal
+    hostile_member = type(member).model_construct(**hostile_payload)
+    with pytest.raises(HardScoreError):
+        _build_hard_score_request_set_from_checked_authority(
+            index=scored_scenario.context.index,
+            member=hostile_member,
+            evidence=scored_scenario.evidence,
+        )
+    if boundary_ordinal is True:
+        ordered = list(scored_scenario.context.index.ordered_generation_capsule_sha256s)
+        ordered[scored_scenario.boundary_ordinal] = sha256_marker(120_002)
+        index_type = type(scored_scenario.context.index)
+        hostile_index_payload = {
+            name: getattr(scored_scenario.context.index, name)
+            for name in index_type.model_fields
+        }
+        hostile_index_payload["ordered_generation_capsule_sha256s"] = tuple(ordered)
+        hostile_index = index_type.model_construct(
+            **hostile_index_payload,
+        )
+        with pytest.raises(HardScoreError):
+            _build_hard_score_request_set_from_checked_authority(
+                index=hostile_index,
+                member=member,
+                evidence=scored_scenario.evidence,
+            )

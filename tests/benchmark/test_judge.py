@@ -1784,10 +1784,16 @@ def test_runtime_adapter_can_import_campaign_neutral_judge_attempt_contract() ->
 def test_judge_request_builder_and_verifier_require_verified_generation_context(
     scored_scenario: SealedScoredScenario,
 ) -> None:
+    from laconian_eval.benchmark.attachments import canonical_json_v1
     from laconian_eval.benchmark.judge import (
+        JudgeRequestAttachmentV1,
+        _build_judge_request_attachment_from_checked_authority,
+        _verify_judge_request_attachment_from_checked_authority,
         build_judge_request_attachment,
         verify_judge_request_attachment,
     )
+    from laconian_eval.benchmark.protocol_review import protocol_review_digest
+    from laconian_eval.capsule.canonical import stable_digest
 
     request_set = _request_set_for(scored_scenario)
     bundle = protocol_identity_registry_bundle()
@@ -1809,6 +1815,104 @@ def test_judge_request_builder_and_verifier_require_verified_generation_context(
         request_set=request_set,
         identity_registry_bundle=bundle,
     )
+    member = scored_scenario.context.root_index.members[scored_scenario.boundary_ordinal]
+    checked_built = _build_judge_request_attachment_from_checked_authority(
+        index=scored_scenario.context.index,
+        member=member,
+        evidence=scored_scenario.evidence,
+        request_set=request_set,
+        identity_registry_bundle=bundle,
+    )
+    assert checked_built == attachment
+    _verify_judge_request_attachment_from_checked_authority(
+        attachment,
+        index=scored_scenario.context.index,
+        member=member,
+        evidence=scored_scenario.evidence,
+        request_set=request_set,
+        identity_registry_bundle=bundle,
+    )
+
+    forged_payload = attachment.model_dump(
+        mode="json",
+        exclude={"judge_request_attachment_sha256"},
+    )
+    forged_payload["generation_model"] = "forged-generation-model"
+    forged_payload["judge_request_attachment_sha256"] = stable_digest(
+        "laconian-judge-request-attachment-v1",
+        forged_payload,
+    )
+    forged = JudgeRequestAttachmentV1.model_validate_json(canonical_json_v1(forged_payload))
+    with pytest.raises(ValueError, match="judge request attachment mismatch"):
+        verify_judge_request_attachment(
+            forged,
+            context=scored_scenario.context,
+            expectation=scored_scenario.expectation,
+            boundary_ordinal=scored_scenario.boundary_ordinal,
+            request_set=request_set,
+            identity_registry_bundle=bundle,
+        )
+    with pytest.raises(ValueError, match="judge request attachment mismatch"):
+        _verify_judge_request_attachment_from_checked_authority(
+            forged,
+            index=scored_scenario.context.index,
+            member=member,
+            evidence=scored_scenario.evidence,
+            request_set=request_set,
+            identity_registry_bundle=bundle,
+        )
+
+    foreign_payload = bundle.model_dump(mode="python", round_trip=True)
+    foreign_payload["verifier_source_sha256"] = "f" * 64
+    foreign_payload["protocol_signature_verifier_tool_sha256"] = protocol_review_digest(
+        "laconian-protocol-signature-verifier-tool-v1",
+        {
+            "algorithm_profile": (
+                "ssh-ed25519-sshsig-git-sha512-or-openpgp-v4-ed25519-sha256-v1"
+            ),
+            "dependency_lock_path": foreign_payload["dependency_lock_path"],
+            "dependency_lock_sha256": foreign_payload["dependency_lock_sha256"],
+            "verifier_dependency_inventory_root": foreign_payload[
+                "verifier_dependency_inventory_root"
+            ],
+            "entrypoint": (
+                "laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1"
+            ),
+            "verifier_source_path": foreign_payload["verifier_source_path"],
+            "verifier_source_sha256": foreign_payload["verifier_source_sha256"],
+        },
+    )
+    foreign_payload["identity_registry_bundle_sha256"] = protocol_review_digest(
+        "laconian-protocol-review-identity-registry-bundle-v1",
+        {
+            key: value
+            for key, value in foreign_payload.items()
+            if key != "identity_registry_bundle_sha256"
+        },
+    )
+    foreign_bundle = type(bundle).model_validate(foreign_payload)
+    mutated_bundle = type(bundle).model_validate(
+        bundle.model_dump(mode="python", round_trip=True)
+    )
+    object.__setattr__(mutated_bundle, "verifier_source_sha256", "e" * 64)
+    for rejected_bundle in (foreign_bundle, mutated_bundle):
+        with pytest.raises(ValueError):
+            _build_judge_request_attachment_from_checked_authority(
+                index=scored_scenario.context.index,
+                member=member,
+                evidence=scored_scenario.evidence,
+                request_set=request_set,
+                identity_registry_bundle=rejected_bundle,
+            )
+        with pytest.raises(ValueError):
+            _verify_judge_request_attachment_from_checked_authority(
+                attachment,
+                index=scored_scenario.context.index,
+                member=member,
+                evidence=scored_scenario.evidence,
+                request_set=request_set,
+                identity_registry_bundle=rejected_bundle,
+            )
 
     with pytest.raises(ValueError, match="unverified generation context"):
         build_judge_request_attachment(
@@ -1832,6 +1936,9 @@ def test_judge_request_builder_and_verifier_require_verified_generation_context(
 def test_judge_request_builder_has_no_raw_campaign_seed_or_protocol_tier_identity_parameters(
 ) -> None:
     from laconian_eval.benchmark.judge import (
+        _build_judge_request_attachment_from_checked_authority,
+        _verify_judge_attachment_from_checked_authority,
+        _verify_judge_request_attachment_from_checked_authority,
         build_judge_request_attachment,
         verify_judge_request_attachment,
     )
@@ -1863,6 +1970,39 @@ def test_judge_request_builder_has_no_raw_campaign_seed_or_protocol_tier_identit
     }
     assert forbidden.isdisjoint(inspect.signature(build_judge_request_attachment).parameters)
     assert forbidden.isdisjoint(inspect.signature(verify_judge_request_attachment).parameters)
+    assert tuple(
+        inspect.signature(
+            _build_judge_request_attachment_from_checked_authority
+        ).parameters
+    ) == (
+        "index",
+        "member",
+        "evidence",
+        "request_set",
+        "identity_registry_bundle",
+    )
+    assert tuple(
+        inspect.signature(
+            _verify_judge_request_attachment_from_checked_authority
+        ).parameters
+    ) == (
+        "attachment",
+        "index",
+        "member",
+        "evidence",
+        "request_set",
+        "identity_registry_bundle",
+    )
+    assert tuple(
+        inspect.signature(_verify_judge_attachment_from_checked_authority).parameters
+    ) == (
+        "attachment",
+        "index",
+        "member",
+        "evidence",
+        "request_set",
+        "request_attachment",
+    )
 
 
 def test_judge_request_rejects_forged_rehashed_context_against_external_expected_digest(
@@ -2019,8 +2159,10 @@ def test_judge_attachment_binds_capsule_and_request_set_with_exact_coverage(
     scored_scenario: SealedScoredScenario,
     tmp_path: Path,
 ) -> None:
+    from laconian_eval.benchmark.attachments import canonical_json_v1
     from laconian_eval.benchmark.judge import (
         JudgeAttachmentV1,
+        _verify_judge_attachment_from_checked_authority,
         build_judge_attachment,
         build_judge_request_attachment,
         load_verified_judge_attempt_root,
@@ -2091,6 +2233,45 @@ def test_judge_attachment_binds_capsule_and_request_set_with_exact_coverage(
         request_set=request_set,
         request_attachment=request_attachment,
     )
+    member = scored_scenario.context.root_index.members[scored_scenario.boundary_ordinal]
+    _verify_judge_attachment_from_checked_authority(
+        attachment,
+        index=scored_scenario.context.index,
+        member=member,
+        evidence=scored_scenario.evidence,
+        request_set=request_set,
+        request_attachment=request_attachment,
+    )
+
+    forged_parent_payload = attachment.model_dump(
+        mode="json",
+        exclude={"judge_attachment_sha256"},
+    )
+    forged_parent_payload["generation_model"] = "forged-generation-model"
+    forged_parent_payload["judge_attachment_sha256"] = stable_digest(
+        "laconian-judge-attachment-v1",
+        forged_parent_payload,
+    )
+    forged_parent = JudgeAttachmentV1.model_validate_json(
+        canonical_json_v1(forged_parent_payload)
+    )
+    with pytest.raises(ValueError, match="judge attachment mismatch"):
+        verify_judge_attachment(
+            forged_parent,
+            context=scored_scenario.context,
+            expectation=scored_scenario.expectation,
+            request_set=request_set,
+            request_attachment=request_attachment,
+        )
+    with pytest.raises(ValueError, match="judge attachment mismatch"):
+        _verify_judge_attachment_from_checked_authority(
+            forged_parent,
+            index=scored_scenario.context.index,
+            member=member,
+            evidence=scored_scenario.evidence,
+            request_set=request_set,
+            request_attachment=request_attachment,
+        )
 
     for records in (
         attachment.records[:-1],

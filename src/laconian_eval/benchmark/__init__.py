@@ -98,7 +98,19 @@ from laconian_eval.benchmark.protocol_review import (
 from laconian_eval.benchmark.seeds import derive_seed128
 
 if TYPE_CHECKING:
-    from laconian_eval.benchmark.aggregation import AggregatedModelV1
+    from laconian_eval.benchmark.aggregation import (
+        AggregatedModelV1,
+        aggregate_verified_evidence,
+    )
+    from laconian_eval.benchmark.audit_sampling import (
+        AuditSampleManifestV1,
+        BlindAuditPacketV1,
+        VerifiedAuditSampleRootV1,
+        load_verified_audit_sample_root,
+        select_audit_sample,
+        verify_audit_sample,
+        write_audit_sample_root,
+    )
     from laconian_eval.benchmark.bootstrap import (
         BootstrapIntervalV1,
         BootstrapVectorsV1,
@@ -157,6 +169,20 @@ if TYPE_CHECKING:
         OutcomeEvidenceV1,
         classify_model_outcome,
     )
+    from laconian_eval.benchmark.provider_evidence import (
+        AuditPopulationAttachmentV1,
+        BenchmarkProviderEvidenceProjectionV1,
+        ProviderEvidenceIndexV1,
+        VerifiedAuditPopulationV1,
+        VerifiedBenchmarkProviderEvidenceV1,
+        build_audit_population,
+        compute_requested_returned_model_source_sha256,
+        load_provider_evidence_index,
+        load_verified_audit_population,
+        load_verified_benchmark_provider_evidence,
+        write_audit_population,
+        write_provider_evidence_index,
+    )
 
 _CONTEXT_EXPORTS = frozenset(
     {
@@ -189,7 +215,18 @@ _HARD_SCORE_EXPORTS = frozenset(
         "verify_hard_score_request_set",
     }
 )
-_AGGREGATION_EXPORTS = frozenset({"AggregatedModelV1"})
+_AGGREGATION_EXPORTS = frozenset({"AggregatedModelV1", "aggregate_verified_evidence"})
+_AUDIT_SAMPLING_EXPORTS = frozenset(
+    {
+        "AuditSampleManifestV1",
+        "BlindAuditPacketV1",
+        "VerifiedAuditSampleRootV1",
+        "load_verified_audit_sample_root",
+        "select_audit_sample",
+        "verify_audit_sample",
+        "write_audit_sample_root",
+    }
+)
 _BOOTSTRAP_EXPORTS = frozenset(
     {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
 )
@@ -199,6 +236,22 @@ _OUTCOME_EXPORTS = frozenset(
         "ModelOutcomeV1",
         "OutcomeEvidenceV1",
         "classify_model_outcome",
+    }
+)
+_PROVIDER_EVIDENCE_EXPORTS = frozenset(
+    {
+        "AuditPopulationAttachmentV1",
+        "BenchmarkProviderEvidenceProjectionV1",
+        "ProviderEvidenceIndexV1",
+        "VerifiedAuditPopulationV1",
+        "VerifiedBenchmarkProviderEvidenceV1",
+        "build_audit_population",
+        "compute_requested_returned_model_source_sha256",
+        "load_provider_evidence_index",
+        "load_verified_audit_population",
+        "load_verified_benchmark_provider_evidence",
+        "write_audit_population",
+        "write_provider_evidence_index",
     }
 )
 JUDGE_LAZY_EXPORTS_V1 = (
@@ -221,9 +274,7 @@ JUDGE_LAZY_EXPORTS_V1 = (
     "build_judge_attachment",
     "verify_judge_attachment",
 )
-_JUDGE_EXPORTS = {
-    name: ("laconian_eval.benchmark.judge", name) for name in JUDGE_LAZY_EXPORTS_V1
-}
+_JUDGE_EXPORTS = {name: ("laconian_eval.benchmark.judge", name) for name in JUDGE_LAZY_EXPORTS_V1}
 
 
 def __getattr__(name: str) -> Any:
@@ -231,6 +282,8 @@ def __getattr__(name: str) -> Any:
 
     if name in _AGGREGATION_EXPORTS:
         module_name = "laconian_eval.benchmark.aggregation"
+    elif name in _AUDIT_SAMPLING_EXPORTS:
+        module_name = "laconian_eval.benchmark.audit_sampling"
     elif name in _BOOTSTRAP_EXPORTS:
         module_name = "laconian_eval.benchmark.bootstrap"
     elif name in _CONTEXT_EXPORTS:
@@ -239,6 +292,8 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.hard_score"
     elif name in _OUTCOME_EXPORTS:
         module_name = "laconian_eval.benchmark.outcomes"
+    elif name in _PROVIDER_EVIDENCE_EXPORTS:
+        module_name = "laconian_eval.benchmark.provider_evidence"
     elif name in _JUDGE_EXPORTS:
         module_name, owner_name = _JUDGE_EXPORTS[name]
         value = getattr(import_module(module_name), owner_name)
@@ -267,8 +322,12 @@ __all__ = (
     "ArchivedApiReceiptBindingV1",
     "ArchivedProtocolGitObjectV1",
     "AttachmentLayerRootMemberV1",
+    "AuditPopulationAttachmentV1",
     "AuditReviewerRegistryV1",
+    "AuditSampleManifestV1",
     "BenchmarkProtocolBindingsV1",
+    "BenchmarkProviderEvidenceProjectionV1",
+    "BlindAuditPacketV1",
     "BootstrapIntervalV1",
     "BootstrapVectorsV1",
     "BoundedCanonicalText",
@@ -317,6 +376,7 @@ __all__ = (
     "ProtocolReviewerRegistryV1",
     "ProtocolSignatureEvidenceSourceV1",
     "ProtocolSubjectKindV1",
+    "ProviderEvidenceIndexV1",
     "RationalV1",
     "ReviewerAccountBindingV1",
     "SSHVerifiedCommitEvidenceV1",
@@ -339,6 +399,9 @@ __all__ = (
     "TagRulesetRuleV1",
     "VerifiedGenerationContextExpectationV1",
     "VerifiedGenerationContextIndexV1",
+    "VerifiedAuditPopulationV1",
+    "VerifiedAuditSampleRootV1",
+    "VerifiedBenchmarkProviderEvidenceV1",
     "VerifiedProtocolAttestationV1",
     "VerifiedProtocolReviewDagV1",
     "VerifiedProtocolReviewPrefixV1",
@@ -347,6 +410,8 @@ __all__ = (
     "WorkflowInventoryMemberV1",
     "WorkflowInventoryV1",
     "attachment_digest",
+    "aggregate_verified_evidence",
+    "build_audit_population",
     "build_hard_score_request_set",
     "build_protocol_attestation_bundle",
     "build_protocol_attestation_tag_binding",
@@ -356,6 +421,7 @@ __all__ = (
     "canonical_protocol_reviewer_registry_bytes",
     "canonical_reviewer_registry_bytes",
     "compute_audit_reviewer_registry_sha256",
+    "compute_requested_returned_model_source_sha256",
     "compute_protocol_attestations_root",
     "compute_protocol_reviewer_registry_sha256",
     "compute_verifier_dependency_inventory_root",
@@ -363,6 +429,10 @@ __all__ = (
     "derive_judge_request_id",
     "derive_seed128",
     "load_layer_root_index",
+    "load_provider_evidence_index",
+    "load_verified_audit_population",
+    "load_verified_audit_sample_root",
+    "load_verified_benchmark_provider_evidence",
     "load_verified_generation_context_index",
     "load_verified_protocol_review_object_archive",
     "make_cluster_vectors",
@@ -371,12 +441,17 @@ __all__ = (
     "protocol_bindings_from_context",
     "protocol_review_digest",
     "recompute_hard_score_request_set_sha256",
+    "select_audit_sample",
     "validate_signature_mode_fingerprint",
     "verify_hard_score_request_set",
+    "verify_audit_sample",
     "verify_protocol_review_dag",
     "verify_protocol_review_prefix",
     "write_attachment_json",
+    "write_audit_population",
+    "write_audit_sample_root",
     "write_generation_context_index",
     "write_layer_root_index",
+    "write_provider_evidence_index",
     *JUDGE_LAZY_EXPORTS_V1,
 )
