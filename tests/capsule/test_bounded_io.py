@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 from laconian_eval.capsule.bounded_io import (
+    _descriptor_bound_path,
+    _DescriptorBoundPath,
+    _is_descriptor_bound_path,
     normalize_source_path,
     open_directory_no_follow,
     read_regular_file_once,
@@ -87,6 +90,102 @@ def test_open_directory_no_follow_rejects_intermediate_symlink(tmp_path: Path) -
 
     with pytest.raises(OSError):
         open_directory_no_follow(alias / "target")
+
+
+def test_descriptor_bound_path_derives_safe_children_and_duplicates_borrowed_root(
+    tmp_path: Path,
+) -> None:
+    child = tmp_path / "one" / "two"
+    child.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(child, target_is_directory=True)
+    borrowed = open_directory_no_follow(tmp_path)
+    before = len(os.listdir("/dev/fd"))
+    try:
+        root = _descriptor_bound_path(borrowed)
+        assert type(root) is _DescriptorBoundPath
+        assert _is_descriptor_bound_path(root)
+        assert root.parent is root and root.name == "" and root.parts == ()
+        derived = root / "one/two"
+        assert derived.name == "two" and derived.parts == ("one", "two")
+        assert derived.parent.parent == root
+        opened = open_directory_no_follow(derived)
+        os.close(opened)
+        os.fstat(borrowed)
+        assert len(os.listdir("/dev/fd")) == before
+        copied = os.fspath(derived)
+        with pytest.raises(OSError):
+            open_directory_no_follow(copied)
+        with pytest.raises(OSError):
+            open_directory_no_follow(Path(copied))
+        for unsafe in ("", ".", "..", "../one", "/one", "one\\two", "one//two"):
+            with pytest.raises(ValueError):
+                root / unsafe
+        with pytest.raises(OSError):
+            open_directory_no_follow(root / "link")
+        mismatched = replace(
+            root,
+            _directory_identity=replace(
+                root._directory_identity,
+                mtime_ns=root._directory_identity.mtime_ns + 1,
+            ),
+        )
+        with pytest.raises(ValueError):
+            open_directory_no_follow(mismatched)
+        unsafe_storage = replace(root, _relative_components=("..",))
+        with pytest.raises(ValueError):
+            open_directory_no_follow(unsafe_storage)
+    finally:
+        os.close(borrowed)
+
+
+def test_descriptor_bound_path_rejects_foreign_stale_reused_and_non_directory_authority(
+    tmp_path: Path,
+) -> None:
+    borrowed = open_directory_no_follow(tmp_path)
+    root = _descriptor_bound_path(borrowed)
+
+    class ForeignDescriptorBoundPath(_DescriptorBoundPath):
+        pass
+
+    foreign = ForeignDescriptorBoundPath(
+        root._directory_fd, root._directory_identity, root._relative_components
+    )
+    assert not _is_descriptor_bound_path(foreign)
+    with pytest.raises(OSError):
+        open_directory_no_follow(foreign)
+    os.close(borrowed)
+    with pytest.raises((OSError, ValueError)):
+        open_directory_no_follow(root)
+
+    file_path = tmp_path / "ordinary.txt"
+    file_path.write_text("x", encoding="utf-8")
+    file_fd = os.open(file_path, os.O_RDONLY)
+    try:
+        with pytest.raises(ValueError):
+            _descriptor_bound_path(True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            _descriptor_bound_path(file_fd)
+    finally:
+        os.close(file_fd)
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    reused_fd = open_directory_no_follow(first)
+    stale = _descriptor_bound_path(reused_fd)
+    os.close(reused_fd)
+    replacement = open_directory_no_follow(second)
+    try:
+        if replacement != reused_fd:
+            os.dup2(replacement, reused_fd)
+        with pytest.raises(ValueError):
+            open_directory_no_follow(stale)
+    finally:
+        if replacement != reused_fd:
+            os.close(reused_fd)
+        os.close(replacement)
 
 
 def test_open_directory_no_follow_fails_closed_without_required_flag(

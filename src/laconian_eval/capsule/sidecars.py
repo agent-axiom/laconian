@@ -17,7 +17,11 @@ from uuid import RFC_4122, UUID, uuid4
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from laconian_eval.capsule.boundary_errors import ContentFreeCapsuleError
-from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
+from laconian_eval.capsule.bounded_io import (
+    BoundedIOError,
+    _is_descriptor_bound_path,
+    open_directory_no_follow,
+)
 from laconian_eval.capsule.canonical import (
     canonical_json,
     canonical_jsonl,
@@ -511,6 +515,11 @@ def _sidecar_bytes(sidecar: ScoredCapsuleSidecarV2) -> bytes:
 
 def _artifact_path(value: Path) -> tuple[Path, Path, str]:
     try:
+        if _is_descriptor_bound_path(value):
+            name = value.name
+            if not name:
+                _fail("invalid_argument")
+            return value, value.parent, name
         raw = os.fspath(value)
         if type(raw) is not str or not raw or raw.endswith(os.sep):
             _fail("invalid_argument")
@@ -759,7 +768,12 @@ def _recheck_external_parent(
     retained_parent: _Identity | None = None
     primary: BaseException | None = None
     try:
-        capsule_fd = open_directory_no_follow(Path(os.path.abspath(os.fspath(capsule_path))))
+        retained_capsule_path = (
+            capsule_path
+            if _is_descriptor_bound_path(capsule_path)
+            else Path(os.path.abspath(os.fspath(capsule_path)))
+        )
+        capsule_fd = open_directory_no_follow(retained_capsule_path)
         visible_capsule = _identity(os.fstat(capsule_fd))
         if (
             not stat.S_ISDIR(visible_capsule.mode)

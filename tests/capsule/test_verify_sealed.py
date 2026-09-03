@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import shutil
 import stat
 from dataclasses import FrozenInstanceError, fields
@@ -15,6 +16,11 @@ import pytest
 
 import laconian_eval.capsule.execution as execution_module
 import laconian_eval.capsule.verify as verify_module
+from laconian_eval.capsule.bounded_io import (
+    _descriptor_bound_path,
+    _is_descriptor_bound_path,
+    open_directory_no_follow,
+)
 from laconian_eval.capsule.canonical import canonical_json, canonical_jsonl, sha256_bytes
 from laconian_eval.capsule.execution import ProviderFactory
 from laconian_eval.capsule.filesystem import UnsupportedFilesystemError
@@ -328,10 +334,10 @@ def test_verified_sealed_capsule_source_never_reopens_capsule_public_path(
 ) -> None:
     complete, _blocked = sealed_capsules
     real_open_directory = verify_module.open_directory_no_follow
-    opened: list[Path] = []
+    opened: list[object] = []
 
     def track_directory_open(path: Path) -> int:
-        opened.append(Path(path))
+        opened.append(path)
         return real_open_directory(path)
 
     monkeypatch.setattr(verify_module, "open_directory_no_follow", track_directory_open)
@@ -340,6 +346,18 @@ def test_verified_sealed_capsule_source_never_reopens_capsule_public_path(
 
     assert opened.count(complete) == 1
     assert opened and all(path in {complete, complete.parent} for path in opened)
+
+    parent_fd = open_directory_no_follow(complete.parent)
+    try:
+        capability = _descriptor_bound_path(parent_fd) / complete.name
+        capability_start = len(opened)
+        with verified_sealed_capsule_source(capability) as source:  # type: ignore[arg-type]
+            assert source.result.state == "SEALED_COMPLETE"
+        capability_opens = opened[capability_start:]
+        assert len(capability_opens) >= 4
+        assert all(_is_descriptor_bound_path(path) for path in capability_opens)
+    finally:
+        os.close(parent_fd)
 
 
 def test_verified_sealed_capsule_source_rechecks_visible_root_on_exit(

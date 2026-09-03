@@ -34,7 +34,11 @@ from laconian_eval.arms import (
     validate_caveman_snapshot,
 )
 from laconian_eval.capsule.attempts import RawAttemptV2, raw_attempt_bytes
-from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
+from laconian_eval.capsule.bounded_io import (
+    BoundedIOError,
+    _is_descriptor_bound_path,
+    open_directory_no_follow,
+)
 from laconian_eval.capsule.canonical import (
     canonical_json,
     canonical_jsonl,
@@ -4695,10 +4699,13 @@ def verified_sealed_capsule_source(
     source: VerifiedSealedCapsuleSourceV1 | None = None
     primary: BaseException | None = None
     try:
-        raw_path = os.fspath(path)
-        if type(raw_path) is not str or not raw_path:
-            raise BoundedIOError("not_directory", "source root is not a directory")
-        visible_path = Path(os.path.abspath(raw_path))
+        if _is_descriptor_bound_path(path):
+            visible_path = path
+        else:
+            raw_path = os.fspath(path)
+            if type(raw_path) is not str or not raw_path:
+                raise BoundedIOError("not_directory", "source root is not a directory")
+            visible_path = Path(os.path.abspath(raw_path))
         if not visible_path.name:
             raise BoundedIOError("not_directory", "source root is not a directory")
         root_fd = open_directory_no_follow(visible_path)

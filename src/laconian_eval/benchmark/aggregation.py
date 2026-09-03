@@ -19,6 +19,7 @@ from laconian_eval.providers import (
 )
 
 if TYPE_CHECKING:
+    from laconian_eval.benchmark.judge import JudgeAttemptEvidenceV1
     from laconian_eval.benchmark.provider_evidence import (
         VerifiedBenchmarkProviderEvidenceV1,
     )
@@ -795,6 +796,18 @@ def _provider_row_cost(
     )
 
 
+def _reject_judge_incident_attempt(attempt: JudgeAttemptEvidenceV1) -> None:
+    if attempt.disposition not in {"success", "retry_scheduled"}:
+        raise InferenceIntegrityError(
+            "judge evidence contains an authentication, delivery, or response incident"
+        )
+    if attempt.disposition == "retry_scheduled" and attempt.delivery_certainty not in {
+        "definitely_not_sent",
+        "definitely_rejected",
+    }:
+        raise InferenceIntegrityError("judge retry has ambiguous delivery")
+
+
 def aggregate_verified_evidence(
     *,
     provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
@@ -802,26 +815,20 @@ def aggregate_verified_evidence(
     """Project only loader-minted provider evidence into the frozen 1,440-row table."""
 
     from laconian_eval.benchmark.provider_evidence import (
+        VerifiedBenchmarkProviderEvidenceV1,
         _revalidate_verified_provider_evidence_v1,
     )
 
     try:
+        if type(provider_evidence) is not VerifiedBenchmarkProviderEvidenceV1:
+            raise TypeError("provider evidence must have its exact verified owner")
         evidence = _revalidate_verified_provider_evidence_v1(provider_evidence)
     except (AttributeError, TypeError, ValueError) as error:
         raise InferenceIntegrityError("provider evidence is not a valid loader mint") from error
 
-    allowed_judge_dispositions = {"success", "retry_scheduled"}
     for boundary in evidence.judge_attempt_root.boundaries:
         for attempt in boundary.attempts:
-            if attempt.disposition not in allowed_judge_dispositions:
-                raise InferenceIntegrityError(
-                    "judge evidence contains an authentication, delivery, or response incident"
-                )
-            if attempt.disposition == "retry_scheduled" and attempt.delivery_certainty not in {
-                "definitely_not_sent",
-                "definitely_rejected",
-            }:
-                raise InferenceIntegrityError("judge retry has ambiguous delivery")
+            _reject_judge_incident_attempt(attempt)
 
     rows_by_model: dict[str, list[PlannedObservationV1]] = {
         model: [] for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra")

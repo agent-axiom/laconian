@@ -382,6 +382,15 @@ def test_audit_population_writer_and_loader_use_the_same_exact_two_member_layout
     loaded = load_verified_audit_population(audit_root, provider_evidence=evidence)
     assert loaded is not population
     assert loaded.attachment == population.attachment and loaded.records == population.records
+    assert provider_module._population_fingerprint(
+        population.attachment, population.records
+    ) == stable_digest(
+        "laconian-verified-audit-population-full-content-v1",
+        {
+            "attachment": population.attachment.model_dump(mode="json"),
+            "records": [record.model_dump(mode="json") for record in population.records],
+        },
+    )
     with pytest.raises(FileExistsError):
         write_audit_population(audit_root, population)
     with pytest.raises(TypeError):
@@ -636,6 +645,20 @@ def test_hamilton_allocation_and_global_fill_match_golden_manifest() -> None:
     assert design.ordered_selected_record_ids == tuple(sorted(independent_selected, key=str.encode))
     assert len(design.ordered_selected_record_ids) == 144
 
+    # A full higher-ranked cell retains its rank but cannot consume the residual
+    # seat; the next available cell must receive it.
+    local = {
+        "a": audit_module._MutableCell(
+            "a", ("a0",), 0, 0, 1, 0, Fraction(2, 3), None, 1, 0, ("a0",), []
+        ),
+        "b": audit_module._MutableCell(
+            "b", ("b0", "b1"), 0, 0, 1, 0, Fraction(1, 3), None, 0, 0, ("b0", "b1"), []
+        ),
+    }
+    audit_module._apply_local_residual_seats(local, ("a", "b"), remaining=1)
+    assert local["a"].residual_rank == 1 and local["a"].selected == 1
+    assert local["b"].residual_rank == 2 and local["b"].selected == 1
+
     # Exercise the exact global-fill helper with cells that are already full and one
     # that becomes full in pass 1; byte order and the second pass decide the result.
     synthetic = {
@@ -783,6 +806,25 @@ def test_blind_packet_omits_model_arm_judge_tokens_and_provider_metadata(
     manifest_payload["cells"] = (foreign_cell, *manifest.cells[1:])
     with pytest.raises((TypeError, ValueError)):
         AuditSampleManifestV1.model_validate(manifest_payload)
+    forged_manifest = manifest.model_copy(
+        update={"cells": (foreign_cell, *manifest.cells[1:])}
+    )
+    with pytest.raises((TypeError, ValueError)):
+        audit_module._revalidate_model(AuditSampleManifestV1, forged_manifest)
+
+    rational = manifest.cells[0].fractional_remainder
+    foreign_rational = ForeignRational(
+        numerator=rational.numerator,
+        denominator=rational.denominator,
+    )
+    rational_cell = manifest.cells[0].model_copy(
+        update={"fractional_remainder": foreign_rational}
+    )
+    forged_rational_manifest = manifest.model_copy(
+        update={"cells": (rational_cell, *manifest.cells[1:])}
+    )
+    with pytest.raises((TypeError, ValueError)):
+        audit_module._revalidate_model(AuditSampleManifestV1, forged_rational_manifest)
 
     record = next(row for row in packet.records if row.rubric)
 
@@ -807,6 +849,27 @@ def test_blind_packet_omits_model_arm_judge_tokens_and_provider_metadata(
     packet_payload["records"] = (foreign_record, *packet.records[1:])
     with pytest.raises((TypeError, ValueError)):
         BlindAuditPacketV1.model_validate(packet_payload)
+    forged_packet = packet.model_copy(
+        update={"records": (foreign_record, *packet.records[1:])}
+    )
+    with pytest.raises((TypeError, ValueError)):
+        audit_module._revalidate_model(BlindAuditPacketV1, forged_packet)
+
+    rubric_record = record.model_copy(
+        update={"rubric": (foreign_rubric, *record.rubric[1:])}
+    )
+    rubric_index = packet.records.index(record)
+    forged_rubric_packet = packet.model_copy(
+        update={
+            "records": (
+                *packet.records[:rubric_index],
+                rubric_record,
+                *packet.records[rubric_index + 1 :],
+            )
+        }
+    )
+    with pytest.raises((TypeError, ValueError)):
+        audit_module._revalidate_model(BlindAuditPacketV1, forged_rubric_packet)
 
 
 def test_audit_sample_root_writer_loader_round_trip_exact_four_member_layout(

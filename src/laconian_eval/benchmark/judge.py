@@ -29,7 +29,11 @@ from laconian_eval.benchmark.hard_score import (
 )
 from laconian_eval.benchmark.protocol_review import ProtocolReviewIdentityRegistryBundleV1
 from laconian_eval.capsule.attempts import ProviderMetadataString
-from laconian_eval.capsule.bounded_io import BoundedIOError, open_directory_no_follow
+from laconian_eval.capsule.bounded_io import (
+    BoundedIOError,
+    _is_descriptor_bound_path,
+    open_directory_no_follow,
+)
 from laconian_eval.capsule.canonical import stable_digest
 from laconian_eval.capsule.sidecars import VerifiedScoredCapsuleV2
 from laconian_eval.providers import (
@@ -1213,7 +1217,7 @@ def _directory_anchor(value: os.stat_result) -> tuple[int, int, int]:
 
 
 def _open_attempt_root(path: Path) -> int:
-    if not isinstance(path, Path) or ".." in path.parts:
+    if not (_is_descriptor_bound_path(path) or isinstance(path, Path)) or ".." in path.parts:
         raise ValueError("judge attempt root must be one literal Path")
     try:
         return open_directory_no_follow(path)

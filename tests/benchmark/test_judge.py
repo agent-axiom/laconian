@@ -858,6 +858,34 @@ def test_judge_attempt_root_rejects_missing_reordered_duplicate_retry_or_cross_p
         request_attachments=attachments,
     )
     assert len(verified.boundaries) == 36
+    from laconian_eval.capsule.bounded_io import (
+        _descriptor_bound_path,
+        open_directory_no_follow,
+    )
+
+    parent_fd = open_directory_no_follow(valid_root.parent)
+    try:
+        capability = _descriptor_bound_path(parent_fd) / valid_root.name
+        real_open_attempt_root = judge_module._open_attempt_root
+        capability_opens = 0
+
+        def track_attempt_root(path: Path) -> int:
+            nonlocal capability_opens
+            if type(path) is type(capability):
+                capability_opens += 1
+            return real_open_attempt_root(path)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(judge_module, "_open_attempt_root", track_attempt_root)
+            capability_verified = load_verified_judge_attempt_root(
+                capability,  # type: ignore[arg-type]
+                expected_request_root_index_sha256="c" * 64,
+                request_attachments=attachments,
+            )
+        assert capability_verified == verified
+        assert capability_opens >= 2
+    finally:
+        os.close(parent_fd)
 
     class EqualitySpoof(str):
         def __eq__(self, other: object) -> bool:

@@ -68,6 +68,7 @@ from laconian_eval.benchmark.protocol_review import (
     compute_protocol_reviewer_registry_sha256,
 )
 from laconian_eval.capsule.attempts import ProviderMetadataString
+from laconian_eval.capsule.bounded_io import _descriptor_bound_path
 from laconian_eval.capsule.canonical import stable_digest
 from laconian_eval.capsule.sidecars import VerifiedScoredCapsuleV2
 from laconian_eval.models import WarningSeverity
@@ -111,6 +112,7 @@ def _validate_nested_model_owner(
 def _revalidate_model(model_type: type[BaseModel], value: object) -> BaseModel:
     if type(value) is not model_type:
         raise TypeError(f"expected exact {model_type.__name__}")
+    _preflight_exact_owners(value, model_type)
     payload = model_type.model_dump(value, mode="python", round_trip=True, warnings=False)
     return model_type.model_validate(payload)
 
@@ -1657,6 +1659,14 @@ class _RetainedTreeWitness:
         os.close(self.descriptor)
 
 
+def _lexical_absolute_path(path: Path) -> Path:
+    if not isinstance(path, Path):
+        raise TypeError("provider evidence paths must be Path instances")
+    if ".." in path.parts:
+        raise ValueError("provider evidence paths cannot contain parent aliases")
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 def _load_attachment_layer(
     root: Path,
     *,
@@ -1746,6 +1756,12 @@ def load_verified_benchmark_provider_evidence(
 ) -> VerifiedBenchmarkProviderEvidenceV1:
     """Verify the live capabilities, four layer roots, and separate attempt root."""
 
+    provider_index_path = _lexical_absolute_path(provider_index_path)
+    generation_root = _lexical_absolute_path(generation_root)
+    hard_score_root = _lexical_absolute_path(hard_score_root)
+    judge_request_root = _lexical_absolute_path(judge_request_root)
+    judge_attempt_root = _lexical_absolute_path(judge_attempt_root)
+    judge_root = _lexical_absolute_path(judge_root)
     expectation = _verified_expectation_copy(generation_expectation)
     bundle = _bundle_copy(identity_registry_bundle)
     if provider_index_path != judge_root / "provider-evidence-index.json":
@@ -1755,8 +1771,10 @@ def load_verified_benchmark_provider_evidence(
     try:
         generation_witness = _RetainedTreeWitness.open(generation_root)
         retained_trees.append(generation_witness)
+        generation_capability = _descriptor_bound_path(generation_witness.descriptor)
         attempt_witness = _RetainedTreeWitness.open(judge_attempt_root)
         retained_trees.append(attempt_witness)
+        attempt_capability = _descriptor_bound_path(attempt_witness.descriptor)
         judge_layer = _load_attachment_layer(
             judge_root,
             kind="judge",
@@ -1765,9 +1783,10 @@ def load_verified_benchmark_provider_evidence(
         )
         retained_layers.append(judge_layer)
         index, index_raw, index_identity = _load_provider_evidence_index_at(judge_layer.descriptor)
+        generation_witness.recheck()
         context = load_verified_generation_context_index(
-            generation_index_path=generation_root / "generation-context.json",
-            generation_root=generation_root,
+            generation_index_path=cast(Path, generation_capability / "generation-context.json"),
+            generation_root=cast(Path, generation_capability),
             expectation=expectation,
         )
         generation_witness.recheck()
@@ -1793,8 +1812,9 @@ def load_verified_benchmark_provider_evidence(
         hard = cast(tuple[HardScoreRequestSetV1, ...], hard_layer.rows)
         requests = cast(tuple[JudgeRequestAttachmentV1, ...], request_layer.rows)
         judges = cast(tuple[JudgeAttachmentV1, ...], judge_layer.rows)
+        attempt_witness.recheck()
         attempt_root = load_verified_judge_attempt_root(
-            judge_attempt_root,
+            cast(Path, attempt_capability),
             expected_request_root_index_sha256=index.judge_request_root_index_sha256,
             request_attachments=requests,
         )
@@ -2032,17 +2052,13 @@ def _population_fingerprint(
     attachment: AuditPopulationAttachmentV1,
     records: tuple[AuditPopulationRecordV1, ...],
 ) -> str:
+    _preflight_exact_owners(attachment, AuditPopulationAttachmentV1)
+    _preflight_exact_owners(records, tuple[AuditPopulationRecordV1, ...])
     return stable_digest(
         "laconian-verified-audit-population-full-content-v1",
         {
-            "attachment": _canonical_fingerprint_value(
-                attachment,
-                AuditPopulationAttachmentV1,
-            ),
-            "records": _canonical_fingerprint_value(
-                records,
-                tuple[AuditPopulationRecordV1, ...],
-            ),
+            "attachment": attachment.model_dump(mode="json"),
+            "records": [record.model_dump(mode="json") for record in records],
         },
     )
 

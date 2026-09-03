@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import stat
+import types
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal, Self, cast
+from typing import Annotated, Literal, Self, Union, cast, get_args, get_origin, get_type_hints
 from uuid import uuid4
 
 import numpy as np
@@ -280,12 +281,153 @@ class _MutableCell:
     global_passes: list[int]
 
 
+def _apply_local_residual_seats(
+    cells: Mapping[str, _MutableCell],
+    cell_ids: tuple[str, ...],
+    *,
+    remaining: int,
+) -> None:
+    ranked = sorted(
+        (cells[identifier] for identifier in cell_ids),
+        key=lambda cell: (-cell.fractional_remainder, cell.cell_id.encode("utf-8")),
+    )
+    for rank, cell in enumerate(ranked, start=1):
+        cell.residual_rank = rank
+        if remaining and cell.selected < len(cell.population):
+            cell.selected += 1
+            remaining -= 1
+    if remaining:
+        raise ValueError("Hamilton allocation could not place every local seat")
+
+
 def _revalidate_model(model_type: type[BaseModel], value: object) -> BaseModel:
     if type(value) is not model_type:
         raise TypeError(f"expected exact {model_type.__name__}")
+    _preflight_model_tree(value, model_type)
     return model_type.model_validate(
         model_type.model_dump(value, mode="python", round_trip=True, warnings=False)
     )
+
+
+@dataclass(slots=True)
+class _ModelTreeWalk:
+    active: set[int]
+    nodes: int = 0
+
+
+def _annotation_choices(annotation: object) -> tuple[object, ...]:
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _annotation_choices(get_args(annotation)[0])
+    if origin in {Union, types.UnionType}:
+        return tuple(
+            choice for item in get_args(annotation) for choice in _annotation_choices(item)
+        )
+    return (annotation,)
+
+
+def _preflight_model_tree(
+    value: object,
+    annotation: object,
+    *,
+    _state: _ModelTreeWalk | None = None,
+    _depth: int = 0,
+) -> None:
+    state = _ModelTreeWalk(set()) if _state is None else _state
+    if _depth > 128:
+        raise ValueError("audit model tree exceeds nesting limit")
+    state.nodes += 1
+    if state.nodes > 1_000_000:
+        raise ValueError("audit model tree exceeds node limit")
+    choices = _annotation_choices(annotation)
+    if value is None and type(None) in choices:
+        return
+    owner = type(value)
+    tracked = isinstance(value, BaseModel) or owner in {tuple, dict}
+    identity = id(value)
+    if tracked:
+        if identity in state.active:
+            raise ValueError("audit model tree contains a cycle")
+        state.active.add(identity)
+    try:
+        tuple_choices = tuple(choice for choice in choices if get_origin(choice) is tuple)
+        mapping_choices = tuple(
+            choice for choice in choices if get_origin(choice) in {dict, Mapping}
+        )
+        if tuple_choices and owner is not tuple:
+            raise TypeError("audit tuple owner differs from its declared slot")
+        if mapping_choices and owner is not dict:
+            raise TypeError("audit mapping owner differs from its declared slot")
+        if isinstance(value, BaseModel):
+            expected = tuple(
+                choice
+                for choice in choices
+                if isinstance(choice, type) and issubclass(choice, BaseModel)
+            )
+            if owner not in expected:
+                raise TypeError("audit Pydantic owner differs from its declared slot")
+            hints = get_type_hints(owner, include_extras=True)
+            for name in owner.model_fields:
+                _preflight_model_tree(
+                    object.__getattribute__(value, name),
+                    hints[name],
+                    _state=state,
+                    _depth=_depth + 1,
+                )
+            return
+        if owner is tuple:
+            tuple_value = cast(tuple[object, ...], value)
+            tuple_choice = next(
+                (choice for choice in choices if get_origin(choice) is tuple), None
+            )
+            if tuple_choice is None:
+                raise TypeError("audit tuple owner differs from its declared slot")
+            args = get_args(tuple_choice)
+            if not (len(args) == 2 and args[1] is Ellipsis) and len(tuple_value) != len(args):
+                raise TypeError("audit fixed tuple has the wrong arity")
+            for ordinal, item in enumerate(tuple_value):
+                item_annotation = (
+                    args[0] if len(args) == 2 and args[1] is Ellipsis else args[ordinal]
+                )
+                _preflight_model_tree(
+                    item,
+                    item_annotation,
+                    _state=state,
+                    _depth=_depth + 1,
+                )
+            return
+        if owner is dict:
+            mapping_value = cast(dict[object, object], value)
+            mapping_choice = next(
+                (choice for choice in choices if get_origin(choice) in {dict, Mapping}), None
+            )
+            if mapping_choice is None:
+                raise TypeError("audit mapping owner differs from its declared slot")
+            key_annotation, item_annotation = get_args(mapping_choice)
+            for key, item in mapping_value.items():
+                _preflight_model_tree(
+                    key, key_annotation, _state=state, _depth=_depth + 1
+                )
+                _preflight_model_tree(
+                    item, item_annotation, _state=state, _depth=_depth + 1
+                )
+            return
+        literal_types = {
+            type(item)
+            for choice in choices
+            if get_origin(choice) is Literal
+            for item in get_args(choice)
+        }
+        expected_scalars = {
+            choice
+            for choice in choices
+            if isinstance(choice, type) and not issubclass(choice, BaseModel)
+        } | literal_types
+        if expected_scalars and owner not in expected_scalars:
+            raise TypeError("audit scalar owner differs from its declared slot")
+    finally:
+        if tracked:
+            state.active.remove(identity)
 
 
 def _stratum_id(model: str, locale: str, arm: str) -> str:
@@ -497,17 +639,7 @@ def _compute_sampling_design(
                 global_passes=[],
             )
         remaining = quota - sum(mutable[identifier].selected for identifier in cell_ids)
-        ranked = sorted(
-            (mutable[identifier] for identifier in cell_ids),
-            key=lambda cell: (-cell.fractional_remainder, cell.cell_id.encode("utf-8")),
-        )
-        for rank, cell in enumerate(ranked, start=1):
-            cell.residual_rank = rank
-            if remaining and cell.selected < len(cell.population):
-                cell.selected += 1
-                remaining -= 1
-        if remaining:
-            raise ValueError("Hamilton allocation could not place every local seat")
+        _apply_local_residual_seats(mutable, cell_ids, remaining=remaining)
 
     selected_total = _apply_global_fill(
         mutable,

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 import laconian_eval.capsule.execution as execution_module
 import laconian_eval.capsule.sidecars as sidecar_module
 from laconian_eval.capsule.attempts import RawAttemptV2, raw_attempt_bytes
+from laconian_eval.capsule.bounded_io import _descriptor_bound_path, open_directory_no_follow
 from laconian_eval.capsule.canonical import canonical_json, sha256_bytes, stable_digest
 from laconian_eval.capsule.execution import ProviderFactory
 from laconian_eval.capsule.finalize import finalize_capsule
@@ -1073,6 +1074,31 @@ def test_loader_rechecks_exact_sidecar_after_its_final_external_proof(
     complete, _blocked, _unsealed = sealed_small_capsules
     sidecar = tmp_path / f"loader-final-{attack}.json"
     write_scored_sidecar(complete, sidecar)
+    capsule_parent_fd = open_directory_no_follow(complete.parent)
+    sidecar_parent_fd = open_directory_no_follow(sidecar.parent)
+    try:
+        capsule_capability = _descriptor_bound_path(capsule_parent_fd) / complete.name
+        sidecar_capability = _descriptor_bound_path(sidecar_parent_fd) / sidecar.name
+        capability_rechecks: list[tuple[object, object]] = []
+        capability_real_recheck = sidecar_module._recheck_external_parent
+
+        def record_capability_recheck(*args: object, **kwargs: object) -> object:
+            capability_rechecks.append((kwargs["capsule_path"], kwargs["parent_path"]))
+            return capability_real_recheck(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(sidecar_module, "_recheck_external_parent", record_capability_recheck)
+            loaded = load_verified_scored_capsule(
+                capsule_capability,  # type: ignore[arg-type]
+                sidecar_capability,  # type: ignore[arg-type]
+            )
+        assert loaded.capsule_sha256
+        assert len(capability_rechecks) >= 4
+        assert all(type(capsule) is type(capsule_capability) for capsule, _ in capability_rechecks)
+        assert all(type(parent) is type(sidecar_capability) for _, parent in capability_rechecks)
+    finally:
+        os.close(sidecar_parent_fd)
+        os.close(capsule_parent_fd)
     real_recheck = sidecar_module._recheck_external_parent  # type: ignore[attr-defined]
     rechecks = 0
 
@@ -1103,7 +1129,6 @@ def test_loader_rechecks_exact_sidecar_after_its_final_external_proof(
 
     assert rechecks >= 4
     assert caught.value.code == "unstable_snapshot"
-
 
 def test_loader_constructs_authority_inside_source_and_scans_depth_incrementally(
     sealed_small_capsules: tuple[Path, Path, Path],

@@ -19,11 +19,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+import laconian_eval.benchmark.aggregation as aggregation_module
+import laconian_eval.benchmark.provider_evidence as provider_module
 from laconian_eval.benchmark.aggregation import (
     InferenceIntegrityError,
     aggregate_verified_evidence,
 )
 from laconian_eval.benchmark.attachments import canonical_json_v1
+from laconian_eval.benchmark.judge import JudgeAttemptEvidenceV1
 from laconian_eval.benchmark.protocol_review import protocol_review_digest
 from laconian_eval.benchmark.provider_evidence import (
     _VERIFIED_PROVIDER_EVIDENCE_MINTS,
@@ -96,6 +99,75 @@ def _rehash_provider_index(payload: dict[str, Any]) -> None:
         "laconian-benchmark-provider-evidence-index-v1",
         {key: value for key, value in payload.items() if key != "provider_evidence_index_sha256"},
     )
+
+
+def _install_incident_attempt(
+    fixture: CompleteProviderEvidenceFixture,
+    updates: dict[str, Any],
+) -> JudgeAttemptEvidenceV1:
+    boundary_path = fixture.judge_attempt_root / "judge-attempts/000.json"
+    boundary = _read_json(boundary_path)
+    attempt = boundary["attempts"][-1]
+    attempt.update(updates)
+    attempt["judge_attempt_evidence_sha256"] = stable_digest(
+        "laconian-judge-attempt-evidence-v1",
+        {key: value for key, value in attempt.items() if key != "judge_attempt_evidence_sha256"},
+    )
+    checked = JudgeAttemptEvidenceV1.model_validate_json(canonical_json_v1(attempt))
+    boundary["judge_attempt_boundary_sha256"] = stable_digest(
+        "laconian-judge-attempt-boundary-v1",
+        {
+            key: value
+            for key, value in boundary.items()
+            if key != "judge_attempt_boundary_sha256"
+        },
+    )
+    _write_json(boundary_path, boundary)
+
+    root_path = fixture.judge_attempt_root / "judge-attempts/index.json"
+    root = _read_json(root_path)
+    root["members"][0]["judge_attempt_boundary_sha256"] = boundary[
+        "judge_attempt_boundary_sha256"
+    ]
+    root["judge_attempt_root_index_sha256"] = stable_digest(
+        "laconian-judge-attempt-root-index-v1",
+        {key: value for key, value in root.items() if key != "judge_attempt_root_index_sha256"},
+    )
+    _write_json(root_path, root)
+
+    provider = _read_json(fixture.provider_index_path)
+    provider["ordered_judge_attempt_boundary_sha256s"][0] = boundary[
+        "judge_attempt_boundary_sha256"
+    ]
+    provider["judge_attempt_root_index_sha256"] = root["judge_attempt_root_index_sha256"]
+    provider["judge_cache_evidence"][39] = provider_module._cache_from_judge(
+        checked
+    ).model_dump(mode="json")
+    boundaries = [
+        _read_json(fixture.judge_attempt_root / f"judge-attempts/{ordinal:03d}.json")
+        for ordinal in range(36)
+    ]
+    successful = [
+        row
+        for item in boundaries
+        for row in item["attempts"]
+        if row["disposition"] == "success"
+    ]
+    judge_model = next(
+        row for row in provider["requested_returned_model_ids"] if row["purpose"] == "judge"
+    )
+    judge_model["returned_model_source_sha256"] = compute_requested_returned_model_source_sha256(
+        purpose="judge",
+        requested_model_id="gpt-5.6-sol",
+        returned_model_id=judge_model["returned_model_id"],
+        ordered_source_sha256s=tuple(
+            row["returned_judge_model_source_sha256"] for row in successful
+        ),
+    )
+    _rehash_provider_index(provider)
+    ProviderEvidenceIndexV1.model_validate_json(canonical_json_v1(provider))
+    _write_json(fixture.provider_index_path, provider)
+    return checked
 
 
 def _wrapper_kwargs(
@@ -388,6 +460,30 @@ def test_provider_writer_requires_the_same_live_expectation_wrapper_and_final_ro
         )
     assert output.read_bytes() == before
 
+    class ForeignRequestedReturnedModel(RequestedReturnedModelEvidenceV1):
+        pass
+
+    source = provider_fixture.provider_index.requested_returned_model_ids[0]
+    foreign = ForeignRequestedReturnedModel.model_validate(
+        source.model_dump(mode="python", round_trip=True)
+    )
+    forged = provider_fixture.provider_index.model_copy(
+        update={
+            "requested_returned_model_ids": (
+                foreign,
+                *provider_fixture.provider_index.requested_returned_model_ids[1:],
+            )
+        }
+    )
+    foreign_parent = tmp_path / "foreign-writer"
+    foreign_parent.mkdir()
+    with pytest.raises((TypeError, ValueError)):
+        write_provider_evidence_index(
+            foreign_parent / "provider-evidence-index.json",
+            forged,
+            generation_expectation=provider_fixture.expectation,
+        )
+
 
 def test_verified_provider_loader_requires_external_live_expectation_wrapper_and_never_mints_one(
     provider_fixture: CompleteProviderEvidenceFixture,
@@ -605,6 +701,9 @@ def test_runtime_adapter_imports_context_and_provider_contracts_from_distinct_ow
     assert GenerationContextIndexV1.__module__ == "laconian_eval.benchmark.context"
     assert ProviderEvidenceIndexV1.__module__ == "laconian_eval.benchmark.provider_evidence"
     assert GenerationContextIndexV1 is not ProviderEvidenceIndexV1
+    names = aggregate_verified_evidence.__code__.co_names
+    assert "VerifiedBenchmarkProviderEvidenceV1" in names
+    assert "_revalidate_verified_provider_evidence_v1" in names
 
 
 def test_benchmark_provider_projection_loads_exact_four_layer_roots_and_attempt_root_vector(
@@ -698,7 +797,10 @@ def test_benchmark_provider_projection_loads_exact_four_layer_roots_and_attempt_
 def test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent_members(
     provider_fixture: CompleteProviderEvidenceFixture,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import laconian_eval.benchmark.provider_evidence as provider_module
+
     missing = _clone(provider_fixture, tmp_path, "missing-member")
     member = missing.provider_index.ordered_judge_attachment_sha256s[0]
     path = next(
@@ -738,6 +840,59 @@ def test_benchmark_provider_projection_rejects_missing_reordered_or_cross_parent
     _rehash_provider_index(provider_payload)
     _write_json(crossed.provider_index_path, provider_payload)
     _assert_load_rejects(crossed)
+
+    ancestor = provider_fixture.workspace_root
+    displaced = ancestor.with_name(ancestor.name + ".aba-displaced")
+    real_generation_loader = provider_module.load_verified_generation_context_index
+    real_attempt_loader = provider_module.load_verified_judge_attempt_root
+    substitutions = 0
+
+    def through_empty_substitute(call: Any, *args: object, **kwargs: object) -> object:
+        nonlocal substitutions
+        ancestor.rename(displaced)
+        ancestor.mkdir()
+        try:
+            result = call(*args, **kwargs)
+            substitutions += 1
+            return result
+        finally:
+            if ancestor.exists():
+                ancestor.rmdir()
+            if displaced.exists():
+                displaced.rename(ancestor)
+
+    def generation_aba(*args: object, **kwargs: object) -> object:
+        return through_empty_substitute(real_generation_loader, *args, **kwargs)
+
+    def attempt_aba(*args: object, **kwargs: object) -> object:
+        return through_empty_substitute(real_attempt_loader, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider_module, "load_verified_generation_context_index", generation_aba)
+        patch.setattr(provider_module, "load_verified_judge_attempt_root", attempt_aba)
+        loaded = _load(provider_fixture)
+    assert substitutions == 2
+    assert loaded.index == provider_fixture.provider_evidence.index
+
+    def leave_substitute(*args: object, **kwargs: object) -> object:
+        ancestor.rename(displaced)
+        ancestor.mkdir()
+        return real_generation_loader(*args, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                provider_module,
+                "load_verified_generation_context_index",
+                leave_substitute,
+            )
+            with pytest.raises(ValueError, match="changed"):
+                _load(provider_fixture)
+    finally:
+        if ancestor.exists():
+            ancestor.rmdir()
+        if displaced.exists():
+            displaced.rename(ancestor)
 
 
 def test_benchmark_provider_projection_is_campaign_package_independent_and_input_read_only(
@@ -1091,14 +1246,84 @@ def test_verified_aggregate_rejects_missing_duplicate_reordered_or_cross_parent_
 
 def test_verified_aggregate_rejects_unknown_delivery_authentication_or_response_received_error(
     provider_fixture: CompleteProviderEvidenceFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    poisoned = _load(provider_fixture)
-    boundary = poisoned.judge_attempt_root.boundaries[0]
-    terminal = boundary.attempts[-1]
-    assert terminal.delivery_certainty == "response_received"
-    object.__setattr__(terminal, "delivery_certainty", "unknown")
-    with pytest.raises(InferenceIntegrityError):
-        aggregate_verified_evidence(provider_evidence=poisoned)
+    unavailable_usage = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "ordinary_uncached_input_tokens": None,
+        "reasoning_tokens": None,
+        "availability": "unavailable",
+        "cache_read_status": "not_applicable_definitely_rejected",
+        "cache_write_status": "not_applicable_definitely_rejected",
+        "reasoning_accounting": "not_applicable",
+    }
+    cases = (
+        {
+            "disposition": "service_tier_mismatch",
+            "delivery_certainty": "unknown",
+            "returned_service_tier": "unexpected-tier",
+            "service_tier_status": "mismatch",
+            "cost_availability": "retained_worst_case",
+            "judgment": None,
+        },
+        {
+            "disposition": "authentication_stopped",
+            "delivery_certainty": "definitely_rejected",
+            "returned_service_tier": None,
+            "service_tier_status": "not_applicable_definitely_rejected",
+            "cost_availability": "definitely_rejected_zero",
+            "provider_request_id": None,
+            "returned_judge_model_id": None,
+            "raw_response_sha256": None,
+            "judgment": None,
+            "applied_prompt_cache_mode": None,
+            "applied_prompt_cache_ttl": None,
+            "applied_cache_control_status": "not_applicable_definitely_rejected",
+            "usage": unavailable_usage,
+        },
+        {
+            "disposition": "cache_write_policy_incident",
+            "cost_availability": "retained_worst_case",
+            "judgment": None,
+            "usage": {
+                **provider_fixture.provider_evidence.judge_attempt_root.boundaries[0]
+                .attempts[-1]
+                .usage.model_dump(mode="json"),
+                "cache_write_tokens": None,
+                "cache_write_status": "missing",
+            },
+        },
+    )
+    evidence = _cached(provider_fixture)
+    boundary = evidence.judge_attempt_root.boundaries[0]
+    original_attempts = boundary.attempts
+    for ordinal, updates in enumerate(cases):
+        clone = _clone(provider_fixture, tmp_path, f"incident-{ordinal}")
+        incident = _install_incident_attempt(clone, updates)
+        with pytest.raises(InferenceIntegrityError):
+            aggregation_module._reject_judge_incident_attempt(incident)
+        object.__setattr__(boundary, "attempts", (*original_attempts[:-1], incident))
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    provider_module,
+                    "_revalidate_verified_provider_evidence_v1",
+                    lambda _value: evidence,
+                )
+                with pytest.raises(InferenceIntegrityError):
+                    aggregate_verified_evidence(provider_evidence=evidence)
+        finally:
+            object.__setattr__(boundary, "attempts", original_attempts)
+        with pytest.raises(
+            ValueError,
+            match="judge final record lacks one terminal-success attempt",
+        ):
+            _load(clone)
 
 
 def test_verified_aggregate_cost_is_analytical_and_never_claims_ledger_verification(

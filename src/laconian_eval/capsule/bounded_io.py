@@ -48,6 +48,84 @@ class RegularFileSnapshot:
     identity: RegularFileIdentity
 
 
+@dataclass(frozen=True, slots=True)
+class _DescriptorDirectoryIdentity:
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DescriptorBoundPath(os.PathLike[str]):
+    _directory_fd: int
+    _directory_identity: _DescriptorDirectoryIdentity
+    _relative_components: tuple[str, ...]
+
+    def __fspath__(self) -> str:
+        base = f"/dev/fd/{self._directory_fd}"
+        return "/".join((base, *self._relative_components))
+
+    def __truediv__(self, operand: object) -> _DescriptorBoundPath:
+        normalized = normalize_source_path(operand)  # type: ignore[arg-type]
+        return _DescriptorBoundPath(
+            self._directory_fd,
+            self._directory_identity,
+            (*self._relative_components, *normalized.split("/")),
+        )
+
+    @property
+    def parent(self) -> _DescriptorBoundPath:
+        if not self._relative_components:
+            return self
+        return _DescriptorBoundPath(
+            self._directory_fd,
+            self._directory_identity,
+            self._relative_components[:-1],
+        )
+
+    @property
+    def name(self) -> str:
+        return self._relative_components[-1] if self._relative_components else ""
+
+    @property
+    def parts(self) -> tuple[str, ...]:
+        return self._relative_components
+
+
+def _descriptor_directory_identity(metadata: os.stat_result) -> _DescriptorDirectoryIdentity:
+    return _DescriptorDirectoryIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        link_count=metadata.st_nlink,
+        size=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
+    )
+
+
+def _descriptor_bound_path(directory_fd: int) -> _DescriptorBoundPath:
+    if type(directory_fd) is not int or directory_fd < 0:
+        raise BoundedIOError("invalid_directory_descriptor", "invalid directory descriptor")
+    try:
+        metadata = os.fstat(directory_fd)
+    except OSError as error:
+        raise BoundedIOError(
+            "invalid_directory_descriptor", "invalid directory descriptor"
+        ) from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise BoundedIOError("not_directory", "source root is not a directory")
+    return _DescriptorBoundPath(directory_fd, _descriptor_directory_identity(metadata), ())
+
+
+def _is_descriptor_bound_path(value: object) -> bool:
+    return type(value) is _DescriptorBoundPath
+
+
 def normalize_source_path(value: str) -> str:
     """Validate and return an unchanged normalized relative POSIX path."""
 
@@ -105,6 +183,47 @@ def _source_open_flags() -> int:
 
 def open_directory_no_follow(path: os.PathLike[str] | str) -> int:
     """Open a directory without following a symlink at any path component."""
+
+    if _is_descriptor_bound_path(path):
+        capability = path
+        assert type(capability) is _DescriptorBoundPath
+        if type(capability._relative_components) is not tuple or any(
+            type(component) is not str for component in capability._relative_components
+        ):
+            raise BoundedIOError("unsafe_source_path", "unsafe source path")
+        if capability._relative_components:
+            normalized_tail = normalize_source_path("/".join(capability._relative_components))
+            if tuple(normalized_tail.split("/")) != capability._relative_components:
+                raise BoundedIOError("unsafe_source_path", "unsafe source path")
+        try:
+            descriptor = os.dup(capability._directory_fd)
+        except OSError as error:
+            raise BoundedIOError(
+                "invalid_directory_descriptor", "invalid directory descriptor"
+            ) from error
+        try:
+            if (
+                _descriptor_directory_identity(os.fstat(descriptor))
+                != capability._directory_identity
+            ):
+                raise BoundedIOError(
+                    "invalid_directory_descriptor", "invalid directory descriptor"
+                )
+            for component in capability._relative_components:
+                next_descriptor = os.open(
+                    component,
+                    _directory_open_flags(),
+                    dir_fd=descriptor,
+                )
+                previous = descriptor
+                descriptor = next_descriptor
+                os.close(previous)
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise BoundedIOError("not_directory", "source root is not a directory")
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
 
     raw_path = os.fspath(path)
     if type(raw_path) is not str or not raw_path:
