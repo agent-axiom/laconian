@@ -431,6 +431,409 @@ substitution still reject. Provider cases extend the existing tests around the v
 missing/reordered/cross-parent projection tests, so the Task 8 benchmark inventory remains exactly
 51 named tests.
 
+**Task 9 source-backed audit-authority amendment scope (separate approval required):** This
+amendment supersedes only Task 9's reviewer-key authority, pull-request and review source evidence,
+Git-object input, digest preimages, append-only topology, verifier arguments, and the corresponding
+Task 13, Task 14, Task 15, Runtime Task 2/live-freeze, and Publication handoffs. It does not change
+sampling, label semantics,
+`HumanAuditLabelV1.contradiction_evidence: str | None = None`, audit metrics, gates, outcome
+precedence, or completed Task 1--8 evidence semantics except for the explicit pre-live audit-
+reviewer-registry wire migration below. Task 9 and every affected upstream/downstream consumer are
+blocked until the normative commit containing this amendment is separately approved.
+
+Task 9 additionally modifies `src/laconian_eval/benchmark/protocol_review.py` and
+`tests/benchmark/test_protocol_review.py`. Its complete implementation file set is:
+
+```text
+src/laconian_eval/benchmark/protocol_review.py
+src/laconian_eval/benchmark/audit_commit_reveal.py
+src/laconian_eval/benchmark/__init__.py
+tests/benchmark/helpers.py
+tests/benchmark/test_protocol_review.py
+tests/benchmark/test_audit_commit_reveal.py
+```
+
+Task 13 owns the corresponding `reporting.py`/`test_reporting.py` durable-evidence changes; Task 15
+owns the cumulative package/CLI contract; Task 14 owns `evals/README.md` and its public-contract
+assertions; Publication owns the complete-bundle allowlist and source-backed loader handoff.
+Runtime Task 2 and the roadmap live freeze own the v2 `reviewers.yaml` fixture/input migration.
+
+Every new serialized Task 9 model is strict, frozen, `extra="forbid"`, class-bound revalidated, and
+rejects a foreign nested `BaseModel` owner. Positive IDs reject strings, floats, booleans, zero, and
+negative values. SHA-1/SHA-256 fields are exact lowercase 40/64 hex, audit timestamps use
+`WholeSecondTimestamp`, and all logical tuples use the orders fixed below. Unless an explicit
+raw-byte preimage is named, every self digest is exactly
+`stable_digest(domain, model_dump(mode="json", exclude={only_self_field}))`, namely
+`SHA256(UTF8(domain) || NUL || canonical_json(payload))`. Existing protocol-review digest fields
+inside reused projections and receipts retain their approved LF-framed `CanonicalJSONV1`
+preimages.
+
+Add the protocol-review-owned audit key:
+
+```python
+class AuditReviewerSigningKeyV1(CapsuleModel):
+    schema_version: Literal["AuditReviewerSigningKeyV1"]
+    verification_mode: Literal["ssh_sha256", "openpgp_fingerprint"]
+    fingerprint: SigningFingerprintV1
+    author_name_ascii: CanonicalGitAsciiName
+    author_email_ascii: CanonicalGitAsciiEmail
+    committer_name_ascii: CanonicalGitAsciiName
+    committer_email_ascii: CanonicalGitAsciiEmail
+    public_key_encoding: Literal[
+        "openssh-ed25519-wire-v1",
+        "openpgp-v4-ed25519-transferable-public-key-v1",
+    ]
+    public_key_base64: StrictCanonicalBase64
+    public_key_sha256: Sha256
+```
+
+This is an exclusive pre-release wire migration. The existing exact Python owners retain their
+names, but `AuditReviewerRegistryV1.schema_version` changes from the now-rejected
+`benchmark-reviewer-registry-v1` to the sole accepted literal
+`benchmark-reviewer-registry-v2`; `canonical_reviewer_registry_bytes` emits only v2. There is no
+dual reader, compatibility alias, omitted-key default, v1 fallback, or digest translation.
+`ReviewerAccountBindingV1` has exact field order `reviewer_id,
+reviewer_numeric_account_id, reviewer_login, verification_mode, signing_fingerprint, signing_key,
+role`; `signing_key` is `AuditReviewerSigningKeyV1 | None` and precedes
+`role: Literal["audit_reviewer"]`. `github_verified_commit` requires both fingerprint and key null.
+Each keyed mode requires an exact audit-key owner whose mode, fingerprint, decoded-byte SHA-256,
+encoding, and four frozen Git identity fields match. The key validator parses the decoded key,
+recomputes its algorithm-specific fingerprint, and compares that value with both key and binding;
+a declared fingerprint is not proof. `ssh_sha256` requires only
+`openssh-ed25519-wire-v1`; `openpgp_fingerprint` requires only
+`openpgp-v4-ed25519-transferable-public-key-v1`. The only keyed profiles are SSH Ed25519 SSHSIG
+namespace `git` with SHA-512, and an OpenPGP v4 transferable Ed25519 public key with SHA-256
+detached signature. The OpenPGP primary fingerprint is uppercase 40-hex; the SSH fingerprint is
+`SHA256:` plus unpadded standard base64 of SHA-256 over the canonical OpenSSH wire key.
+Across the two audit bindings, all nonnull fingerprints and all nonnull decoded-key SHA-256 values
+are pairwise distinct; one public key cannot represent both reviewers.
+`AuditReviewerRegistryV1`, `canonical_reviewer_registry_bytes`, and
+`compute_audit_reviewer_registry_sha256` retain their signatures; their existing complete reviewer
+projection now directly binds both public keys and Git identities. Extend `_verify_keyed_signature_v1`
+to accept only the exact union `ProtocolReviewSigningKeyV1 | AuditReviewerSigningKeyV1`.
+
+This migration reopens only the audit-registry-dependent verification and fixtures in Evaluation
+Tasks 3 and 8, plus their full downstream provider/population/sample digest chain. Regenerate every
+synthetic C0/input-tag/reviewer-registry/provider/sample fixture and digest; no already-materialized
+v1 object is accepted. Because `protocol_review.py` is itself C0 source-hashed, regenerate
+`verifier_source_sha256`, `protocol_signature_verifier_tool_sha256`, the identity-bundle digest,
+T0/C0, all three protocol-review commits/attestations, B0/T1, and their derived roots. Runtime Task
+2's synthetic `reviewers.yaml` and the roadmap's final live `reviewers.yaml` must contain the
+complete v2 records and exact mode-compatible public-key material; only the roadmap live freeze may
+create the latter. Re-run all Task 3 and exact 51 Task 8 benchmark tests, the three Task 8 capsule
+suites, and the cumulative public contract before Task 9 GREEN; these are migration verification,
+not new Task 8 semantics.
+
+Task 9 accepts no caller-supplied repository scalar. It class-bound revalidates
+`VerifiedBenchmarkProviderEvidenceV1`, reads all three retained verified protocol attestations,
+parses their REST endpoints with the existing strict C0 repository-slug grammar, and requires one
+unanimous `(repository_owner, repository_name)` across the three REST endpoints and one unanimous
+`repository_id` across all three REST and all three GraphQL projections. Add this protocol-review-
+owned neutral verifier and make the existing protocol-attestation path delegate to it:
+
+```python
+def verify_commit_signature_evidence_source(
+    *,
+    source: ProtocolSignatureEvidenceSourceV1,
+    commit: ParsedProtocolGitObjectV1,
+    expected_parent_oid: str,
+    expected_primary_path: str,
+    expected_repository_id: int,
+    expected_repository_owner: str,
+    expected_repository_name: str,
+    expected_signer_numeric_account_id: int,
+    expected_signer_login: str,
+    expected_verification_mode: SignatureVerificationModeV1,
+    expected_signing_fingerprint: str | None,
+    signing_key: ProtocolReviewSigningKeyV1 | AuditReviewerSigningKeyV1 | None,
+    expected_git_identity: tuple[str, str, str, str] | None,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+    audit_reviewer_registry: AuditReviewerRegistryV1 | None,
+) -> SignatureEvidenceV1: ...
+```
+
+The neutral verifier reparses the raw commit, requires its exact supplied single parent, derives
+the signed payload, signature, author epoch, and whole-second UTC signing time, reconstructs the
+REST and GraphQL projections from both retained raw responses, verifies raw/canonical lengths,
+receipt hashes, repository, and signer numeric ID/login, and canonical-byte compares a freshly
+constructed `SignatureEvidenceV1`. Keyed modes additionally compare all four raw Git identity
+fields in exact order `(author_name_ascii, author_email_ascii, committer_name_ascii,
+committer_email_ascii)` and rerun the approved cryptographic verifier with the registry key.
+`identity_registry_bundle` is exact-owner/class-bound revalidated and supplies the sole verifier-
+tool digest; for a protocol key, the key must be an exact member of its `keys`. For an audit key,
+`audit_reviewer_registry` must be the exact freshly recomputed provider registry and the key must be
+the selected reviewer's exact nested key. The keyed evidence `keyring_sha256` remains the approved
+SHA-256 of decoded public-key material and must equal `signing_key.public_key_sha256`; it is never a
+registry/bundle digest. GitHub mode requires null key and Git identity. A stored success flag,
+badge, fingerprint, projection, receipt, keyring hash, or tool hash never skips an operation. This
+neutral helper verifies relative to the supplied exact roots but mints no provider/audit authority;
+its protocol caller supplies C0 roots and its audit caller first binds both roots to provider
+evidence. Audit `statement_path` is the primary governed path: the reviewer commitment, the
+reviewer's `reveal.json`, or `adjudication-core.json`.
+
+Add strict schemas `AuditPullRequestKindV1 = Literal["commitment", "reveal",
+"adjudication"]`, `GitHubAuditApiObservationReceiptV1`,
+`ExactGitHubPullRequestRecordV1`, `AuditPullRequestEvidenceSourceV1`,
+`AuditGitObjectArchiveV1`, and `ExactGitHubReviewSourceV1`. Their exact wire fields are:
+
+```text
+GitHubAuditApiObservationReceiptV1:
+  schema_version[audit-github-api-observation-receipt-v1],
+  source_kind[pull_request|review], repository_id, endpoint,
+  api_version[2022-11-28], observed_at_utc, request_id, etag,
+  raw_response_byte_length[1..2097152], raw_response_sha256,
+  tls_endpoint_identity[api.github.com:443],
+  github_audit_api_observation_receipt_sha256
+
+ExactGitHubPullRequestRecordV1:
+  schema_version[audit-github-pull-request-record-v1], repository_id,
+  pr_number, actor_account_id, actor,
+  base_ref[main], head_sha, merge_commit_sha, merge_actor_account_id,
+  merge_actor, state[closed], merged[true], merged_at_utc,
+  exact_api_record_sha256
+
+AuditPullRequestEvidenceSourceV1:
+  schema_version[audit-pull-request-source-v1], proof_kind, campaign_id,
+  reviewer_id[nullable],
+  pull_request_record, pull_request_observation_receipt,
+  pull_request_raw_response_base64[canonical base64; decoded receipt length/hash must match],
+  signature_observation_receipt,
+  signature_evidence,
+  signature_raw_response_byte_lengths[exact (REST,GraphQL) pair; each 1..1048576],
+  signature_raw_response_bytes_base64[exact canonical-base64 (REST,GraphQL) pair;
+    decoded lengths and receipt hashes must match],
+  signature_canonical_response_byte_lengths[exact (REST,GraphQL) pair; each 1..1048576],
+  signature_canonical_response_bytes_base64[exact canonical-base64 (REST,GraphQL) pair;
+    decoded lengths and receipt hashes must match],
+  pull_request_source_sha256
+
+AuditGitObjectArchiveV1:
+  schema_version[audit-git-object-archive-v1], object_closure_root,
+  objects[exact tuple of ArchivedProtocolGitObjectV1 values, each with exact fields
+    oid, type[commit|tree|blob], size, git_object_sha256, raw_content_base64],
+  audit_git_object_archive_sha256
+
+ExactGitHubReviewSourceV1:
+  schema_version[audit-github-review-source-v1], reviewer_id, record,
+  observation_receipt,
+  raw_response_base64[canonical base64], github_review_source_sha256
+```
+
+`PullRequestProofV1` has schema version `audit-pull-request-proof-v1` and exact field order
+`schema_version, proof_kind, campaign_id, reviewer_id,
+repository_id, pr_number, actor_account_id, actor, base_ref, base_sha, head_sha, merge_commit_sha,
+merge_actor_account_id, merge_actor, merged_at_utc, verification_mode,
+head_signing_fingerprint, signature_evidence, changed_paths, exact_pr_api_record_sha256,
+pull_request_source_sha256, pull_request_proof_sha256`. `base_ref` is literal `main`; `reviewer_id`
+is null only for adjudication. The duplicate-key-rejecting raw PR parser selects exactly `number,
+state, merged, merged_at, user.id, user.login, base.ref, base.repo.id,
+base.repo.owner.login, base.repo.name, head.sha, merge_commit_sha, merged_by.id,
+merged_by.login`. Its endpoint is exactly `GET /repos/<owner>/<name>/pulls/<decimal-pr-number>`.
+The record is rebuilt from the length/hash-bound raw bytes and canonical-byte compared. `base_sha`
+comes only from the verified merge object's first parent. Commitment/reveal actor and signer match
+the selected reviewer binding. The adjudication actor/signer is distinct by both numeric ID and
+login from both reviewers and uses only GitHub-verified mode with null fingerprint.
+After all four `(REST, GraphQL)` length/hash comparisons, Task 9 decodes the two exact byte pairs
+and constructs the exact in-memory `ProtocolSignatureEvidenceSourceV1` consumed by the neutral
+verifier; no alternate source owner, reordered pair, or projection-only shortcut is accepted.
+
+`ExactGitHubReviewRecordV1` retains its existing fields but changes `submitted_at_utc` to
+`WholeSecondTimestamp`. Its exact source endpoint is
+`GET /repos/<owner>/<name>/pulls/<decimal-pr-number>/reviews/<decimal-review-id>`; the
+duplicate-key-rejecting parser selects exactly `id, user.id, user.login, body, state, commit_id,
+submitted_at`, derives repository/PR identity only from the authority-checked endpoint, and
+canonical-byte compares the reconstructed record. Canonical Base64 decoding must reproduce the
+receipt's exact positive byte length and raw SHA-256 before JSON parsing. Add
+`github_review_source_sha256` immediately before `signoff_proof_sha256` in
+`ExactGitHubReviewSignoffV1`.
+
+Add direct authority fields in this order: after `campaign_id`, `CommitmentHeaderV1` and
+`ReviewerRevealV1` contain `campaign_registry_sha256`; after `reviewer_id` they contain
+`audit_reviewer_registry_sha256`; after `sample_manifest_sha256` they contain
+`audit_commit_reveal_protocol_sha256`. After `campaign_id`, `AuditAdjudicationCoreV1` contains
+`campaign_registry_sha256, audit_reviewer_registry_sha256, sample_manifest_sha256,
+audit_commit_reveal_protocol_sha256, audit_adjudication_protocol_sha256`, followed by its existing
+reveal/consensus fields. Every value equals freshly revalidated provider/sample authority.
+`salt_hex` is exactly 64 lowercase hex and decodes to exactly 32 bytes.
+
+The exact new digest domains are:
+
+```text
+laconian-audit-github-api-observation-receipt-v1
+laconian-audit-github-pull-request-record-v1
+laconian-audit-pull-request-source-v1
+laconian-audit-pull-request-proof-v1
+laconian-audit-git-object-closure-v1
+laconian-audit-git-object-archive-v1
+laconian-audit-reveal-v1
+laconian-audit-reviewer-chain-proof-v1
+laconian-audit-adjudication-core-v1
+laconian-audit-github-review-record-v1
+laconian-audit-github-review-source-v1
+laconian-audit-adjudication-github-review-v1
+laconian-audit-adjudication-v1
+```
+
+`object_closure_root` hashes the exact OID-ordered list of `oid, type, size,
+git_object_sha256`. `labels_sha256` is raw SHA-256 over exact canonical JSONL including its final
+LF; `fixed_body_sha256` is raw SHA-256 over exact UTF-8 body bytes. The separately approved
+commitment preimage remains byte-for-byte unchanged. Every other domain above uses the common
+self-digest rule and omits only its own field.
+
+Remove `git_object_database: Path`. No ambient repository, subprocess, packfile, alternates,
+replacement refs, grafts, shallow metadata, callback, or porcelain result is authority.
+`AuditGitObjectArchiveV1` contains 1--4,096 unique objects in strict ascending lowercase OID order,
+only `commit|tree|blob`, and at most 67,108,864 decoded raw-content bytes. Reparse every object with
+`parse_protocol_git_object`, verifying its Git SHA-1 wire OID, exact type/size, and wire SHA-256.
+The durable loader rejects an archive JSON file larger than 100,663,296 bytes before parsing.
+The archive must contain exactly the deterministic closure and no extra object. Seed commit OIDs
+are the first-parent commits from the earlier commitment merge's base through the adjudication
+merge, inclusive, plus the five signed head commits. Walk the main chain by each parsed commit's
+first parent and reject a cycle, fork, gap, missing endpoint, or second occurrence. For each of the
+five audited `(base tree, head tree)` pairs, perform a simultaneous bytewise-entry-name tree diff:
+include both compared tree objects; stop at an entry only when name, mode, type, and OID are equal;
+recurse into every unequal tree pair and every one-sided tree in bytewise path order; include both
+present leaf objects at each unequal/non-tree entry. Independently, for every governed path already
+introduced at each main-chain state from its merge through adjudication, include the root tree,
+each prefix tree in path-component order, and the terminal blob. Also resolve the complete
+`benchmarks/audits/<campaign-id>` subtree (or its first absent prefix) at every adjacent pair of
+main-chain states. Equal audit-subtree OIDs stop; unequal/one-sided audit subtrees use the same
+complete simultaneous diff walk. Each audited merge transition must add exactly its governed
+allowlist below, while every intervening transition must leave the entire campaign audit-subtree OID
+unchanged. The required set is the union of those commit, PR-diff, audit-subtree-transition, and
+governed-path objects, sorted by decoded OID; object identity deduplicates the union. A compared
+equal subtree is opaque and is not recursively expanded. A one-sided/unequal subtree is completely
+expanded, so no hidden extra delta is possible. Any missing referenced object, wrong referenced
+type, traversal outside this algorithm, or additional archive object rejects before
+`object_closure_root` is accepted. Here a referenced object means an OID that this exact traversal
+selects for descent or terminal comparison; an intentionally opaque equal subtree or an unrelated
+entry of an included ancestor tree does not recursively expand the closure.
+
+The five PRs are exactly commitment A, commitment B, reveal A, reveal B, and adjudication, where
+A/B are provider reviewer order. The five PR numbers are unique; the ten head/merge OIDs are
+pairwise distinct. Each
+head is one signed single-parent commit whose parent is `base_sha`; its merge commit has exact
+parents `(base_sha, head_sha)` and the same tree as the head. The five merges form one first-parent
+`main` chain: both commitments precede both reveals, which precede adjudication; either reviewer
+order is allowed inside each pair. Every reveal descends from both commitments and adjudication
+descends from both reveals. API merge timestamps strictly increase in first-parent order.
+
+Allowed deltas are only one added `100644` commitment JSON, the byte-ordered pair `labels.jsonl`,
+`reveal.json` for a reveal, or one added `100644` adjudication-core JSON, beneath
+`benchmarks/audits/<campaign-id>/...`. The authority-derived campaign ID must exactly match
+`benchmark-[0-9a-f]{32}` and is used verbatim as one safe component; there is no caller value or
+path encoding. Reviewer IDs are one safe ASCII component matching
+`[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?` and do not casefold to a `.git` suffix.
+Every path is absent at base and added once; modification, deletion, rename, symlink, submodule,
+alternate mode, prefix alias, backslash, absolute/dot segment, or extra path rejects. JSON blobs
+are exact `canonical_json_v1(model_dump(mode="json")) + b"\n"`; label blobs are exact
+`canonical_label_jsonl(labels)`. Once introduced, every governed blob remains byte-identical in
+every subsequent first-parent state; intervening commits may change only paths outside the complete
+`benchmarks/audits/<campaign-id>` subtree.
+
+Replace the verifier boundaries with:
+
+```python
+def verify_reviewer_chain(
+    chain: ReviewerChainV1,
+    *,
+    sample: VerifiedAuditSampleRootV1,
+    provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
+    audit_git_object_archive: AuditGitObjectArchiveV1,
+    commitment_sources: tuple[
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+    ],
+    reveal_source: AuditPullRequestEvidenceSourceV1,
+) -> None: ...
+
+def verify_audit_chain(
+    *,
+    chains: tuple[ReviewerChainV1, ReviewerChainV1],
+    adjudication: AuditAdjudicationV1,
+    sample: VerifiedAuditSampleRootV1,
+    provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
+    audit_git_object_archive: AuditGitObjectArchiveV1,
+    pull_request_sources: tuple[
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+    ],
+    github_review_sources: tuple[
+        ExactGitHubReviewSourceV1,
+        ExactGitHubReviewSourceV1,
+    ],
+) -> None: ...
+```
+
+Remove caller `expected_reviewer(s)`, reviewer-registry digest, other-merge scalar, blind packet,
+Git path, detached identities, and detached review records. Both verifiers first owner-revalidate
+provider evidence, recompute the exact two-entry reviewer registry, and run `verify_audit_sample`
+against the complete sample. PR sources use exact order commitment A/B, reveal A/B, adjudication;
+reviewer chains, reveal hashes, signoffs, and review sources use reviewer-ID byte order; labels and
+consensus use audit-ID byte order; objects use decoded OID order; `changed_paths` uses UTF-8 byte
+order. Caller insertion, numeric ID, traversal, timestamp, and merge order never substitute.
+
+Consensus covers every packet row exactly once. Agreement requires `reviewer-agreement`, the common
+Boolean, and null rationale. Disagreement is `adjudicated` with a Boolean or `unresolved` with null,
+both requiring nonempty NFC rationale of at most 2,000 characters. The two exact review sources
+reconstruct distinct `APPROVED` reviews by both registry identities on the adjudication head. Their
+body bytes are exactly `b"laconian-audit-adjudication-core-v1\0" +
+adjudication_core_sha256.encode("ascii") + b"\n"`; submissions are after both reveal merges and
+before adjudication merge. Valid signoffs may seal explicit unresolved rows, making the model
+inconclusive. Missing, stale, wrong-head/body/actor/state/timestamp, or unreconstructable source
+rejects the envelope and blocks `AUDIT_SEALED`.
+
+In addition to Task 9's existing 16 named tests, add exactly these 15 tests, for an exact Task 9
+inventory of 31:
+
+```text
+test_audit_registry_directly_binds_exact_key_bytes_and_git_identities
+test_github_mode_rejects_an_audit_key_and_keyed_modes_require_one
+test_audit_key_profile_rejects_wrong_encoding_bytes_hash_fingerprint_or_algorithm
+test_repository_authority_is_unanimously_derived_from_verified_protocol_attestations
+test_pull_request_source_reconstructs_raw_pr_and_raw_signature_responses
+test_pull_request_source_rejects_forged_success_even_after_rehashing_outer_models
+test_pull_request_source_rejects_repository_endpoint_actor_or_signer_substitution
+test_audit_git_archive_rejects_missing_extra_unsorted_oversized_or_tag_objects
+test_audit_git_topology_requires_single_parent_heads_two_parent_merges_and_group_order
+test_commitment_reveal_and_adjudication_deltas_use_the_exact_path_allowlists
+test_governed_blobs_remain_immutable_across_intervening_first_parent_commits
+test_exact_github_review_source_reconstructs_raw_api_bytes
+test_review_source_rejects_wrong_endpoint_body_head_actor_state_or_timestamp
+test_adjudication_actor_is_distinct_from_both_reviewers_and_github_verified
+test_every_audit_tuple_rejects_a_noncanonical_order
+```
+
+Task 9 RED and GREEN both run `test_protocol_review.py` and `test_audit_commit_reveal.py`; GREEN
+also runs Ruff on all six implementation files and mypy on both production owners. Commit only the
+six Task 9 files above with message `feat: verify source-backed human-audit commit reveal`.
+
+For Task 13, insert `audit_git_object_archive_sha256`, exact five-element
+`pull_request_source_sha256s`, and exact two-element `github_review_source_sha256s` immediately
+after `blind_packet_sha256` in `AuditEvidenceAttachmentV1`. `VerifiedAuditEvidenceV1` retains, in
+order, attachment, population, manifest, packet, archive, five PR sources, reviewer chains, two
+review sources, their two reconstructed review records, adjudication, and metrics. The writer
+accepts those sources/archive, not detached review records or a Git path; it derives review records
+and reruns `verify_audit_chain`. Its stored allowlist adds `audit/git-object-archive.json`, exactly
+two `audit/pull-request-sources/commitment/<reviewer-id>.json`, exactly two corresponding
+`reveal/<reviewer-id>.json`, `audit/pull-request-sources/adjudication.json`, and exactly two
+`audit/github-review-sources/<review-id>.json`. Existing dedicated review-record files remain and
+must byte-equal source reconstructions. The loader needs no external Git state or source bytes.
+
+For Task 15/package exports, add protocol-review owners `AuditReviewerSigningKeyV1` and
+`verify_commit_signature_evidence_source`; add lazy audit owners
+`GitHubAuditApiObservationReceiptV1`, `ExactGitHubPullRequestRecordV1`,
+`AuditPullRequestEvidenceSourceV1`, `AuditGitObjectArchiveV1`, and
+`ExactGitHubReviewSourceV1`. `audit_commit_reveal` remains PEP 562 lazy because it imports
+judge/provider owners. Synchronize `evals/README.md`, the literal cumulative Slice 2 export tuple,
+Task 13 loader tests, and Publication's complete-bundle allowlist. Publication copies and checksum-
+binds the archive, five PR sources, two review sources, and the already-required two
+`audit/reviewer-chains/<reviewer-id>.json`; it invokes the source-backed Task 13 loader and accepts
+no Git path/callback, detached review record, source-success Boolean, or repository scalar.
+
 This is Slice 2. Its Task 1 CanonicalJSON/attachment bootstrap runs first and must be GREEN before
 Foundations Task 2 imports those owner objects. Evaluation Tasks 2–15 start only after Slice 1
 exposes these public, tested interfaces:
@@ -1848,11 +2251,13 @@ model, scenario, one canonical relative path, and its attachment hash. A discrim
 `(generation_model UTF-8 bytes, scenario_uid raw digest bytes)` order, ordinals `0..35`, a matching
 member kind, unique safe paths under the kind's fixed subtree, and the domain-separated self digest.
 
-`AuditReviewerRegistryV1` contains exactly two distinct ordered audit reviewers, including audit
-role. `ProtocolReviewerRegistryV1` contains exactly three distinct entries in role order
+`AuditReviewerRegistryV1` contains exactly two distinct ordered audit reviewers under the exclusive
+`benchmark-reviewer-registry-v2` wire, including audit role and the amendment's exact nullable
+mode-compatible signing key/Git identities. `ProtocolReviewerRegistryV1` contains exactly three distinct entries in role order
 `statistical_method`, `blind_judge_audit_protocol`, `security_evidence`. Both use the closed
 `github_verified_commit | ssh_sha256 | openpgp_fingerprint` vocabulary. GitHub mode requires null
-fingerprint; keyed modes require an exact fingerprint; `security_evidence` always requires nonnull
+fingerprint and, for audit reviewers, null key; keyed audit modes require an exact fingerprint and
+key; `security_evidence` always requires nonnull
 fingerprint and therefore cannot use GitHub mode. Registry and attestation bytes use Task 1
 `CanonicalJSONV1` with no terminal newline and distinct domains.
 
@@ -2039,6 +2444,7 @@ class ReviewerAccountBindingV1(BaseModel):
     signing_fingerprint: str | None = Field(
         pattern=r"^(?:[0-9A-F]{40}|SHA256:[A-Za-z0-9+/]{43})$",
     )
+    signing_key: AuditReviewerSigningKeyV1 | None
     role: Literal["audit_reviewer"]
 
     @model_validator(mode="after")
@@ -2049,7 +2455,7 @@ class ReviewerAccountBindingV1(BaseModel):
 
 class AuditReviewerRegistryV1(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
-    schema_version: Literal["benchmark-reviewer-registry-v1"]
+    schema_version: Literal["benchmark-reviewer-registry-v2"]
     reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1]
     audit_reviewer_registry_sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
@@ -2322,7 +2728,7 @@ def canonical_reviewer_registry_bytes(
 ) -> bytes:
     return canonical_json_v1(
         {
-            "schema_version": "benchmark-reviewer-registry-v1",
+            "schema_version": "benchmark-reviewer-registry-v2",
             "reviewers": [item.model_dump(mode="json") for item in reviewers],
         }
     )
@@ -2602,7 +3008,7 @@ def load_verified_generation_context_index(
 ~~~
 
 The two registry byte contracts are exact and independent:
-`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v1", "reviewers":
+`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v2", "reviewers":
 [item.model_dump(mode="json") for item in audit_reviewers]})` for the two
 bytewise-reviewer-ID-ordered audit bindings, and
 `canonical_json_v1({"schema_version": "benchmark-protocol-reviewer-registry-v1", "reviewers":
@@ -5402,13 +5808,15 @@ field, and context loading rejects any source/protocol/root substitution before 
 attachment can be built.
 
 The two-person audit reviewer-registry projection is exact and shared with Slice 3: its bytes are
-`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v1", "reviewers":
+`canonical_json_v1({"schema_version": "benchmark-reviewer-registry-v2", "reviewers":
 [reviewer.model_dump(mode="json") for reviewer in reviewers]})`, where reviewers are in
 bytewise reviewer-ID order. `canonical_reviewer_registry_bytes` first class-bound revalidates both
 strict bindings and rejects duplicate reviewer IDs, account IDs, or exact logins;
 `compute_audit_reviewer_registry_sha256` is raw SHA-256 over those no-newline bytes. Each binding
 contains the numeric account ID, exact login, literal audit role, closed verification mode, and
-mode-dependent null, uppercase OpenPGP, or `SHA256:` SSH fingerprint. The Slice 3 adapter copies those complete
+mode-dependent null, uppercase OpenPGP, or `SHA256:` SSH fingerprint. GitHub mode has a null key;
+each keyed mode also contains the exact audit public-key bytes/hash/encoding and four canonical ASCII
+Git identity fields. The Slice 3 adapter copies those complete
 bindings from the verified `CampaignRegistryV1`, independently regenerates the canonical bytes,
 requires byte equality with the registry's retained projection, and recomputes rather than copies
 `audit_reviewer_registry_sha256`. A field hash with different binding bytes is invalid.
@@ -5749,12 +6157,20 @@ git commit -m "feat: verify benchmark evidence and freeze audit sampling"
 
 ### Task 9: Verify two-person commit-reveal and immutable adjudication
 
+The separately approved source-backed audit-authority amendment above is the sole executable Task
+9 contract. The predecessor schema/signature sketches retained in Steps 3--5 are historical design
+context only wherever they differ; in particular they confer no `git_object_database`, detached
+review-record, caller-registry, or digest-scalar input. Implement only the amendment's closed
+schemas, signatures, preimages, source/archive topology, and 31-test inventory.
+
 **Files:**
 
 - Create: `src/laconian_eval/benchmark/audit_commit_reveal.py`
 - Create: `tests/benchmark/test_audit_commit_reveal.py`
+- Modify: `src/laconian_eval/benchmark/protocol_review.py`
 - Modify: `src/laconian_eval/benchmark/__init__.py`
 - Modify: `tests/benchmark/helpers.py`
+- Modify: `tests/benchmark/test_protocol_review.py`
 
 - [ ] **Step 1: Write canonical-byte and PR-ordering tests**
 
@@ -5794,7 +6210,7 @@ to its numeric string, `True`, zero, and a negative integer and require strict v
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_audit_commit_reveal.py
+uv run pytest -q tests/benchmark/test_protocol_review.py tests/benchmark/test_audit_commit_reveal.py
 ~~~
 
 Expected: collection fails because `laconian_eval.benchmark.audit_commit_reveal` does not exist.
@@ -6066,16 +6482,18 @@ API-record digests, and file hashes in the verified result.
 Run:
 
 ~~~bash
-uv run pytest -q tests/benchmark/test_audit_commit_reveal.py
-uv run ruff check src/laconian_eval/benchmark/audit_commit_reveal.py tests/benchmark/test_audit_commit_reveal.py
-uv run mypy src/laconian_eval/benchmark/audit_commit_reveal.py
+uv run pytest -q tests/benchmark/test_protocol_review.py tests/benchmark/test_audit_commit_reveal.py
+uv run ruff check src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/audit_commit_reveal.py tests/benchmark/helpers.py tests/benchmark/test_protocol_review.py tests/benchmark/test_audit_commit_reveal.py
+uv run mypy src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/audit_commit_reveal.py
+uv run pytest -q tests/benchmark/test_context.py tests/capsule/test_bounded_io.py tests/capsule/test_sidecars.py tests/capsule/test_verify_sealed.py tests/benchmark/test_hard_score.py tests/benchmark/test_judge.py tests/benchmark/test_aggregation.py tests/benchmark/test_provider_evidence.py tests/benchmark/test_audit_sampling.py tests/test_public_contract.py
 ~~~
 
-Expected: all commands pass.
+Expected: all commands pass, including the exclusive reviewer-registry-v2 migration and the exact
+51-test Task 8 benchmark inventory.
 
 ~~~bash
-git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/audit_commit_reveal.py tests/benchmark/helpers.py tests/benchmark/test_audit_commit_reveal.py
-git commit -m "feat: verify human-audit commit reveal"
+git add src/laconian_eval/benchmark/__init__.py src/laconian_eval/benchmark/protocol_review.py src/laconian_eval/benchmark/audit_commit_reveal.py tests/benchmark/helpers.py tests/benchmark/test_protocol_review.py tests/benchmark/test_audit_commit_reveal.py
+git commit -m "feat: verify source-backed human-audit commit reveal"
 ~~~
 
 ### Task 10: Compute design-weighted audit metrics and model-specific gates
@@ -6692,6 +7110,10 @@ git commit -m "feat: certify bounded false-fail sensitivity"
 
 ### Task 13: Seal audit and machine-analysis roots, verified loaders, and the public report
 
+Apply the Task 9 source-backed amendment literally to this task. Any predecessor shorthand below
+that names a Git path, detached review records, or an archive/source-free audit attachment is
+historical context only and is not an alternate API or accepted evidence path.
+
 **Files:**
 
 - Create: `src/laconian_eval/benchmark/reporting.py`
@@ -6717,8 +7139,9 @@ Create tests named:
 - `test_audit_evidence_writer_emits_exact_allowlist_and_copies_sample_bytes_unchanged`
 - `test_analysis_writer_copies_verified_audit_parent_into_combined_result_root`
 - `test_verified_audit_loader_recomputes_every_component_and_root_digest`
-- `test_verified_audit_loader_recomputes_canonical_github_review_records_offline`
-- `test_verified_audit_loader_rejects_missing_extra_or_mismatched_review_record`
+- `test_verified_audit_loader_reconstructs_canonical_github_review_records_from_sources_offline`
+- `test_verified_audit_loader_rejects_missing_extra_or_mismatched_review_source_or_record`
+- `test_verified_audit_loader_rejects_archive_or_pull_request_source_substitution`
 - `test_verified_audit_loader_rejects_reviewer_chain_proof_or_account_identity_substitution`
 - `test_audit_attachment_directly_binds_all_four_layer_vectors_and_judge_attempt_vector`
 - `test_verified_audit_loader_rejects_provider_projection_or_any_of_36_judge_parent_substitutions`
@@ -6905,6 +7328,9 @@ class AuditEvidenceAttachmentV1(BaseModel):
     population_attachment_sha256: str
     sample_manifest_sha256: str
     blind_packet_sha256: str
+    audit_git_object_archive_sha256: str
+    pull_request_source_sha256s: tuple[str, str, str, str, str]
+    github_review_source_sha256s: tuple[str, str]
     commitment_sha256s: tuple[str, str]
     reveal_sha256s: tuple[str, str]
     reviewer_chain_proof_sha256s: tuple[str, str]
@@ -6974,11 +7400,12 @@ the literal A_m formula from those stored limits and require equality with
 
 `AuditEvidenceAttachmentV1.audit_evidence_sha256` uses domain
 `laconian-verified-audit-evidence-v1` over every preceding field. Its two reviewer-chain, two
-signoff-proof, and two exact API-record digests are ordered by reviewer ID and must
-correspond one-to-one; no sequence may be reordered independently. The attachment therefore
-directly binds all four ordered 36-parent layer vectors, the attempt root/vector, and transitively
-binds both identities and PR proofs, the stored core, signoffs, offline-review records, numeric
-accounts, reviewer registry, and final envelope.
+signoff-proof, two review-source, and two exact API-record digests are ordered by reviewer ID and
+must correspond one-to-one; the five PR-source digests retain Task 9's exact logical order, and no
+sequence may be reordered independently. The attachment therefore directly binds all four ordered
+36-parent layer vectors, the attempt root/vector, the Git-object archive, and transitively binds
+both identities and PR proofs, retained raw PR/signature/review sources, the stored core, signoffs,
+offline-review records, numeric accounts, reviewer registry, and final envelope.
 
 For `CampaignAnalysisV1`, `AuditEvidenceAttachmentV1`, and `AnalysisEvidenceAttachmentV1`, build
 `protocol_bindings` only with Task 3's `protocol_bindings_from_context`; class-bound validation
@@ -7000,7 +7427,16 @@ class VerifiedAuditEvidenceV1:
     population: VerifiedAuditPopulationV1
     manifest: AuditSampleManifestV1
     packet: BlindAuditPacketV1
+    audit_git_object_archive: AuditGitObjectArchiveV1
+    pull_request_sources: tuple[
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+    ]
     reviewer_chains: tuple[ReviewerChainV1, ReviewerChainV1]
+    github_review_sources: tuple[ExactGitHubReviewSourceV1, ExactGitHubReviewSourceV1]
     github_review_records: tuple[ExactGitHubReviewRecordV1, ExactGitHubReviewRecordV1]
     adjudication: AuditAdjudicationV1
     metrics: tuple[ModelAuditMetricsV1, ModelAuditMetricsV1, ModelAuditMetricsV1]
@@ -7022,11 +7458,18 @@ def write_audit_evidence_root(
     source_sample_root: Path,
     provider_evidence: VerifiedBenchmarkProviderEvidenceV1,
     sample: VerifiedAuditSampleRootV1,
+    audit_git_object_archive: AuditGitObjectArchiveV1,
+    pull_request_sources: tuple[
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+        AuditPullRequestEvidenceSourceV1,
+    ],
     reviewer_chains: tuple[ReviewerChainV1, ReviewerChainV1],
-    github_review_records: tuple[ExactGitHubReviewRecordV1, ExactGitHubReviewRecordV1],
+    github_review_sources: tuple[ExactGitHubReviewSourceV1, ExactGitHubReviewSourceV1],
     adjudication: AuditAdjudicationV1,
     metrics: tuple[ModelAuditMetricsV1, ModelAuditMetricsV1, ModelAuditMetricsV1],
-    git_object_database: Path,
 ) -> AuditEvidenceAttachmentV1:
     """Verify every audit parent, atomically write the exact audit root, and fresh-reload it."""
 
@@ -7055,12 +7498,17 @@ root/audit/population-attachment.json
 root/audit/population.jsonl
 root/audit/sample-manifest.json
 root/audit/blind-packet.json
+root/audit/git-object-archive.json
+root/audit/pull-request-sources/commitment/<reviewer-id>.json
+root/audit/pull-request-sources/reveal/<reviewer-id>.json
+root/audit/pull-request-sources/adjudication.json
 root/audit/commitments/<reviewer-id>.json
 root/audit/reveals/<reviewer-id>/reveal.json
 root/audit/reveals/<reviewer-id>/labels.jsonl
 root/audit/reviewer-chains/<reviewer-id>.json
 root/audit/adjudication-core.json
 root/audit/signoffs/<reviewer-id>.json
+root/audit/github-review-sources/<review-id>.json
 root/audit/github-review-records/<review-id>.json
 root/audit/adjudication.json
 root/audit/metrics.json
@@ -7068,10 +7516,10 @@ root/audit/metrics.json
 
 `write_audit_evidence_root` requires an absent destination and first fresh-loads
 `source_sample_root` with `load_verified_audit_sample_root`, requiring canonical equality with the
-supplied `sample`. It reruns `verify_audit_chain` using the two supplied exact review records as a
-closed numeric-ID lookup and the explicit `git_object_database` path consumed by the fixed Git
-object reader and exact mode-discriminated signature verifier; no ancestry/signature callback is
-accepted. It then recomputes all three `ModelAuditMetricsV1` values from the immutable
+supplied `sample`. It reruns `verify_audit_chain` using the exact archived Git-object closure, five
+PR sources, and two review sources; it derives the two dedicated review records only from those
+sources and accepts no external Git path, ancestry/signature callback, detached review record, or
+stored success Boolean. It then recomputes all three `ModelAuditMetricsV1` values from the immutable
 sample/chains/adjudication and canonical-byte compares them with `metrics`. It constructs
 `AuditEvidenceAttachmentV1` itself—there is no caller-supplied attachment or digest override.
 
@@ -7123,20 +7571,22 @@ attachment root. Export both verified types and both loaders from
 attachment types, and re-export those exact owners from
 `laconian_eval.benchmark` for the Slice 4 collector.
 
-The audit allowlist requires exactly two canonical reviewer-chain proof files that byte-compare their
-embedded commitment/reveal fields and labels against the dedicated files, exactly one canonical
-`adjudication-core.json`, two distinct bytewise-reviewer-ordered signoff files, and two distinct canonical review records named by their
-decimal positive review IDs; aliases, leading-zero IDs, duplicate IDs/inodes, extra records, and
-signoff/filename disagreement are errors. Reload each review record first, recompute its domain
-digest solely from the stable stored API fields, require its account ID/login and
-the signoff's `audit_reviewer_registry_sha256` to match the exact
-`provider_evidence.index.audit_reviewer_registry.reviewers` binding and the digest freshly computed from
-`canonical_reviewer_registry_bytes(provider_evidence.index.audit_reviewer_registry.reviewers)`, then require the signoff's
-`exact_api_record_sha256` and duplicated fields to match. Finally recompute the core digest, both
-signoff-proof digests, and the final adjudication envelope, and require the core, ordered signoffs,
-ordered reviewer-chain proofs/API-record digests, final envelope, provider roots, and reviewer registry to equal
-`AuditEvidenceAttachmentV1`. It never accepts a cached `signature_verified` or review-state Boolean
-in place of the exact provenance records.
+The audit allowlist requires exactly two canonical reviewer-chain proof files that byte-compare
+their embedded commitment/reveal fields and labels against the dedicated files, exactly one
+canonical `adjudication-core.json`, two distinct bytewise-reviewer-ordered signoff files, two exact
+review sources named by decimal positive review IDs, and two dedicated canonical review records
+with the same IDs; aliases, leading-zero IDs, duplicate IDs/inodes, extra records, and source/
+signoff/filename disagreement are errors. Reload each `ExactGitHubReviewSourceV1` first, verify its
+receipt and exact raw response bytes, reconstruct `ExactGitHubReviewRecordV1` with Task 9's strict
+parser, and only then canonical-byte compare the dedicated review-record file. Recompute its domain
+digest from that reconstruction, require its account ID/login and the signoff's
+`audit_reviewer_registry_sha256` to match the exact provider reviewer binding and freshly computed
+v2 registry digest, and require the signoff's source digest, API-record digest, and duplicated
+fields to match. Finally rerun the complete source-backed PR/signature/Git archive verifier,
+recompute the core, both signoff proofs, and final envelope, and require the ordered source,
+archive, chain, review, final-envelope, provider, and registry digests to equal
+`AuditEvidenceAttachmentV1`. Neither a dedicated review record nor a cached
+`signature_verified`/review-state Boolean is source authority.
 
 - [ ] **Step 5: Render analysis artifacts without reinterpreting evidence**
 
@@ -7286,7 +7736,7 @@ Create tests named:
 - `test_synthetic_negative_inconclusive_and_supported_models_remain_separate`
 - `test_synthetic_artifacts_are_byte_identical_across_two_fresh_roots`
 - `test_synthetic_analysis_loaders_fail_closed_on_each_parent_hash_substitution`
-- `test_synthetic_audit_reload_recomputes_core_review_records_signoffs_and_final_envelope`
+- `test_synthetic_audit_reload_reconstructs_archive_pr_review_sources_records_signoffs_and_final_envelope`
 - `test_synthetic_sample_and_audit_atomic_writers_fresh_reload_exact_roots`
 - `test_synthetic_two_sided_wilson_false_fail_upper_sets_k_and_keeps_zero_error_uncertainty_positive`
 - `test_synthetic_attestations_accept_null_github_and_keyed_fingerprints_by_mode`
@@ -7359,7 +7809,8 @@ reordering, duplicating, or restoring the former eleven-kind tuple fails even af
 outer digests. Then build a fixed synthetic `GenerationContextExpectationV1`, authority wrapper,
 `GenerationContextIndexV1`, and `ProviderEvidenceIndexV1` with independently fixed plaintext
 seed/input commit; the exact two audit reviewers and recomputed registry digest; the separate exact
-three-role protocol reviewer registry; allowed null GitHub and exact keyed fingerprints; the three
+three-role protocol reviewer registry; allowed null GitHub and exact keyed audit fingerprints/keys/
+Git identities; the three
 exact `VerifiedProtocolAttestationV1` records with unchanged role subject inventories; their shared
 `workflow_root`; exact authority-tagged statistics and singular audit protocol hashes; expectation,
 context, four layer-index, and attempt-root digests; and the provider projection/wrapper. Propagate
@@ -7367,8 +7818,10 @@ the same `audit_protocol_sha256` through every nested `BenchmarkProtocolBindings
 top-level field specified in Task 13.
 
 Then build the complete audit population/JSONL; deterministic sample round-tripped through
-`write_audit_sample_root` and `load_verified_audit_sample_root`; two distinct reviewer chains;
-independently hashed adjudication core; two canonical exact GitHub review records with stable numeric
+`write_audit_sample_root` and `load_verified_audit_sample_root`; the deterministic audit Git-object
+archive; five raw-response-backed PR/signature sources; two distinct reviewer chains;
+independently hashed adjudication core; two raw-response-backed GitHub review sources and their
+reconstructed canonical exact GitHub review records with stable numeric
 account IDs; two signoff proofs; final adjudication envelope; per-model metrics with authorizing two-
 sided design-weighted Wilson intervals; Decimal-derived U and K; exact candidate spaces satisfying
 `A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`; frozen bootstrap
@@ -7449,7 +7902,9 @@ the campaign-neutral `JudgeAttemptEvidenceV1`/`JudgeAttemptRootIndexV1` verifica
 `population.jsonl`, the neutral `write_audit_sample_root` and `write_audit_evidence_root`
 boundaries, the remaining audit root, bootstrap output,
 `BootstrapArtifactV1`/`build_bootstrap_artifact`,
-`reviewer-chains/`, `adjudication-core.json`, both `signoffs/` and `github-review-records/`, machine analysis,
+`git-object-archive.json`, `pull-request-sources/`, `reviewer-chains/`,
+`adjudication-core.json`, both `signoffs/`, `github-review-sources/` and
+`github-review-records/`, machine analysis,
 human-readable report, and immutable checksums as derived layers. Keep fixtures
 explicitly non-evidentiary. State that all seven `laconian-benchmark` commands are offline
 validation only. Name the exact Runtime and Publication method tuple above, the two private
@@ -7534,11 +7989,15 @@ def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> No
         "build_bootstrap_artifact",
         "ProtocolReviewerRegistryV1",
         "reviewers.yaml",
+        "benchmark-reviewer-registry-v2",
         "protocol-reviewers.yaml",
         "HardScoreRequestSetV1",
         "JudgeAttachmentV1",
         "audit-evidence.json",
+        "git-object-archive.json",
+        "pull-request-sources",
         "adjudication-core.json",
+        "github-review-sources",
         "github-review-records",
         "analysis-evidence.json",
         "bootstrap.json",
@@ -7607,7 +8066,7 @@ Create tests named:
 - `test_offline_prepare_judge_checks_default_tier_context_and_all_36_hard_score_parents`
 - `test_offline_seal_judge_checks_36_attempt_boundaries_retry_lineage_and_tier_statuses`
 - `test_offline_sample_audit_checks_provider_projection_and_all_parent_vectors_without_sampling`
-- `test_offline_seal_audit_checks_population_core_signoffs_and_exact_review_records`
+- `test_offline_seal_audit_checks_population_archive_sources_core_and_signoffs`
 - `test_offline_analyze_checks_audit_and_statistical_protocol_inputs_without_running_analysis`
 - `test_offline_verify_checks_all_four_layer_vectors_and_attempt_root`
 - `test_commands_are_input_read_only_output_no_replace_and_failure_atomic`
@@ -7778,7 +8237,7 @@ laconian-benchmark hard-score --generation-expectation GENERATION_EXPECTATION --
 laconian-benchmark prepare-judge --generation-expectation GENERATION_EXPECTATION --generation-index GENERATION_INDEX --generation-root GENERATION --hard-score-root HARD --output-root OUTPUT
 laconian-benchmark seal-judge --generation-expectation GENERATION_EXPECTATION --generation-index GENERATION_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-attempt-root ATTEMPTS --output-root OUTPUT
 laconian-benchmark sample-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --output-root OUTPUT
-laconian-benchmark seal-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --review-root REVIEWS --repository-root REPOSITORY --output-root OUTPUT
+laconian-benchmark seal-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --review-root REVIEWS --output-root OUTPUT
 laconian-benchmark analyze --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --audit-root AUDIT --output-root OUTPUT
 laconian-benchmark verify --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --result-root RESULT
 ~~~
@@ -7799,7 +8258,10 @@ child.
 `GENERATION` is the Slice 1 sealed generation evidence root; `HARD`, `REQUESTS`, and `JUDGES` are
 complete retained live-stage or explicit-fixture evidence roots containing
 `hard-score/`, `judge-requests/`, and `judge/` respectively; `ATTEMPTS` is the exact Runtime Task 7
-output root containing only the fixed `judge-attempts/` tree described in Task 4; `AUDIT` is the complete `seal-audit`
+output root containing only the fixed `judge-attempts/` tree described in Task 4; `REVIEWS` is the
+closed source-backed review root containing the Task 9 Git-object archive, five PR/signature
+sources, two reviewer chains, two review sources, dedicated review records, core, signoffs, and
+adjudication; no repository path or callback is accepted; `AUDIT` is the complete `seal-audit`
 output root containing `audit/`; and `RESULT` is the complete `analyze` output root containing both
 `audit/` and `analysis/`. Passing an index's parent, a layer subdirectory where a complete root is
 required, a copied expectation outside the fixed authority-package layout, or a provider index with
@@ -7927,6 +8389,7 @@ LayerRootMemberV1, LayerRootIndexV1, write_layer_root_index, load_layer_root_ind
 SignatureVerificationModeV1, GitHubVerifiedCommitEvidenceV1,
 SSHVerifiedCommitEvidenceV1, OpenPGPVerifiedCommitEvidenceV1,
 SignatureEvidenceV1, ProtocolSignatureEvidenceSourceV1,
+AuditReviewerSigningKeyV1, verify_commit_signature_evidence_source,
 ProtocolReviewRoleV1, ProtocolSubjectKindV1,
 PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1,
 ReviewerAccountBindingV1, AuditReviewerRegistryV1,
@@ -7964,6 +8427,8 @@ build_audit_population, write_audit_population, load_verified_audit_population,
 AuditSampleManifestV1, BlindAuditPacketV1, select_audit_sample, verify_audit_sample,
 write_audit_sample_root, load_verified_audit_sample_root,
 ReviewerIdentityV1, PullRequestProofV1, ReviewerCommitmentV1, ReviewerRevealV1,
+GitHubAuditApiObservationReceiptV1, ExactGitHubPullRequestRecordV1,
+AuditPullRequestEvidenceSourceV1, AuditGitObjectArchiveV1, ExactGitHubReviewSourceV1,
 ReviewerChainV1, verify_reviewer_chain, AuditAdjudicationCoreV1,
 ExactGitHubReviewRecordV1, ExactGitHubReviewSignoffV1, AuditAdjudicationV1, verify_audit_chain,
 WeightedConfusionV1, WeightedProportionV1, ModelAuditMetricsV1, ModelAuditGateV1,
@@ -8059,7 +8524,9 @@ Expected: all six commands pass in order.
       generation-context expectation/wrapper projection, generation-context/provider indexes, the
       36-boundary judge-attempt root, all four layer
       indexes, `audit-evidence.json`, both
-      reviewer-chain proofs, `adjudication-core.json`, both signoffs and exact GitHub review records,
+      reviewer-chain proofs, the Git-object archive, all five PR/signature sources,
+      `adjudication-core.json`, both signoffs, both exact GitHub review sources and their
+      reconstructed dedicated review records,
       `analysis-evidence.json`, `analysis.json`, `bootstrap.json`, `report.md`, and `checksums.json`
       byte-for-byte.
 

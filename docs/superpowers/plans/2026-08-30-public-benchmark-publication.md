@@ -25,6 +25,42 @@ separately reviewed, recorded, and explicitly approved.
 This section is mandatory and supersedes any older shorthand later in this plan. No compatibility
 alias or partially implemented predecessor contract is allowed.
 
+**Task 9 source-backed audit-authority synchronization (separate approval required):** Publication
+consumes the Evaluation amendment of the same name and remains blocked on its separately approved
+normative commit. It accepts only the exclusive `benchmark-reviewer-registry-v2` bytes and rejects
+the superseded keyless v1 wire. The complete bundle carries and checksum-binds exactly one
+`audit/git-object-archive.json`, five source records in logical order at
+`audit/pull-request-sources/commitment/{reviewer_id}.json`,
+`audit/pull-request-sources/reveal/{reviewer_id}.json`, and
+`audit/pull-request-sources/adjudication.json`, two reviewer-ID-ordered source records at
+`audit/github-review-sources/{review_id}.json`, and the two already-required
+`audit/reviewer-chains/{reviewer_id}.json`. Braces name canonical safe values read from sealed
+records; there are exactly two commitment, two reveal, two review-source, and two reviewer-chain
+instances. Publication copies these exact bytes and invokes Evaluation Task 13's source-backed
+loader, which reparses the bounded Git-object archive and reconstructs PR, commit-signature, and
+GitHub-review evidence from retained raw bytes. No audit capability, workflow, adapter, writer, or
+validator boundary accepts an ambient Git repository path, Git/ancestry/signature callback,
+detached review record, trusted source-success Boolean, caller-supplied repository ID/slug scalar,
+mutable badge, or copied fingerprint. The low-level read client's repository value is constructed
+internally from provider-derived authority. The pre-merge PR
+validator checks only the phase-appropriate append-only prefix, exact candidate delta/signature,
+and previously sealed sources; it cannot fabricate a future merge record. The post-merge
+`seal_audit` verifier applies the complete retained-source and exact-topology rules. A successful
+live API observation is archived evidence, never an authority shortcut. This paragraph supersedes
+every later `repository-root`, `git_object_database`, detached `github_review_records`, or
+direct-success shorthand for audit seal, collection, planning, validation, replay, or publication.
+
+Publication Task 7's `seal_audit` adapter owns the sole live acquisition. After reconstructing the
+current Publication capability and provider authority, its read-only `GitHubReadClient` fetches the
+five exact PR records, five pairs of commit-signature REST/GraphQL responses, two exact review
+records, and the bounded raw Git commit/tree/blob closure. The client preserves exact response
+bytes, request ID, ETag, observation time, API version, endpoint, and TLS endpoint identity long
+enough to construct the Evaluation-owned sources/receipts; it exposes no caller URL/parser or raw
+authorization header. The adapter verifies the complete in-memory source set before the audit
+writer persists it and advances state. Replay and later publication consume only those persisted
+bytes. Add `get_pull_request_review` to the closed client and endpoint table; the existing paginated
+review-list method may discover an ID but never supplies the exact retained review source.
+
 - [ ] Verify `git show 05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126:docs/superpowers/specs/2026-08-30-public-three-model-benchmark-design.md`
   and governance successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` before Task 1.
 - [ ] Import and class-bound revalidate Runtime-owned campaign authority, registry, state, OIDC,
@@ -1138,12 +1174,18 @@ audit/population-attachment.json
 audit/population.jsonl
 audit/sample-manifest.json
 audit/blind-packet.json
+audit/git-object-archive.json
+audit/pull-request-sources/commitment/{reviewer_id}.json
+audit/pull-request-sources/reveal/{reviewer_id}.json
+audit/pull-request-sources/adjudication.json
 audit/commitments/{reviewer_id}.json
 audit/reveals/{reviewer_id}/reveal.json
 audit/reveals/{reviewer_id}/labels.jsonl
+audit/reviewer-chains/{reviewer_id}.json
 audit/adjudication-core.json
 audit/adjudication.json
 audit/signoffs/{reviewer_id}.json
+audit/github-review-sources/{review_id}.json
 audit/github-review-records/{review_id}.json
 audit/metrics.json
 analysis/analysis-evidence.json
@@ -1158,8 +1200,10 @@ checksums.sha256
 ```
 
 `{model_id}`, `{scenario_uid}`, and `{reviewer_id}` denote canonical values taken from sealed
-records, validated as single safe path components, and sorted by UTF-8 bytes. Braces in this plan
-denote validated grammar variables, never an implementation instruction to invent a path.
+records, validated as single safe path components, and sorted by UTF-8 bytes. `{review_id}` is the
+canonical base-10 rendering of a strict positive GitHub review ID, without a leading zero. Braces
+in this plan denote validated grammar variables, never an implementation instruction to invent a
+path.
 
 The invalid-prefix finalizer may create only:
 
@@ -1486,6 +1530,7 @@ get_repository_ruleset
 list_rule_suites
 get_rule_suite
 get_pull_request
+get_pull_request_review
 list_pull_request_reviews
 list_check_runs
 get_main_ref
@@ -1530,6 +1575,7 @@ a short/empty final page. All pages are read; a page-64 continuation fails close
 | `list_rule_suites` | `GET /repos/{owner}/{repo}/rulesets/rule-suites` | `ref={exact_ref}&time_period=month&rule_suite_result=all&evaluate_status=all&P(N)` |
 | `get_rule_suite` | `GET /repos/{owner}/{repo}/rulesets/rule-suites/{rule_suite_id}` | none |
 | `get_pull_request` | `GET /repos/{owner}/{repo}/pulls/{pull_number}` | none; strict merge state/actor/commit projection |
+| `get_pull_request_review` | `GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}` | none; exact raw review-source bytes and observation metadata |
 | `list_pull_request_reviews` | `GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews` | `P(N)`; parses `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, and `DISMISSED`, so no invented dismissal-list endpoint exists |
 | `list_check_runs` | `GET /repos/{owner}/{repo}/commits/{commit_oid}/check-runs` | `filter=all&P(N)` |
 | `get_main_ref` | `GET /repos/{owner}/{repo}/git/ref/heads/main` | none; only literal protected `main` |
@@ -2280,6 +2326,7 @@ git commit -m "feat: finalize invalid benchmark prefixes safely"
 
 **Files:**
 - Create: `src/laconian_eval/campaign/publication.py`
+- Modify: `src/laconian_eval/campaign/github_records.py`
 - Create: `tools/benchmark_sample_audit_stage.py`
 - Create: `tools/benchmark_seal_audit_stage.py`
 - Create: `tools/benchmark_analyze_stage.py`
@@ -2296,6 +2343,7 @@ git commit -m "feat: finalize invalid benchmark prefixes safely"
 - Create: `tests/campaign/test_publication_capability.py`
 - Create: `tests/campaign/test_publication_workflows.py`
 - Create: `tests/campaign/test_audit_pr.py`
+- Modify: `tests/campaign/test_github_records.py`
 - Modify: `tests/campaign/test_workflow_policy.py`
 - Modify: `tests/test_ci_contract.py`
 - Modify: `tests/test_public_contract.py`
@@ -2342,6 +2390,16 @@ never replaces or derives those granular bindings. The provider index is evidenc
 it carries the expectation digest and repeated bindings but never a nested alleged expectation or
 capability.
 
+`seal_audit` uses only the source-acquisition boundary in the amendment synchronization contract:
+it derives repository identity from verified provider attestations, captures the exact five PRs,
+five signature-response pairs, two exact reviews, and deterministic bounded Git-object closure,
+constructs the Evaluation-owned source/archive models, and passes those plus the verified sample,
+reviewer chains, adjudication, and metrics to `write_audit_evidence_root`. It accepts no
+`repository_root`, repository scalar, raw-response input, detached review record, prebuilt success
+flag, or Git/signature callback. Tests exhaustively compare the client's request log with the exact
+closed endpoint/query table and prove any missing, duplicate, reordered, cross-repository, stale,
+or post-capture-mutated source blocks `AUDIT_SEALED`.
+
 The four fixed tools import only `laconian_eval.campaign.publication`, reconstruct the capability
 from current authority inside one process, call exactly one corresponding method, and exit. They
 accept fixed staging paths only, use `allow_abbrev=False`, and accept no campaign ID, expected root,
@@ -2381,7 +2439,7 @@ events, with trusted-base code, exact head resolution, no secret, and only `cont
 
 - [ ] **Step 5: Run workflow tests and verify RED**
 
-Run: `uv run pytest tests/campaign/test_publication_workflows.py tests/campaign/test_audit_pr.py tests/campaign/test_workflow_policy.py tests/test_ci_contract.py -q`
+Run: `uv run pytest tests/campaign/test_github_records.py tests/campaign/test_publication_workflows.py tests/campaign/test_audit_pr.py tests/campaign/test_workflow_policy.py tests/test_ci_contract.py -q`
 
 Expected: FAIL because this checkpoint's frozen 11-workflow inventory, fixed tools, and new reusable-workflow caller rows are
 absent.
@@ -2424,7 +2482,7 @@ actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
 
 - [ ] **Step 7: Run capability/workflow GREEN checks**
 
-Run: `uv run pytest tests/campaign/test_publication_capability.py tests/campaign/test_publication_workflows.py tests/campaign/test_audit_pr.py tests/campaign/test_workflow_policy.py tests/test_ci_contract.py tests/test_public_contract.py -q`
+Run: `uv run pytest tests/campaign/test_github_records.py tests/campaign/test_publication_capability.py tests/campaign/test_publication_workflows.py tests/campaign/test_audit_pr.py tests/campaign/test_workflow_policy.py tests/test_ci_contract.py tests/test_public_contract.py -q`
 
 Expected: PASS; `tests/test_ci_contract.py` enumerates exactly 11 workflows at this checkpoint. Tasks
 10, 12, and 13 advance the real inventory to 13, 14, and finally 15 respectively.
@@ -2433,6 +2491,7 @@ Expected: PASS; `tests/test_ci_contract.py` enumerates exactly 11 workflows at t
 
 ```bash
 git add src/laconian_eval/campaign/publication.py \
+  src/laconian_eval/campaign/github_records.py \
   tools/benchmark_sample_audit_stage.py \
   tools/benchmark_seal_audit_stage.py \
   tools/benchmark_analyze_stage.py \
@@ -2449,6 +2508,7 @@ git add src/laconian_eval/campaign/publication.py \
   tests/campaign/test_publication_capability.py \
   tests/campaign/test_publication_workflows.py \
   tests/campaign/test_audit_pr.py \
+  tests/campaign/test_github_records.py \
   tests/campaign/test_workflow_policy.py \
   tests/test_ci_contract.py \
   tests/test_public_contract.py

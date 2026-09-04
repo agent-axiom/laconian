@@ -33,6 +33,13 @@
 - Any future normative amendment re-blocks every affected Runtime task until that amendment receives
   separate explicit maintainer approval recorded by commit; implementation or live work may not
   infer approval from this plan sync.
+- Evaluation's Task 9 source-backed audit-authority amendment is a pre-live wire migration for
+  Runtime Task 2 and the final input freeze. Once separately approved, Runtime accepts only
+  `AuditReviewerRegistryV1.schema_version == "benchmark-reviewer-registry-v2"`, whose two complete
+  reviewer bindings include the mode-compatible audit signing key and frozen Git author/committer
+  identities. There is no v1 reader, omitted-key default, alias, or digest translation. Synthetic
+  C0/T0/T1, protocol-review, provider/sample, source-code/tool, and input-package fixtures and roots
+  are regenerated from v2; no live tag may contain the superseded wire.
 - Master roadmap: `docs/superpowers/plans/2026-08-30-public-benchmark-roadmap.md`.
 - Prerequisite slice: `docs/superpowers/plans/2026-08-30-public-benchmark-foundations.md`.
 - Evaluation types consumed by judge-phase batches: `docs/superpowers/plans/2026-08-30-public-benchmark-evaluation-audit.md`.
@@ -479,7 +486,8 @@ live `evals/manifests/public-benchmark-*`, `benchmarks/campaigns/public-three-mo
 task owns those paths after all workflows, protocols, tests, and independent reviews exist.
 
 Evaluation owns `src/laconian_eval/benchmark/protocol_review.py` and every neutral protocol-review
-schema/helper: operator/ruleset/workflow types, statements, stable REST/GraphQL/local evidence,
+schema/helper: operator/ruleset/workflow types, the v2 audit reviewer registry and
+`AuditReviewerSigningKeyV1`, statements, stable REST/GraphQL/local evidence,
 `InputTagMessageV1`, `ProtocolAttestationTagMessageV1`, `ProtocolBundleBuilderGitIdentityV1`,
 envelopes, bundle, tag binding, `TagRulesetObservationReceiptV1`,
 `ArchivedApiReceiptBindingV1`, archive, raw-object grammar, digest preimages, and
@@ -640,12 +648,18 @@ Expected RED: `tag_binding` imports fail.
   `mode: confirmatory`. Mode comes only from the verified tagged package and is bound into campaign
   identity; no CLI, workflow input, or environment value may override it. A mode edit always creates
   a new tag, registry, plan index, and campaign ID.
-- [ ] Require live `reviewers.yaml` to preregister exactly two distinct maintainer-supplied GitHub
-  numeric account IDs/logins for the human audit plus their required commit-signing verification
-  mode and optional exact key fingerprints. Its canonical digest is the audit-reviewer-registry hash.
+- [ ] Require live `reviewers.yaml` to be the exclusive
+  `schema_version: benchmark-reviewer-registry-v2` wire and preregister exactly two distinct
+  maintainer-supplied GitHub numeric account IDs/logins for the human audit plus their required
+  commit-signing verification mode and optional exact key fingerprints. GitHub-verified mode has
+  null fingerprint and null key. Each keyed mode has one exact mode/fingerprint-matching
+  `AuditReviewerSigningKeyV1` with frozen canonical ASCII author/committer name/email, exact
+  mode-compatible encoding, canonical public-key Base64, and decoded-byte SHA-256. Its canonical v2
+  digest is the audit-reviewer-registry hash; no v1 or keyless keyed record is accepted.
   Synthetic identities are permitted only in tests. Do not create the live file or
-  input tag until the final freeze receives both real identities; missing, duplicate, fabricated,
-  or unverified identities fail preflight. Task 2 fixtures use explicitly synthetic identities.
+  input tag until the final freeze receives both real identities and, for keyed modes, both real
+  public keys/Git identities; missing, duplicate, fabricated, unverified, or mode-incompatible
+  identities/keys fail preflight. Task 2 fixtures use explicitly synthetic identities and keys.
 - [ ] After Slice 2 Task 3 commits its neutral reviewer/context contract, load the benchmark-owned strict
   `ProtocolReviewerRegistryV1` from `protocol-reviewers.yaml`; Runtime must import/class-bound
   revalidate that type and must not define or re-export a second class. It contains exactly three
