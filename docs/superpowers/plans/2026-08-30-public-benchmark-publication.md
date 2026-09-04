@@ -18,6 +18,14 @@ authority, publication, and evidence invariants in the approved design remain no
 Any future normative amendment re-blocks every affected Publication task until that amendment is
 separately reviewed, recorded, and explicitly approved.
 
+On 2026-09-04 the maintainer/user explicitly approved Evaluation's Task 9 source-backed
+audit-authority amendment at normative commit `adb219b7acb24e70e334e8de5f9029b79301958b`
+with exact message `Одобряю amendment adb219b7acb24e70e334e8de5f9029b79301958b`.
+This governance-only successor records that approval without changing normative behavior.
+Publication's affected audit acquisition, sealing, collection, and publication handoffs may
+proceed only from a handoff that records this successor's future full SHA as `PLAN_BASE_SHA`; this
+source does not invent or embed that SHA.
+
 ---
 
 ## Amendment synchronization contract
@@ -25,10 +33,10 @@ separately reviewed, recorded, and explicitly approved.
 This section is mandatory and supersedes any older shorthand later in this plan. No compatibility
 alias or partially implemented predecessor contract is allowed.
 
-**Task 9 source-backed audit-authority synchronization (separate approval required):** Publication
-consumes the Evaluation amendment of the same name and remains blocked on its separately approved
-normative commit. It accepts only the exclusive `benchmark-reviewer-registry-v2` bytes and rejects
-the superseded keyless v1 wire. The complete bundle carries and checksum-binds exactly one
+**Task 9 source-backed audit-authority synchronization:** Publication consumes the approved
+Evaluation amendment of the same name and the governance handoff above. It accepts only the
+exclusive `benchmark-reviewer-registry-v2` bytes and rejects the superseded keyless v1 wire. The
+complete bundle carries and checksum-binds exactly one
 `audit/git-object-archive.json`, five source records in logical order at
 `audit/pull-request-sources/commitment/{reviewer_id}.json`,
 `audit/pull-request-sources/reveal/{reviewer_id}.json`, and

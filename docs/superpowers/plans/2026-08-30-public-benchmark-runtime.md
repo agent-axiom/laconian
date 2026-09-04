@@ -33,8 +33,14 @@
 - Any future normative amendment re-blocks every affected Runtime task until that amendment receives
   separate explicit maintainer approval recorded by commit; implementation or live work may not
   infer approval from this plan sync.
-- Evaluation's Task 9 source-backed audit-authority amendment is a pre-live wire migration for
-  Runtime Task 2 and the final input freeze. Once separately approved, Runtime accepts only
+- On 2026-09-04 the maintainer/user explicitly approved Evaluation's Task 9 source-backed
+  audit-authority amendment at normative commit `adb219b7acb24e70e334e8de5f9029b79301958b`
+  with exact message `Одобряю amendment adb219b7acb24e70e334e8de5f9029b79301958b`.
+  This governance-only successor records that approval without changing normative behavior.
+  Runtime Task 2 and the final input freeze may proceed only from a handoff that records this
+  successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+- The approved Task 9 amendment is a pre-live wire migration for Runtime Task 2 and the final input
+  freeze. Runtime accepts only
   `AuditReviewerRegistryV1.schema_version == "benchmark-reviewer-registry-v2"`, whose two complete
   reviewer bindings include the mode-compatible audit signing key and frozen Git author/committer
   identities. There is no v1 reader, omitted-key default, alias, or digest translation. Synthetic

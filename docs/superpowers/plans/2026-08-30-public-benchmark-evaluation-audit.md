@@ -76,6 +76,13 @@ successor records that approval without changing normative behavior. Evaluation 
 downstream consumer of its retained evidence roots may proceed only from a handoff that records
 this successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
 
+On 2026-09-04 the maintainer/user explicitly approved the Task 9 source-backed audit-authority
+amendment at normative commit `adb219b7acb24e70e334e8de5f9029b79301958b` with exact message
+`Одобряю amendment adb219b7acb24e70e334e8de5f9029b79301958b`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 9, its explicit Task
+3/8 registry migration, and affected Tasks 13--15 may proceed only from a handoff that records this
+successor's future full SHA as `PLAN_BASE_SHA`; this source does not invent or embed that SHA.
+
 **Approved normative amendment scope:** This amendment supersedes only the ambiguities in archived
 API-blob length binding, current tag-ruleset acquisition/projection/replay, C0-bound verifier
 dependency provenance, and the Task 4 blind-judge schema, provider-dispatch, wire, and
