@@ -20,6 +20,7 @@ from laconian_eval.benchmark.protocol_review import (
     ArchivedApiReceiptBindingV1,
     ArchivedProtocolGitObjectV1,
     AuditReviewerRegistryV1,
+    AuditReviewerSigningKeyV1,
     BoundedCanonicalText,
     CanonicalGitAsciiEmail,
     CanonicalGitAsciiName,
@@ -92,6 +93,7 @@ from laconian_eval.benchmark.protocol_review import (
     parse_protocol_git_object,
     protocol_review_digest,
     validate_signature_mode_fingerprint,
+    verify_commit_signature_evidence_source,
     verify_protocol_review_dag,
     verify_protocol_review_prefix,
 )
@@ -101,6 +103,24 @@ if TYPE_CHECKING:
     from laconian_eval.benchmark.aggregation import (
         AggregatedModelV1,
         aggregate_verified_evidence,
+    )
+    from laconian_eval.benchmark.audit_commit_reveal import (
+        AuditAdjudicationCoreV1,
+        AuditAdjudicationV1,
+        AuditGitObjectArchiveV1,
+        AuditPullRequestEvidenceSourceV1,
+        ExactGitHubPullRequestRecordV1,
+        ExactGitHubReviewRecordV1,
+        ExactGitHubReviewSignoffV1,
+        ExactGitHubReviewSourceV1,
+        GitHubAuditApiObservationReceiptV1,
+        PullRequestProofV1,
+        ReviewerChainV1,
+        ReviewerCommitmentV1,
+        ReviewerIdentityV1,
+        ReviewerRevealV1,
+        verify_audit_chain,
+        verify_reviewer_chain,
     )
     from laconian_eval.benchmark.audit_sampling import (
         AuditSampleManifestV1,
@@ -227,6 +247,26 @@ _AUDIT_SAMPLING_EXPORTS = frozenset(
         "write_audit_sample_root",
     }
 )
+_AUDIT_COMMIT_REVEAL_EXPORTS = frozenset(
+    {
+        "AuditAdjudicationCoreV1",
+        "AuditAdjudicationV1",
+        "AuditGitObjectArchiveV1",
+        "AuditPullRequestEvidenceSourceV1",
+        "ExactGitHubPullRequestRecordV1",
+        "ExactGitHubReviewRecordV1",
+        "ExactGitHubReviewSignoffV1",
+        "ExactGitHubReviewSourceV1",
+        "GitHubAuditApiObservationReceiptV1",
+        "PullRequestProofV1",
+        "ReviewerChainV1",
+        "ReviewerCommitmentV1",
+        "ReviewerIdentityV1",
+        "ReviewerRevealV1",
+        "verify_audit_chain",
+        "verify_reviewer_chain",
+    }
+)
 _BOOTSTRAP_EXPORTS = frozenset(
     {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
 )
@@ -282,6 +322,8 @@ def __getattr__(name: str) -> Any:
 
     if name in _AGGREGATION_EXPORTS:
         module_name = "laconian_eval.benchmark.aggregation"
+    elif name in _AUDIT_COMMIT_REVEAL_EXPORTS:
+        module_name = "laconian_eval.benchmark.audit_commit_reveal"
     elif name in _AUDIT_SAMPLING_EXPORTS:
         module_name = "laconian_eval.benchmark.audit_sampling"
     elif name in _BOOTSTRAP_EXPORTS:
@@ -323,7 +365,12 @@ __all__ = (
     "ArchivedProtocolGitObjectV1",
     "AttachmentLayerRootMemberV1",
     "AuditPopulationAttachmentV1",
+    "AuditAdjudicationCoreV1",
+    "AuditAdjudicationV1",
+    "AuditGitObjectArchiveV1",
+    "AuditPullRequestEvidenceSourceV1",
     "AuditReviewerRegistryV1",
+    "AuditReviewerSigningKeyV1",
     "AuditSampleManifestV1",
     "BenchmarkProtocolBindingsV1",
     "BenchmarkProviderEvidenceProjectionV1",
@@ -338,6 +385,7 @@ __all__ = (
     "GenerationContextExpectationV1",
     "GenerationContextIndexV1",
     "GenerationLayerRootMemberV1",
+    "GitHubAuditApiObservationReceiptV1",
     "GitHubCommitVerificationProjectionV1",
     "GitHubSignatureObservationReceiptV1",
     "GitHubSignatureProjectionV1",
@@ -357,6 +405,10 @@ __all__ = (
     "LocalSignatureVerificationReceiptV1",
     "ModelOutcome",
     "ModelOutcomeV1",
+    "ExactGitHubPullRequestRecordV1",
+    "ExactGitHubReviewRecordV1",
+    "ExactGitHubReviewSignoffV1",
+    "ExactGitHubReviewSourceV1",
     "OpenPGPVerifiedCommitEvidenceV1",
     "OutcomeEvidenceV1",
     "ParsedProtocolGitObjectV1",
@@ -378,7 +430,12 @@ __all__ = (
     "ProtocolSubjectKindV1",
     "ProviderEvidenceIndexV1",
     "RationalV1",
+    "PullRequestProofV1",
     "ReviewerAccountBindingV1",
+    "ReviewerChainV1",
+    "ReviewerCommitmentV1",
+    "ReviewerIdentityV1",
+    "ReviewerRevealV1",
     "SSHVerifiedCommitEvidenceV1",
     "SignatureEvidenceV1",
     "SignatureVerificationModeV1",
@@ -443,10 +500,13 @@ __all__ = (
     "recompute_hard_score_request_set_sha256",
     "select_audit_sample",
     "validate_signature_mode_fingerprint",
+    "verify_audit_chain",
+    "verify_commit_signature_evidence_source",
     "verify_hard_score_request_set",
     "verify_audit_sample",
     "verify_protocol_review_dag",
     "verify_protocol_review_prefix",
+    "verify_reviewer_chain",
     "write_attachment_json",
     "write_audit_population",
     "write_audit_sample_root",

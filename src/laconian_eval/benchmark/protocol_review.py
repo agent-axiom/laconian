@@ -39,10 +39,31 @@ from types import (
     MethodDescriptorType,
     ModuleType,
 )
-from typing import Annotated, Any, Literal, Protocol, Self, TypeAlias, TypeVar, cast
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    Protocol,
+    Self,
+    TypeAlias,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+)
 
 import yaml
-from pydantic import AfterValidator, BeforeValidator, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from laconian_eval.benchmark.attachments import (
     CanonicalJSONV1Error,
@@ -203,6 +224,12 @@ StrictProtocolString: TypeAlias = Annotated[str, BeforeValidator(_strict_string)
 
 
 def _strict_canonical_base64(value: str) -> str:
+    # 65,536 decoded bytes need at most 87,384 canonical padded Base64
+    # characters.  Enforce that resource bound before asking binascii to
+    # allocate the decoded buffer; the exact decoded-byte limit is checked
+    # again below.
+    if len(value) > 87_384:
+        raise ValueError("encoded key material exceeds the 65,536-byte limit")
     try:
         decoded = base64.b64decode(value.encode("ascii"), validate=True)
     except (UnicodeEncodeError, binascii.Error):
@@ -757,6 +784,48 @@ class ProtocolReviewSigningKeyV1(CapsuleModel):
         return self
 
 
+class AuditReviewerSigningKeyV1(CapsuleModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        validate_default=True,
+    )
+
+    schema_version: Literal["AuditReviewerSigningKeyV1"]
+    verification_mode: Literal["ssh_sha256", "openpgp_fingerprint"]
+    fingerprint: SigningFingerprintV1
+    author_name_ascii: CanonicalGitAsciiName
+    author_email_ascii: CanonicalGitAsciiEmail
+    committer_name_ascii: CanonicalGitAsciiName
+    committer_email_ascii: CanonicalGitAsciiEmail
+    public_key_encoding: Literal[
+        "openssh-ed25519-wire-v1",
+        "openpgp-v4-ed25519-transferable-public-key-v1",
+    ]
+    public_key_base64: StrictCanonicalBase64
+    public_key_sha256: Sha256
+
+    @model_validator(mode="after")
+    def validate_key(self) -> Self:
+        validate_signature_mode_fingerprint(self.verification_mode, self.fingerprint)
+        expected_encoding = (
+            "openssh-ed25519-wire-v1"
+            if self.verification_mode == "ssh_sha256"
+            else "openpgp-v4-ed25519-transferable-public-key-v1"
+        )
+        if self.public_key_encoding != expected_encoding:
+            raise ValueError("audit signing-key mode/encoding mismatch")
+        decoded = base64.b64decode(self.public_key_base64.encode("ascii"), validate=True)
+        if hashlib.sha256(decoded).hexdigest() != self.public_key_sha256:
+            raise ValueError("audit signing-key byte digest mismatch")
+        actual_fingerprint = _signing_key_fingerprint(self.verification_mode, decoded)
+        if actual_fingerprint != self.fingerprint:
+            raise ValueError("audit signing-key fingerprint mismatch")
+        return self
+
+
 _PROTOCOL_SIGNATURE_ALGORITHM_PROFILE_V1 = (
     "ssh-ed25519-sshsig-git-sha512-or-openpgp-v4-ed25519-sha256-v1"
 )
@@ -834,26 +903,152 @@ def validate_signature_mode_fingerprint(
 
 
 class ReviewerAccountBindingV1(CapsuleModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        validate_default=True,
+    )
+
     reviewer_id: BoundedNonBlankString
     reviewer_numeric_account_id: StrictPositiveInt
     reviewer_login: BoundedNonBlankString
     verification_mode: SignatureVerificationModeV1
     signing_fingerprint: SigningFingerprintV1 | None
+    signing_key: AuditReviewerSigningKeyV1 | None
     role: Literal["audit_reviewer"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_foreign_signing_key_owner(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            signing_key = value.get("signing_key")
+            if isinstance(signing_key, BaseModel) and type(signing_key) is not (
+                AuditReviewerSigningKeyV1
+            ):
+                raise ValueError("audit reviewer binding contains a foreign signing-key owner")
+        return value
 
     @model_validator(mode="after")
     def validate_verification_mode(self) -> Self:
         validate_signature_mode_fingerprint(self.verification_mode, self.signing_fingerprint)
+        if self.verification_mode == "github_verified_commit":
+            if self.signing_key is not None:
+                raise ValueError("GitHub audit verification requires a null signing key")
+            return self
+        if type(self.signing_key) is not AuditReviewerSigningKeyV1:
+            raise ValueError("keyed audit verification requires an exact audit signing key")
+        signing_key = _class_bound_revalidate(self.signing_key, AuditReviewerSigningKeyV1)
+        if (
+            signing_key.verification_mode != self.verification_mode
+            or signing_key.fingerprint != self.signing_fingerprint
+        ):
+            raise ValueError("audit reviewer binding signing-key identity mismatch")
         return self
 
 
 class AuditReviewerRegistryV1(CapsuleModel):
-    schema_version: Literal["benchmark-reviewer-registry-v1"]
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        validate_default=True,
+    )
+
+    schema_version: Literal["benchmark-reviewer-registry-v2"]
     reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1]
     audit_reviewer_registry_sha256: Sha256
 
+    @field_serializer("reviewers")
+    def serialize_reviewer_pair(
+        self,
+        reviewers: tuple[ReviewerAccountBindingV1, ReviewerAccountBindingV1],
+    ) -> list[dict[str, object]]:
+        return [
+            cast(dict[str, object], reviewer.model_dump(mode="json"))
+            for reviewer in reviewers
+        ]
+
+    @field_validator("reviewers", mode="before")
+    @classmethod
+    def require_exact_reviewer_pair(cls, value: object, info: ValidationInfo) -> object:
+        active: set[int] = set()
+        completed: set[int] = set()
+        remaining_nodes = _EXACT_MODEL_PREFLIGHT_NODE_LIMIT
+
+        def require_plain_serialized_tree(candidate: object, depth: int = 0) -> None:
+            nonlocal remaining_nodes
+            if depth > _EXACT_MODEL_PREFLIGHT_DEPTH_LIMIT:
+                raise TypeError("serialized audit reviewer graph exceeds its nesting limit")
+            remaining_nodes -= 1
+            if remaining_nodes < 0:
+                raise TypeError("serialized audit reviewer graph exceeds its node limit")
+            if isinstance(candidate, BaseModel):
+                raise TypeError(
+                    "serialized audit reviewer arrays reject nested model owners"
+                )
+            if candidate is None or type(candidate) in {str, int, bool}:
+                return
+            if type(candidate) not in {dict, list}:
+                raise TypeError(
+                    "serialized audit reviewer arrays require exact JSON value owners"
+                )
+            identity = id(candidate)
+            if identity in active:
+                raise TypeError("serialized audit reviewer graph contains an owner cycle")
+            if identity in completed:
+                return
+            active.add(identity)
+            try:
+                if type(candidate) is dict:
+                    for key, item in cast(dict[object, object], candidate).items():
+                        if type(key) is not str:
+                            raise TypeError(
+                                "serialized audit reviewer objects require exact string keys"
+                            )
+                        require_plain_serialized_tree(item, depth + 1)
+                else:
+                    for item in cast(list[object], candidate):
+                        require_plain_serialized_tree(item, depth + 1)
+            finally:
+                active.remove(identity)
+            completed.add(identity)
+
+        if type(value) is list:
+            values = cast(list[object], value)
+            if len(values) != 2:
+                raise TypeError("serialized audit reviewers require exactly two object payloads")
+            if any(isinstance(item, BaseModel) for item in values) or any(
+                type(item) is not dict for item in values
+            ):
+                raise TypeError(
+                    "serialized audit reviewer arrays require exact object payloads"
+                )
+            require_plain_serialized_tree(values)
+            # Canonical JSON is duplicate-key checked before the surrounding durable owner calls
+            # ``model_validate``.  Its array therefore arrives here as a list of plain mappings;
+            # admit only that serialized shape, never a Python list of authority-bearing models.
+            return tuple(values)
+        if info.mode == "json":
+            raise TypeError("JSON audit reviewers require one exact array payload")
+        if type(value) is not tuple:
+            raise TypeError("audit reviewers require an exact tuple owner")
+        if len(cast(tuple[object, ...], value)) != 2:
+            raise TypeError("audit reviewers require exactly two reviewer owners")
+        for item in cast(tuple[object, ...], value):
+            if type(item) is not ReviewerAccountBindingV1:
+                raise TypeError("expected exact nested ReviewerAccountBindingV1 owner")
+            _preflight_exact_model_owners_v1(item, ReviewerAccountBindingV1)
+        return value
+
     @model_validator(mode="after")
     def validate_registry(self) -> Self:
+        if any(type(item) is not ReviewerAccountBindingV1 for item in self.reviewers):
+            raise ValueError("audit registry contains a foreign reviewer-binding owner")
+        for reviewer in self.reviewers:
+            _class_bound_revalidate(reviewer, ReviewerAccountBindingV1)
         keys = tuple(item.reviewer_id.encode("utf-8") for item in self.reviewers)
         if keys != tuple(sorted(keys)) or len(set(keys)) != 2:
             raise ValueError("audit reviewer IDs must be distinct and bytewise ordered")
@@ -862,6 +1057,20 @@ class AuditReviewerRegistryV1(CapsuleModel):
             or len({item.reviewer_login for item in self.reviewers}) != 2
         ):
             raise ValueError("audit reviewer identities must be distinct")
+        fingerprints = tuple(
+            item.signing_fingerprint
+            for item in self.reviewers
+            if item.signing_fingerprint is not None
+        )
+        key_hashes = tuple(
+            item.signing_key.public_key_sha256
+            for item in self.reviewers
+            if item.signing_key is not None
+        )
+        if len(set(fingerprints)) != len(fingerprints) or len(set(key_hashes)) != len(
+            key_hashes
+        ):
+            raise ValueError("audit reviewer keyed identities must be distinct")
         if self.audit_reviewer_registry_sha256 != compute_audit_reviewer_registry_sha256(
             self.reviewers
         ):
@@ -927,6 +1136,177 @@ class ProtocolReviewVerificationError(ValueError):
 _ProtocolModelT = TypeVar("_ProtocolModelT", bound=CapsuleModel)
 
 
+def _annotation_model_owners(annotation: object) -> tuple[type[BaseModel], ...]:
+    owners: list[type[BaseModel]] = []
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        owners.append(annotation)
+    origin = get_origin(annotation)
+    if origin in {tuple, list, dict, Mapping, Sequence}:
+        return tuple(owners)
+    for argument in get_args(annotation):
+        for owner in _annotation_model_owners(argument):
+            if owner not in owners:
+                owners.append(owner)
+    return tuple(owners)
+
+
+def _annotation_allows_none(annotation: object) -> bool:
+    return annotation is type(None) or any(
+        _annotation_allows_none(argument) for argument in get_args(annotation)
+    )
+
+
+def _annotation_container_owners(annotation: object) -> tuple[type[object], ...]:
+    origin = get_origin(annotation)
+    if origin in {tuple, list, dict}:
+        return (origin,)
+    owners: list[type[object]] = []
+    for argument in get_args(annotation):
+        for owner in _annotation_container_owners(argument):
+            if owner not in owners:
+                owners.append(owner)
+    return tuple(owners)
+
+
+def _tuple_item_annotation(annotation: object, ordinal: int, length: int) -> object:
+    if get_origin(annotation) is tuple:
+        arguments = get_args(annotation)
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            return arguments[0]
+        if len(arguments) == length:
+            return arguments[ordinal]
+    return object
+
+
+def _mapping_value_annotation(annotation: object) -> object:
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin in {dict, Mapping} and len(arguments) == 2:
+        return arguments[1]
+    return object
+
+
+_EXACT_MODEL_PREFLIGHT_DEPTH_LIMIT = 128
+_EXACT_MODEL_PREFLIGHT_NODE_LIMIT = 262_144
+
+
+def _preflight_exact_model_owners_v1(
+    value: object,
+    expected_annotation: object,
+    *,
+    slot: str = "model",
+    active: set[int] | None = None,
+    completed: set[tuple[int, int]] | None = None,
+    depth: int = 0,
+    remaining_nodes: list[int] | None = None,
+) -> None:
+    """Reject nested Pydantic substitutes before validation can normalize them."""
+
+    if depth > _EXACT_MODEL_PREFLIGHT_DEPTH_LIMIT:
+        raise TypeError("class-bound model graph exceeds its nesting limit")
+    node_budget = (
+        [_EXACT_MODEL_PREFLIGHT_NODE_LIMIT]
+        if remaining_nodes is None
+        else remaining_nodes
+    )
+    node_budget[0] -= 1
+    if node_budget[0] < 0:
+        raise TypeError("class-bound model graph exceeds its node limit")
+
+    expected_containers = _annotation_container_owners(expected_annotation)
+    if (
+        expected_containers
+        and type(value) not in expected_containers
+        and not (value is None and _annotation_allows_none(expected_annotation))
+    ):
+        expected = " or ".join(owner.__name__ for owner in expected_containers)
+        raise TypeError(
+            f"foreign {slot.replace('_', '-')} container owner; "
+            f"expected exact {expected} owner"
+        )
+    active_ids = set() if active is None else active
+    completed_keys = set() if completed is None else completed
+    tracked = isinstance(value, BaseModel) or type(value) in {tuple, list, dict}
+    identity = id(value)
+    completed_key = (identity, id(expected_annotation))
+    if tracked:
+        if identity in active_ids:
+            raise TypeError("class-bound model graph contains an owner cycle")
+        if completed_key in completed_keys:
+            return
+        active_ids.add(identity)
+    try:
+        expected_models = _annotation_model_owners(expected_annotation)
+        if (
+            expected_models
+            and not isinstance(value, BaseModel)
+            and not (value is None and _annotation_allows_none(expected_annotation))
+        ):
+            expected = " or ".join(owner.__name__ for owner in expected_models)
+            raise TypeError(
+                f"foreign {slot.replace('_', '-')} owner; "
+                f"expected exact nested {expected} owner"
+            )
+        if isinstance(value, BaseModel):
+            if type(value) not in expected_models:
+                expected = (
+                    " or ".join(owner.__name__ for owner in expected_models)
+                    or "declared model"
+                )
+                raise TypeError(
+                    f"foreign {slot.replace('_', '-')} owner; "
+                    f"expected exact nested {expected} owner"
+                )
+            owner = type(value)
+            for name, field in owner.model_fields.items():
+                try:
+                    child = object.__getattribute__(value, name)
+                except AttributeError as error:
+                    raise TypeError(
+                        f"class-bound model graph is missing field {name}"
+                    ) from error
+                _preflight_exact_model_owners_v1(
+                    child,
+                    field.annotation,
+                    slot=name,
+                    active=active_ids,
+                    completed=completed_keys,
+                    depth=depth + 1,
+                    remaining_nodes=node_budget,
+                )
+            return
+        if type(value) in {tuple, list}:
+            values = cast(tuple[object, ...] | list[object], value)
+            for ordinal, item in enumerate(values):
+                _preflight_exact_model_owners_v1(
+                    item,
+                    _tuple_item_annotation(expected_annotation, ordinal, len(values)),
+                    slot=f"{slot} item",
+                    active=active_ids,
+                    completed=completed_keys,
+                    depth=depth + 1,
+                    remaining_nodes=node_budget,
+                )
+            return
+        if type(value) is dict:
+            mapping = cast(dict[object, object], value)
+            child_annotation = _mapping_value_annotation(expected_annotation)
+            for item in mapping.values():
+                _preflight_exact_model_owners_v1(
+                    item,
+                    child_annotation,
+                    slot=f"{slot} value",
+                    active=active_ids,
+                    completed=completed_keys,
+                    depth=depth + 1,
+                    remaining_nodes=node_budget,
+                )
+    finally:
+        if tracked:
+            active_ids.remove(identity)
+            completed_keys.add(completed_key)
+
+
 def _class_bound_revalidate(
     value: _ProtocolModelT, expected_type: type[_ProtocolModelT]
 ) -> _ProtocolModelT:
@@ -934,8 +1314,8 @@ def _class_bound_revalidate(
         raise ProtocolReviewVerificationError(
             f"expected exact {expected_type.__name__}, not a substitute instance"
         )
-    payload = expected_type.model_dump(value, mode="python", round_trip=True)
-    return expected_type.model_validate(payload)
+    _preflight_exact_model_owners_v1(value, expected_type)
+    return expected_type.model_validate(value)
 
 
 def _validated_audit_reviewers(
@@ -955,6 +1335,16 @@ def _validated_audit_reviewers(
         or len({item.reviewer_login for item in validated}) != 2
     ):
         raise ValueError("audit reviewer identities must be distinct")
+    fingerprints = tuple(
+        item.signing_fingerprint for item in validated if item.signing_fingerprint is not None
+    )
+    key_hashes = tuple(
+        item.signing_key.public_key_sha256
+        for item in validated
+        if item.signing_key is not None
+    )
+    if len(set(fingerprints)) != len(fingerprints) or len(set(key_hashes)) != len(key_hashes):
+        raise ValueError("audit reviewer keyed identities must be distinct")
     return validated
 
 
@@ -1000,7 +1390,7 @@ def canonical_reviewer_registry_bytes(
     reviewers = _validated_audit_reviewers(reviewers)
     return canonical_json_v1(
         {
-            "schema_version": "benchmark-reviewer-registry-v1",
+            "schema_version": "benchmark-reviewer-registry-v2",
             "reviewers": [item.model_dump(mode="json") for item in reviewers],
         }
     )
@@ -2634,22 +3024,7 @@ def _validate_review_commit(
     return view, view.signed_payload, view.signature
 
 
-def _repository_slug_from_c0(
-    c0: ParsedProtocolGitObjectV1,
-    objects: Mapping[str, ParsedProtocolGitObjectV1],
-    repository_id: int,
-) -> tuple[str, str]:
-    flattened = _flatten_tree(_parse_commit_view(c0).tree_oid, objects)
-    path = "benchmarks/campaigns/public-three-model-v1/repository-trust-boundary.json"
-    entry = flattened.get(path)
-    if entry is None or entry[0] != "100644":
-        raise ProtocolReviewVerificationError("C0 lacks exact repository trust-boundary member")
-    parsed = parse_canonical_json_v1(objects[entry[1]].raw_content)
-    if not isinstance(parsed, dict):
-        raise ProtocolReviewVerificationError("repository trust boundary must be an object")
-    owner = parsed.get("repository_owner")
-    name = parsed.get("repository_name")
-    retained_repository_id = parsed.get("repository_id")
+def _validated_repository_slug(owner: object, name: object) -> tuple[str, str]:
     if (
         type(owner) is not str
         or type(name) is not str
@@ -2665,9 +3040,29 @@ def _repository_slug_from_c0(
         is None
         or name in {".", ".."}
         or name.casefold().endswith(".git")
-        or retained_repository_id != repository_id
-        or type(retained_repository_id) is not int
     ):
+        raise ProtocolReviewVerificationError("repository trust-boundary identity mismatch")
+    return owner, name
+
+
+def _repository_slug_from_c0(
+    c0: ParsedProtocolGitObjectV1,
+    objects: Mapping[str, ParsedProtocolGitObjectV1],
+    repository_id: int,
+) -> tuple[str, str]:
+    flattened = _flatten_tree(_parse_commit_view(c0).tree_oid, objects)
+    path = "benchmarks/campaigns/public-three-model-v1/repository-trust-boundary.json"
+    entry = flattened.get(path)
+    if entry is None or entry[0] != "100644":
+        raise ProtocolReviewVerificationError("C0 lacks exact repository trust-boundary member")
+    parsed = parse_canonical_json_v1(objects[entry[1]].raw_content)
+    if not isinstance(parsed, dict):
+        raise ProtocolReviewVerificationError("repository trust boundary must be an object")
+    owner, name = _validated_repository_slug(
+        parsed.get("repository_owner"), parsed.get("repository_name")
+    )
+    retained_repository_id = parsed.get("repository_id")
+    if retained_repository_id != repository_id or type(retained_repository_id) is not int:
         raise ProtocolReviewVerificationError("repository trust-boundary identity mismatch")
     return owner, name
 
@@ -4339,14 +4734,22 @@ def _verify_ed25519(public_key: bytes, signature: bytes, message: bytes) -> None
         raise ProtocolReviewVerificationError("Ed25519 signature verification failed") from None
 
 
-def _verify_ssh_signature(key_bytes: bytes, signature: bytes, signed_payload: bytes) -> str:
+def _ssh_public_key_fingerprint(key_bytes: bytes) -> str:
     algorithm, cursor = _read_ssh_string(key_bytes, 0)
     public_key, cursor = _read_ssh_string(key_bytes, cursor)
     if algorithm != b"ssh-ed25519" or len(public_key) != 32 or cursor != len(key_bytes):
-        raise ProtocolReviewVerificationError("C0 SSH key is not one canonical ssh-ed25519 blob")
-    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_bytes).digest()).decode(
+        raise ProtocolReviewVerificationError(
+            "signing key is not one canonical ssh-ed25519 wire blob"
+        )
+    return "SHA256:" + base64.b64encode(hashlib.sha256(key_bytes).digest()).decode(
         "ascii"
     ).rstrip("=")
+
+
+def _verify_ssh_signature(key_bytes: bytes, signature: bytes, signed_payload: bytes) -> str:
+    fingerprint = _ssh_public_key_fingerprint(key_bytes)
+    _, cursor = _read_ssh_string(key_bytes, 0)
+    public_key, _ = _read_ssh_string(key_bytes, cursor)
     decoded = _decode_exact_armor(
         signature,
         begin=b"-----BEGIN SSH SIGNATURE-----",
@@ -4524,6 +4927,93 @@ def _parse_openpgp_key_material(body: bytes) -> _OpenPGPKeyMaterial:
         fingerprint=fingerprint,
         created_at=created_at,
     )
+
+
+def _openpgp_transferable_key_fingerprint(
+    key_bytes: bytes,
+) -> str:
+    packets = _parse_openpgp_packets(key_bytes)
+    if len(packets) < 3 or tuple(item.tag for item in packets[:3]) != (6, 13, 2):
+        raise ProtocolReviewVerificationError(
+            "OpenPGP key requires primary/User-ID/positive-certification packet order"
+        )
+    if (len(packets) - 3) % 2 or any(
+        (packets[index].tag, packets[index + 1].tag) != (14, 2)
+        for index in range(3, len(packets), 2)
+    ):
+        raise ProtocolReviewVerificationError(
+            "OpenPGP key permits only ordered subkey/binding-signature pairs"
+        )
+    primary = _parse_openpgp_key_material(packets[0].body)
+    certification = _parse_openpgp_signature(
+        packets[2].body,
+        expected_type=0x13,
+        label="positive-certification 0x13",
+        require_key_flags=True,
+    )
+    if (
+        certification.issuer_fingerprint != primary.fingerprint
+        or certification.key_flags is None
+        or certification.key_flags & 0x03 != 0x03
+    ):
+        raise ProtocolReviewVerificationError("OpenPGP primary self-certification profile mismatch")
+    key_bodies = {packets[0].body}
+    key_fingerprints = {primary.fingerprint}
+    key_public_material = {primary.public_key}
+    subkey_fingerprints: list[str] = []
+    for index in range(3, len(packets), 2):
+        subkey = _parse_openpgp_key_material(packets[index].body)
+        if (
+            packets[index].body in key_bodies
+            or subkey.fingerprint in key_fingerprints
+            or subkey.public_key in key_public_material
+        ):
+            raise ProtocolReviewVerificationError(
+                "OpenPGP primary/subkey key material must be globally unique"
+            )
+        key_bodies.add(packets[index].body)
+        key_fingerprints.add(subkey.fingerprint)
+        key_public_material.add(subkey.public_key)
+        subkey_fingerprints.append(subkey.fingerprint)
+        binding = _parse_openpgp_signature(
+            packets[index + 1].body,
+            expected_type=0x18,
+            label="subkey-binding 0x18",
+            require_key_flags=True,
+        )
+        if (
+            binding.issuer_fingerprint != primary.fingerprint
+            or binding.key_flags is None
+            or binding.key_flags & 0x02 == 0
+            or len(binding.embedded_signatures) != 1
+        ):
+            raise ProtocolReviewVerificationError("OpenPGP signing-subkey binding profile mismatch")
+        embedded = _parse_openpgp_signature(
+            binding.embedded_signatures[0],
+            expected_type=0x19,
+            label="embedded primary-binding 0x19",
+            require_key_flags=False,
+        )
+        if embedded.issuer_fingerprint != subkey.fingerprint:
+            raise ProtocolReviewVerificationError(
+                "OpenPGP embedded primary-binding issuer mismatch"
+            )
+    if tuple(subkey_fingerprints) != tuple(sorted(subkey_fingerprints)) or len(
+        set(subkey_fingerprints)
+    ) != len(subkey_fingerprints):
+        raise ProtocolReviewVerificationError(
+            "OpenPGP subkeys require distinct ascending primary fingerprints"
+        )
+    return primary.fingerprint
+
+
+def _signing_key_fingerprint(
+    verification_mode: Literal["ssh_sha256", "openpgp_fingerprint"],
+    key_bytes: bytes,
+) -> str:
+    if verification_mode == "ssh_sha256":
+        return _ssh_public_key_fingerprint(key_bytes)
+    return _openpgp_transferable_key_fingerprint(key_bytes)
 
 
 def _openpgp_key_hash_bytes(key: _OpenPGPKeyMaterial) -> bytes:
@@ -4908,7 +5398,7 @@ def _verify_openpgp_signature_profile(
 
 def _verify_keyed_signature_v1(
     *,
-    key: ProtocolReviewSigningKeyV1,
+    key: ProtocolReviewSigningKeyV1 | AuditReviewerSigningKeyV1,
     signed_payload: bytes,
     signature: bytes,
     verifier_tool_sha256: str,
@@ -4918,7 +5408,12 @@ def _verify_keyed_signature_v1(
 ) -> LocalSignatureVerificationReceiptV1:
     """Hermetically verify one keyed commit signature from only sealed C0 inputs."""
 
-    key = _class_bound_revalidate(key, ProtocolReviewSigningKeyV1)
+    if type(key) is ProtocolReviewSigningKeyV1:
+        key = _class_bound_revalidate(key, ProtocolReviewSigningKeyV1)
+    elif type(key) is AuditReviewerSigningKeyV1:
+        key = _class_bound_revalidate(key, AuditReviewerSigningKeyV1)
+    else:
+        raise ProtocolReviewVerificationError("expected an exact protocol or audit signing key")
     if type(signed_payload) is not bytes or type(signature) is not bytes:
         raise ProtocolReviewVerificationError("keyed verifier inputs must be exact bytes")
     author_name_ascii = _strict_string(author_name_ascii)
@@ -4974,22 +5469,164 @@ def _revalidate_signature_source(
     )
 
 
-def _derive_source_evidence(
+def verify_commit_signature_evidence_source(
     *,
     source: ProtocolSignatureEvidenceSourceV1,
     commit: ParsedProtocolGitObjectV1,
-    commit_view: _CommitView,
-    reviewer: ProtocolReviewerBindingV1,
-    statement: ProtocolReviewStatementV1,
-    repository_id: int,
-    repository_owner: str,
-    repository_name: str,
-    identity_registry: ProtocolReviewIdentityRegistryBundleV1,
-) -> GitHubVerifiedCommitEvidenceV1 | SSHVerifiedCommitEvidenceV1 | OpenPGPVerifiedCommitEvidenceV1:
+    expected_parent_oid: str,
+    expected_primary_path: str,
+    expected_repository_id: int,
+    expected_repository_owner: str,
+    expected_repository_name: str,
+    expected_signer_numeric_account_id: int,
+    expected_signer_login: str,
+    expected_verification_mode: SignatureVerificationModeV1,
+    expected_signing_fingerprint: str | None,
+    signing_key: ProtocolReviewSigningKeyV1 | AuditReviewerSigningKeyV1 | None,
+    expected_git_identity: tuple[str, str, str, str] | None,
+    identity_registry_bundle: ProtocolReviewIdentityRegistryBundleV1,
+    audit_reviewer_registry: AuditReviewerRegistryV1 | None,
+) -> SignatureEvidenceV1:
+    """Reconstruct one commit-signature evidence record from retained source bytes."""
+
     source = _revalidate_signature_source(source)
+    if type(commit) is not ParsedProtocolGitObjectV1:
+        raise ProtocolReviewVerificationError("expected one exact parsed commit object")
+    reparsed_commit = parse_protocol_git_object(
+        oid=commit.oid,
+        object_type=commit.object_type,
+        raw_content=commit.raw_content,
+    )
+    if reparsed_commit != commit:
+        raise ProtocolReviewVerificationError("parsed commit was mutated after verification")
+    commit_view = _parse_commit_view(reparsed_commit)
+    expected_parent_oid = _git_sha1(_strict_string(expected_parent_oid))
+    if (
+        commit_view.header_names != ("tree", "parent", "author", "committer", "gpgsig")
+        or commit_view.parent_oids != (expected_parent_oid,)
+        or commit_view.signature is None
+    ):
+        raise ProtocolReviewVerificationError(
+            "signed commit requires exact headers, one parent, and one signature"
+        )
+    expected_primary_path = _strict_string(expected_primary_path)
+    expected_repository_id = _selected_positive_int(
+        expected_repository_id, "expected repository ID"
+    )
+    expected_repository_owner, expected_repository_name = _validated_repository_slug(
+        expected_repository_owner, expected_repository_name
+    )
+    expected_signer_numeric_account_id = _selected_positive_int(
+        expected_signer_numeric_account_id, "expected signer account ID"
+    )
+    expected_signer_login = _strict_string(expected_signer_login)
+    if expected_verification_mode not in (
+        "github_verified_commit",
+        "ssh_sha256",
+        "openpgp_fingerprint",
+    ):
+        raise ProtocolReviewVerificationError("signature verification mode is not closed")
+    validate_signature_mode_fingerprint(
+        expected_verification_mode, expected_signing_fingerprint
+    )
+    identity_registry_bundle = _class_bound_revalidate(
+        identity_registry_bundle, ProtocolReviewIdentityRegistryBundleV1
+    )
+    author_name, author_email, author_epoch, _ = _identity_parts(commit_view.author)
+    committer_name, committer_email, _, _ = _identity_parts(commit_view.committer)
+    signed_at = datetime.fromtimestamp(author_epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    validated_signing_key: ProtocolReviewSigningKeyV1 | AuditReviewerSigningKeyV1 | None
+    if expected_verification_mode == "github_verified_commit":
+        if signing_key is not None or expected_git_identity is not None:
+            raise ProtocolReviewVerificationError(
+                "GitHub verification requires null key and Git identity"
+            )
+        validated_signing_key = None
+    else:
+        if type(expected_git_identity) is not tuple or len(expected_git_identity) != 4:
+            raise ProtocolReviewVerificationError(
+                "keyed verification requires one exact four-field Git identity"
+            )
+        expected_author_name = _canonical_git_ascii_name(
+            _strict_string(expected_git_identity[0])
+        )
+        expected_author_email = _canonical_git_ascii_email(
+            _strict_string(expected_git_identity[1])
+        )
+        expected_committer_name = _canonical_git_ascii_name(
+            _strict_string(expected_git_identity[2])
+        )
+        expected_committer_email = _canonical_git_ascii_email(
+            _strict_string(expected_git_identity[3])
+        )
+        if (
+            author_name,
+            author_email,
+            committer_name,
+            committer_email,
+        ) != (
+            expected_author_name,
+            expected_author_email,
+            expected_committer_name,
+            expected_committer_email,
+        ):
+            raise ProtocolReviewVerificationError("signed commit Git identity mismatch")
+        if type(signing_key) is ProtocolReviewSigningKeyV1:
+            validated_signing_key = _class_bound_revalidate(
+                signing_key, ProtocolReviewSigningKeyV1
+            )
+            if validated_signing_key not in identity_registry_bundle.keys:
+                raise ProtocolReviewVerificationError(
+                    "protocol signing key is not an exact identity-registry member"
+                )
+        elif type(signing_key) is AuditReviewerSigningKeyV1:
+            validated_signing_key = _class_bound_revalidate(
+                signing_key, AuditReviewerSigningKeyV1
+            )
+            if audit_reviewer_registry is None:
+                raise ProtocolReviewVerificationError(
+                    "audit signing key requires its exact reviewer registry"
+                )
+            validated_audit_registry = _class_bound_revalidate(
+                audit_reviewer_registry, AuditReviewerRegistryV1
+            )
+            matching_audit_reviewers = tuple(
+                reviewer
+                for reviewer in validated_audit_registry.reviewers
+                if reviewer.reviewer_numeric_account_id
+                == expected_signer_numeric_account_id
+                and reviewer.reviewer_login == expected_signer_login
+                and reviewer.verification_mode == expected_verification_mode
+                and reviewer.signing_fingerprint == expected_signing_fingerprint
+                and reviewer.signing_key == validated_signing_key
+            )
+            if len(matching_audit_reviewers) != 1:
+                raise ProtocolReviewVerificationError(
+                    "audit signing key is not the selected reviewer's exact nested key"
+                )
+            if expected_git_identity != (
+                validated_signing_key.author_name_ascii,
+                validated_signing_key.author_email_ascii,
+                validated_signing_key.committer_name_ascii,
+                validated_signing_key.committer_email_ascii,
+            ):
+                raise ProtocolReviewVerificationError(
+                    "audit signing key Git identity differs from expected authority"
+                )
+        else:
+            raise ProtocolReviewVerificationError(
+                "keyed verification requires an exact protocol or audit signing key"
+            )
+        if (
+            validated_signing_key.verification_mode != expected_verification_mode
+            or validated_signing_key.fingerprint != expected_signing_fingerprint
+        ):
+            raise ProtocolReviewVerificationError("signing-key mode/fingerprint mismatch")
+
     receipt = source.observation_receipt
     if (
-        receipt.repository_id != repository_id
+        receipt.repository_id != expected_repository_id
         or receipt.commit_oid != commit.oid
         or tuple(hashlib.sha256(item).hexdigest() for item in source.raw_response_bytes)
         != receipt.raw_response_sha256s
@@ -5023,9 +5660,7 @@ def _derive_source_evidence(
         raise ProtocolReviewVerificationError("REST verification selected values are not valid")
     try:
         expected_payload_text = commit_view.signed_payload.decode("utf-8", errors="strict")
-        expected_signature_text = cast(bytes, commit_view.signature).decode(
-            "utf-8", errors="strict"
-        )
+        expected_signature_text = commit_view.signature.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         raise ProtocolReviewVerificationError(
             "raw Git signature evidence is not strict UTF-8"
@@ -5034,10 +5669,13 @@ def _derive_source_evidence(
         raise ProtocolReviewVerificationError("REST payload/signature differ from raw Git commit")
     rest_payload: dict[str, object] = {
         "schema_version": "GitHubCommitVerificationProjectionV1",
-        "repository_id": repository_id,
+        "repository_id": expected_repository_id,
         "commit_oid": commit.oid,
         "api_version": "2022-11-28",
-        "endpoint": f"GET /repos/{repository_owner}/{repository_name}/git/commits/{commit.oid}",
+        "endpoint": (
+            f"GET /repos/{expected_repository_owner}/{expected_repository_name}"
+            f"/git/commits/{commit.oid}"
+        ),
         "verified": True,
         "reason": "valid",
         "payload": payload_text,
@@ -5091,17 +5729,17 @@ def _derive_source_evidence(
         "data.repository.object.signature.signer.login",
     )
     if (
-        graphql_repository_id != repository_id
+        graphql_repository_id != expected_repository_id
         or graphql_oid != commit.oid
         or is_valid is not True
         or state != "VALID"
-        or signer_id != reviewer.reviewer_numeric_account_id
-        or signer_login != reviewer.reviewer_login
+        or signer_id != expected_signer_numeric_account_id
+        or signer_login != expected_signer_login
     ):
         raise ProtocolReviewVerificationError("GraphQL selected signature identity mismatch")
     graphql_payload: dict[str, object] = {
         "schema_version": "GitHubSignatureProjectionV1",
-        "repository_id": repository_id,
+        "repository_id": expected_repository_id,
         "commit_oid": commit.oid,
         "query_sha256": GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1,
         "signer_database_id": signer_id,
@@ -5125,13 +5763,13 @@ def _derive_source_evidence(
     common: dict[str, object] = {
         "commit_oid": commit.oid,
         "commit_object_sha256": commit.git_object_sha256,
-        "parent_commit_oid": commit_view.parent_oids[0],
-        "statement_path": _statement_path(statement.input_tag_ref, statement.role),
+        "parent_commit_oid": expected_parent_oid,
+        "statement_path": expected_primary_path,
         "github_rest_verification": rest.model_dump(mode="json"),
         "github_graphql_signature": graphql.model_dump(mode="json"),
     }
-    if reviewer.verification_mode == "github_verified_commit":
-        _validate_github_signature_armor(cast(bytes, commit_view.signature))
+    if expected_verification_mode == "github_verified_commit":
+        _validate_github_signature_armor(commit_view.signature)
         fresh: (
             GitHubVerifiedCommitEvidenceV1
             | SSHVerifiedCommitEvidenceV1
@@ -5144,38 +5782,29 @@ def _derive_source_evidence(
             }
         )
     else:
-        matching = tuple(
-            key
-            for key in identity_registry.keys
-            if key.role == reviewer.role
-            and key.reviewer_numeric_account_id == reviewer.reviewer_numeric_account_id
-            and key.reviewer_login == reviewer.reviewer_login
-            and key.verification_mode == reviewer.verification_mode
-            and key.fingerprint == reviewer.signing_fingerprint
-        )
-        if len(matching) != 1:
-            raise ProtocolReviewVerificationError("C0 key selection is missing or ambiguous")
-        key = matching[0]
-        _verify_active_verifier_runtime(identity_registry)
+        assert validated_signing_key is not None
+        _verify_active_verifier_runtime(identity_registry_bundle)
         try:
             local = _verify_keyed_signature_v1(
-                key=key,
+                key=validated_signing_key,
                 signed_payload=commit_view.signed_payload,
-                signature=cast(bytes, commit_view.signature),
-                verifier_tool_sha256=identity_registry.protocol_signature_verifier_tool_sha256,
-                author_name_ascii=reviewer.author_name_ascii,
-                author_email_ascii=reviewer.author_email_ascii,
-                signed_at=statement.signed_at,
+                signature=commit_view.signature,
+                verifier_tool_sha256=(
+                    identity_registry_bundle.protocol_signature_verifier_tool_sha256
+                ),
+                author_name_ascii=author_name,
+                author_email_ascii=author_email,
+                signed_at=signed_at,
             )
         finally:
-            _verify_active_verifier_runtime(identity_registry)
+            _verify_active_verifier_runtime(identity_registry_bundle)
         keyed = {
             **common,
-            "fingerprint": key.fingerprint,
-            "keyring_sha256": key.public_key_sha256,
+            "fingerprint": validated_signing_key.fingerprint,
+            "keyring_sha256": validated_signing_key.public_key_sha256,
             "local_signature_verification": local.model_dump(mode="json"),
         }
-        if reviewer.verification_mode == "ssh_sha256":
+        if expected_verification_mode == "ssh_sha256":
             fresh = SSHVerifiedCommitEvidenceV1.model_validate(
                 {
                     "schema_version": "SSHVerifiedCommitEvidenceV1",
@@ -5198,6 +5827,58 @@ def _derive_source_evidence(
             "supplied signature evidence differs from fresh source reconstruction"
         )
     return fresh
+
+
+def _derive_source_evidence(
+    *,
+    source: ProtocolSignatureEvidenceSourceV1,
+    commit: ParsedProtocolGitObjectV1,
+    expected_parent_oid: str,
+    reviewer: ProtocolReviewerBindingV1,
+    statement: ProtocolReviewStatementV1,
+    repository_id: int,
+    repository_owner: str,
+    repository_name: str,
+    identity_registry: ProtocolReviewIdentityRegistryBundleV1,
+) -> SignatureEvidenceV1:
+    signing_key: ProtocolReviewSigningKeyV1 | None = None
+    expected_git_identity: tuple[str, str, str, str] | None = None
+    if reviewer.verification_mode != "github_verified_commit":
+        matching = tuple(
+            key
+            for key in identity_registry.keys
+            if key.role == reviewer.role
+            and key.reviewer_numeric_account_id == reviewer.reviewer_numeric_account_id
+            and key.reviewer_login == reviewer.reviewer_login
+            and key.verification_mode == reviewer.verification_mode
+            and key.fingerprint == reviewer.signing_fingerprint
+        )
+        if len(matching) != 1:
+            raise ProtocolReviewVerificationError("C0 key selection is missing or ambiguous")
+        signing_key = matching[0]
+        expected_git_identity = (
+            reviewer.author_name_ascii,
+            reviewer.author_email_ascii,
+            reviewer.committer_name_ascii,
+            reviewer.committer_email_ascii,
+        )
+    return verify_commit_signature_evidence_source(
+        source=source,
+        commit=commit,
+        expected_parent_oid=expected_parent_oid,
+        expected_primary_path=_statement_path(statement.input_tag_ref, statement.role),
+        expected_repository_id=repository_id,
+        expected_repository_owner=repository_owner,
+        expected_repository_name=repository_name,
+        expected_signer_numeric_account_id=reviewer.reviewer_numeric_account_id,
+        expected_signer_login=reviewer.reviewer_login,
+        expected_verification_mode=reviewer.verification_mode,
+        expected_signing_fingerprint=reviewer.signing_fingerprint,
+        signing_key=signing_key,
+        expected_git_identity=expected_git_identity,
+        identity_registry_bundle=identity_registry,
+        audit_reviewer_registry=None,
+    )
 
 
 def _verify_protocol_review_prefix(
@@ -5345,7 +6026,7 @@ def _verify_protocol_review_prefix(
                 raise ProtocolReviewVerificationError(
                     "security statement operator/ruleset/identity subjects mismatch"
                 )
-        commit_view, _, _ = _validate_review_commit(
+        _validate_review_commit(
             commit,
             parent_oid=parent.oid,
             reviewer=reviewer,
@@ -5355,7 +6036,7 @@ def _verify_protocol_review_prefix(
         evidence = _derive_source_evidence(
             source=source,
             commit=commit,
-            commit_view=commit_view,
+            expected_parent_oid=parent.oid,
             reviewer=reviewer,
             statement=statement,
             repository_id=tag_ruleset_policy.repository_id,

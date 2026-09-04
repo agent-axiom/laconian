@@ -6,11 +6,13 @@ import base64
 import hashlib
 import importlib
 import inspect
+import json
 import os
 import py_compile
 import subprocess
 import sys
 import tempfile
+import warnings
 from collections.abc import MutableMapping
 from dataclasses import replace
 from functools import cache
@@ -31,6 +33,7 @@ from laconian_eval.benchmark.protocol_review import (
     PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1,
     ArchivedApiBlobV1,
     ArchivedApiReceiptBindingV1,
+    AuditReviewerSigningKeyV1,
     GitHubCommitVerificationProjectionV1,
     GitHubSignatureObservationReceiptV1,
     GitHubSignatureProjectionV1,
@@ -79,8 +82,14 @@ from laconian_eval.benchmark.protocol_review import (
     load_verified_protocol_review_object_archive,
     parse_protocol_git_object,
     protocol_review_digest,
+    verify_commit_signature_evidence_source,
     verify_protocol_review_dag,
     verify_protocol_review_prefix,
+)
+from tests.benchmark.helpers import (
+    audit_reviewer_registry,
+    audit_reviewer_signing_key,
+    audit_reviewer_ssh_key_material,
 )
 
 SECURITY_SUBJECT_KINDS_V1: tuple[ProtocolSubjectKindV1, ...] = (
@@ -873,22 +882,7 @@ def test_tree_delta_rejects_an_added_empty_subtree() -> None:
 
 
 def test_registry_digest_helpers_revalidate_exact_bindings_and_reject_duplicates() -> None:
-    first = ReviewerAccountBindingV1(
-        reviewer_id="audit-a",
-        reviewer_numeric_account_id=501,
-        reviewer_login="audit-a",
-        verification_mode="github_verified_commit",
-        signing_fingerprint=None,
-        role="audit_reviewer",
-    )
-    second = ReviewerAccountBindingV1(
-        reviewer_id="audit-b",
-        reviewer_numeric_account_id=502,
-        reviewer_login="audit-b",
-        verification_mode="ssh_sha256",
-        signing_fingerprint="SHA256:" + "A" * 43,
-        role="audit_reviewer",
-    )
+    first, second = audit_reviewer_registry().reviewers
     assert (
         compute_audit_reviewer_registry_sha256((first, second))
         == hashlib.sha256(canonical_reviewer_registry_bytes((first, second))).hexdigest()
@@ -902,6 +896,7 @@ def test_registry_digest_helpers_revalidate_exact_bindings_and_reject_duplicates
         reviewer_login="audit-c",
         verification_mode="github_verified_commit",
         signing_fingerprint=None,
+        signing_key=None,
         role="audit_reviewer",
     )
     with pytest.raises(ValidationError):
@@ -919,6 +914,429 @@ def test_registry_digest_helpers_revalidate_exact_bindings_and_reject_duplicates
     )
     with pytest.raises(ValueError, match="distinct"):
         compute_protocol_reviewer_registry_sha256((protocol[0], protocol[1], duplicate_identity))
+
+
+def test_audit_registry_directly_binds_exact_key_bytes_and_git_identities() -> None:
+    from laconian_eval.benchmark.context import GenerationContextIndexV1
+    from laconian_eval.benchmark.provider_evidence import ProviderEvidenceIndexV1
+
+    registry = audit_reviewer_registry()
+    github_reviewer, keyed_reviewer = registry.reviewers
+    key = keyed_reviewer.signing_key
+    assert type(key) is AuditReviewerSigningKeyV1
+    assert tuple(AuditReviewerSigningKeyV1.model_fields) == (
+        "schema_version",
+        "verification_mode",
+        "fingerprint",
+        "author_name_ascii",
+        "author_email_ascii",
+        "committer_name_ascii",
+        "committer_email_ascii",
+        "public_key_encoding",
+        "public_key_base64",
+        "public_key_sha256",
+    )
+    assert tuple(ReviewerAccountBindingV1.model_fields) == (
+        "reviewer_id",
+        "reviewer_numeric_account_id",
+        "reviewer_login",
+        "verification_mode",
+        "signing_fingerprint",
+        "signing_key",
+        "role",
+    )
+    assert registry.schema_version == "benchmark-reviewer-registry-v2"
+    assert github_reviewer.signing_key is None
+    assert key is not None
+    _, expected_key_bytes, expected_fingerprint = audit_reviewer_ssh_key_material()
+    assert base64.b64decode(key.public_key_base64, validate=True) == expected_key_bytes
+    assert key.fingerprint == expected_fingerprint == keyed_reviewer.signing_fingerprint
+    assert (
+        key.author_name_ascii,
+        key.author_email_ascii,
+        key.committer_name_ascii,
+        key.committer_email_ascii,
+    ) == (
+        "Audit Reviewer B",
+        "audit-reviewer-b@users.noreply.github.com",
+        "Audit Reviewer B",
+        "audit-reviewer-b@users.noreply.github.com",
+    )
+    expected_bytes = canonical_json_v1(
+        {
+            "schema_version": "benchmark-reviewer-registry-v2",
+            "reviewers": [item.model_dump(mode="json") for item in registry.reviewers],
+        }
+    )
+    assert canonical_reviewer_registry_bytes(registry.reviewers) == expected_bytes
+    assert registry.audit_reviewer_registry_sha256 == hashlib.sha256(expected_bytes).hexdigest()
+
+    with warnings.catch_warnings(record=True) as serialization_warnings:
+        warnings.simplefilter("always")
+        binding_python = keyed_reviewer.model_dump(
+            mode="python", round_trip=True, warnings=True
+        )
+        registry_python = registry.model_dump(
+            mode="python", round_trip=True, warnings=True
+        )
+        registry_json = registry.model_dump(mode="json", warnings=True)
+        registry_json_text = registry.model_dump_json(warnings=True)
+        for parent_type in (GenerationContextIndexV1, ProviderEvidenceIndexV1):
+            parent = parent_type.model_construct(audit_reviewer_registry=registry)
+            parent_python = parent.model_dump(
+                mode="python",
+                round_trip=True,
+                warnings=True,
+                include={"audit_reviewer_registry"},
+            )
+            parent_json = parent.model_dump(
+                mode="json", warnings=True, include={"audit_reviewer_registry"}
+            )
+            parent_json_text = parent.model_dump_json(
+                warnings=True, include={"audit_reviewer_registry"}
+            )
+            parent_registry = parent_python["audit_reviewer_registry"]
+            assert type(parent_registry["reviewers"]) is list
+            assert all(
+                type(item) is dict
+                for item in parent_registry["reviewers"]
+            )
+            assert (
+                protocol_review.AuditReviewerRegistryV1.model_validate(parent_registry)
+                == registry
+            )
+            assert type(parent_json["audit_reviewer_registry"]["reviewers"]) is list
+            assert all(
+                type(item) is dict
+                for item in parent_json["audit_reviewer_registry"]["reviewers"]
+            )
+            parsed_parent = json.loads(parent_json_text)
+            assert type(parsed_parent["audit_reviewer_registry"]["reviewers"]) is list
+            assert all(
+                type(item) is dict
+                for item in parsed_parent["audit_reviewer_registry"]["reviewers"]
+            )
+    assert serialization_warnings == []
+    assert type(binding_python) is dict
+    assert type(registry_python["reviewers"]) is list
+    assert all(type(item) is dict for item in registry_python["reviewers"])
+    assert (
+        protocol_review.AuditReviewerRegistryV1.model_validate(registry_python)
+        == registry
+    )
+    assert type(registry_json["reviewers"]) is list
+    assert all(type(item) is dict for item in registry_json["reviewers"])
+    parsed_registry = json.loads(registry_json_text)
+    assert type(parsed_registry["reviewers"]) is list
+    assert all(type(item) is dict for item in parsed_registry["reviewers"])
+    assert protocol_review._class_bound_revalidate(
+        registry, protocol_review.AuditReviewerRegistryV1
+    ) == registry
+
+    # Python callers must already carry the exact immutable pair owner.  In particular,
+    # Pydantic's otherwise convenient sequence coercion cannot turn a mutable or executable
+    # caller-owned container into registry authority.  Canonical JSON arrays remain the one
+    # transport representation admitted for the tuple field.
+    class ReviewerIterable:
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("registry validation executed an arbitrary iterable")
+
+    python_payload = registry.model_dump(mode="python", round_trip=True)
+    for foreign_reviewers in (
+        list(registry.reviewers),
+        set(registry.reviewers),
+        frozenset(registry.reviewers),
+        ReviewerIterable(),
+    ):
+        with pytest.raises((TypeError, ValidationError)):
+            protocol_review.AuditReviewerRegistryV1.model_validate(
+                python_payload | {"reviewers": foreign_reviewers}
+            )
+    assert (
+        protocol_review.AuditReviewerRegistryV1.model_validate_json(
+            canonical_json_v1(registry.model_dump(mode="json"))
+        )
+        == registry
+    )
+    assert (
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            registry.model_dump(mode="json")
+        )
+        == registry
+    )
+
+    class ForeignDict(dict[str, object]):
+        pass
+
+    serialized_payload = registry.model_dump(mode="json")
+    with (
+        patch.object(
+            protocol_review,
+            "_preflight_exact_model_owners_v1",
+            side_effect=AssertionError("wrong-length reviewer pair reached owner traversal"),
+        ),
+        pytest.raises(TypeError, match="exactly two"),
+    ):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            serialized_payload
+            | {"reviewers": (*registry.reviewers, github_reviewer)}
+        )
+    with pytest.raises((TypeError, ValidationError), match="ReviewerAccountBindingV1"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            serialized_payload
+            | {"reviewers": tuple(serialized_payload["reviewers"])}
+        )
+    with pytest.raises((TypeError, ValidationError)):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            serialized_payload
+            | {
+                "reviewers": [
+                    ForeignDict(serialized_payload["reviewers"][0]),
+                    serialized_payload["reviewers"][1],
+                ]
+            }
+        )
+
+    nested_model_payload = registry.model_dump(mode="json")
+    nested_model_payload["reviewers"][1]["signing_key"] = key
+    with pytest.raises((TypeError, ValidationError), match=r"serialized|model owner"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(nested_model_payload)
+
+    cyclic_list: list[object] = []
+    cyclic_list.append(cyclic_list)
+    cyclic_dict: dict[str, object] = {}
+    cyclic_dict["self"] = cyclic_dict
+    for cyclic_value in (cyclic_list, cyclic_dict):
+        cyclic_payload = registry.model_dump(mode="json")
+        cyclic_payload["reviewers"][0]["reviewer_login"] = cyclic_value
+        with pytest.raises(TypeError, match="cycle"):
+            protocol_review.AuditReviewerRegistryV1.model_validate(cyclic_payload)
+
+    deep_value: object = "leaf"
+    for _ in range(1_100):
+        deep_value = [deep_value]
+    deep_payload = registry.model_dump(mode="json")
+    deep_payload["reviewers"][0]["reviewer_login"] = deep_value
+    with pytest.raises(TypeError, match="nesting limit"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(deep_payload)
+
+    wide_payload = registry.model_dump(mode="json")
+    wide_payload["reviewers"][0]["reviewer_login"] = [None] * 262_144
+    with pytest.raises(TypeError, match="node limit"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(wide_payload)
+
+    shared_value: object = "leaf"
+    for _ in range(18):
+        shared_value = [shared_value, shared_value]
+    shared_payload = registry.model_dump(mode="json")
+    shared_payload["reviewers"][0]["reviewer_login"] = [shared_value, key]
+    # This tiny graph needs memoization to reach the forbidden model within the budget.
+    for node_limit, match in ((32, "node limit"), (64, "nested model owners")):
+        with (
+            patch.object(protocol_review, "_EXACT_MODEL_PREFLIGHT_NODE_LIMIT", node_limit),
+            pytest.raises(TypeError, match=match),
+        ):
+            protocol_review.AuditReviewerRegistryV1.model_validate(shared_payload)
+
+    legacy_payload = registry.model_dump(mode="json")
+    legacy_payload["schema_version"] = "benchmark-reviewer-registry-v1"
+    with pytest.raises(ValidationError):
+        protocol_review.AuditReviewerRegistryV1.model_validate_json(
+            canonical_json_v1(legacy_payload)
+        )
+
+    missing_key_field = github_reviewer.model_dump(mode="json")
+    del missing_key_field["signing_key"]
+    with pytest.raises(ValidationError):
+        ReviewerAccountBindingV1.model_validate(missing_key_field)
+
+    class ForeignAuditReviewerSigningKey(AuditReviewerSigningKeyV1):
+        pass
+
+    foreign_key = ForeignAuditReviewerSigningKey.model_construct(
+        **{
+            field: getattr(keyed_reviewer.signing_key, field)
+            for field in AuditReviewerSigningKeyV1.model_fields
+        }
+    )
+    foreign_binding = ReviewerAccountBindingV1.model_construct(
+        **{
+            **{
+                field: getattr(keyed_reviewer, field)
+                for field in ReviewerAccountBindingV1.model_fields
+            },
+            "signing_key": foreign_key,
+        }
+    )
+    with pytest.raises((TypeError, ValueError), match="foreign signing-key owner"):
+        canonical_reviewer_registry_bytes((github_reviewer, foreign_binding))
+    registry_owner_payload = {
+        field: getattr(registry, field)
+        for field in protocol_review.AuditReviewerRegistryV1.model_fields
+    }
+    with pytest.raises((TypeError, ValidationError), match="signing-key owner"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            registry_owner_payload
+            | {"reviewers": (github_reviewer, foreign_binding)}
+        )
+
+    dict_key_binding = ReviewerAccountBindingV1.model_construct(
+        **{
+            **{
+                field: getattr(keyed_reviewer, field)
+                for field in ReviewerAccountBindingV1.model_fields
+            },
+            "signing_key": key.model_dump(mode="python", round_trip=True),
+        }
+    )
+    with pytest.raises((TypeError, ValidationError), match="signing-key owner"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            registry_owner_payload
+            | {"reviewers": (github_reviewer, dict_key_binding)}
+        )
+
+    class ForeignReviewerAccountBinding(ReviewerAccountBindingV1):
+        pass
+
+    foreign_reviewer = ForeignReviewerAccountBinding.model_construct(
+        **{
+            field: getattr(keyed_reviewer, field)
+            for field in ReviewerAccountBindingV1.model_fields
+        }
+    )
+    with pytest.raises((TypeError, ValidationError), match="ReviewerAccountBindingV1"):
+        protocol_review.AuditReviewerRegistryV1.model_validate(
+            {
+                **{
+                    field: getattr(registry, field)
+                    for field in protocol_review.AuditReviewerRegistryV1.model_fields
+                },
+                "reviewers": (github_reviewer, foreign_reviewer),
+            }
+        )
+    for foreign_collection in (set, frozenset):
+        foreign_registry = protocol_review.AuditReviewerRegistryV1.model_construct(
+            schema_version="benchmark-reviewer-registry-v2",
+            reviewers=foreign_collection((github_reviewer, foreign_reviewer)),
+            audit_reviewer_registry_sha256=registry.audit_reviewer_registry_sha256,
+        )
+        with pytest.raises(TypeError, match="exact tuple owner"):
+            protocol_review._class_bound_revalidate(
+                foreign_registry, protocol_review.AuditReviewerRegistryV1
+            )
+
+    duplicate_key = ReviewerAccountBindingV1.model_validate(
+        github_reviewer.model_dump(mode="json")
+        | {
+            "verification_mode": keyed_reviewer.verification_mode,
+            "signing_fingerprint": keyed_reviewer.signing_fingerprint,
+            "signing_key": key.model_dump(mode="json"),
+        }
+    )
+    with pytest.raises(ValueError, match="distinct"):
+        compute_audit_reviewer_registry_sha256((duplicate_key, keyed_reviewer))
+
+
+def test_github_mode_rejects_an_audit_key_and_keyed_modes_require_one() -> None:
+    registry = audit_reviewer_registry()
+    github_reviewer, keyed_reviewer = registry.reviewers
+    audit_key = audit_reviewer_signing_key()
+
+    with pytest.raises(ValidationError):
+        ReviewerAccountBindingV1.model_validate(
+            github_reviewer.model_dump(mode="json")
+            | {
+                "signing_key": audit_key.model_dump(mode="json"),
+            }
+        )
+    with pytest.raises(ValidationError):
+        ReviewerAccountBindingV1.model_validate(
+            keyed_reviewer.model_dump(mode="json") | {"signing_key": None}
+        )
+    with pytest.raises(ValidationError):
+        ReviewerAccountBindingV1.model_validate(
+            keyed_reviewer.model_dump(mode="json")
+            | {"signing_fingerprint": "SHA256:" + "A" * 43}
+        )
+
+    protocol_key = ProtocolReviewSigningKeyV1(
+        role="security_evidence",
+        reviewer_numeric_account_id=keyed_reviewer.reviewer_numeric_account_id,
+        reviewer_login=keyed_reviewer.reviewer_login,
+        verification_mode=audit_key.verification_mode,
+        fingerprint=audit_key.fingerprint,
+        public_key_encoding=audit_key.public_key_encoding,
+        public_key_base64=audit_key.public_key_base64,
+        public_key_sha256=audit_key.public_key_sha256,
+    )
+    with pytest.raises(ValidationError):
+        ReviewerAccountBindingV1.model_validate(
+            keyed_reviewer.model_dump(mode="json") | {"signing_key": protocol_key}
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("encoding", "bytes", "hash", "fingerprint", "algorithm"),
+)
+def test_audit_key_profile_rejects_wrong_encoding_bytes_hash_fingerprint_or_algorithm(
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = audit_reviewer_signing_key()
+    payload = key.model_dump(mode="json")
+    if mutation == "encoding":
+        payload["public_key_encoding"] = "openpgp-v4-ed25519-transferable-public-key-v1"
+    elif mutation == "bytes":
+        decoded = bytearray(base64.b64decode(key.public_key_base64, validate=True))
+        decoded[-1] ^= 1
+        payload["public_key_base64"] = base64.b64encode(decoded).decode("ascii")
+    elif mutation == "hash":
+        payload["public_key_sha256"] = "0" * 64
+    elif mutation == "fingerprint":
+        payload["fingerprint"] = "SHA256:" + "A" * 43
+    else:
+        _, valid_wire, _ = audit_reviewer_ssh_key_material()
+        invalid_algorithm = b"ssh-rsa"
+        algorithm_wire = (
+            len(invalid_algorithm).to_bytes(4, "big")
+            + invalid_algorithm
+            + valid_wire[-36:]
+        )
+        payload["public_key_base64"] = base64.b64encode(algorithm_wire).decode("ascii")
+        payload["public_key_sha256"] = hashlib.sha256(algorithm_wire).hexdigest()
+        payload["fingerprint"] = "SHA256:" + base64.b64encode(
+            hashlib.sha256(algorithm_wire).digest()
+        ).decode("ascii").rstrip("=")
+    with pytest.raises(ValidationError):
+        AuditReviewerSigningKeyV1.model_validate(payload)
+
+    oversized_payload = key.model_dump(mode="json")
+    oversized_payload["public_key_base64"] = "A" * 87_388
+
+    def fail_if_decoded(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("oversized audit key reached Base64 decoding")
+
+    with monkeypatch.context() as context:
+        context.setattr(protocol_review.base64, "b64decode", fail_if_decoded)
+        with pytest.raises(ValidationError, match="encoded key material"):
+            AuditReviewerSigningKeyV1.model_validate(oversized_payload)
+
+    if mutation == "encoding":
+        openpgp = _openpgp_fixture(use_subkey=True)
+        openpgp_key = AuditReviewerSigningKeyV1(
+            schema_version="AuditReviewerSigningKeyV1",
+            verification_mode="openpgp_fingerprint",
+            fingerprint=openpgp.primary_fingerprint,
+            author_name_ascii="Audit OpenPGP Reviewer",
+            author_email_ascii="audit-openpgp@users.noreply.github.com",
+            committer_name_ascii="Audit OpenPGP Reviewer",
+            committer_email_ascii="audit-openpgp@users.noreply.github.com",
+            public_key_encoding="openpgp-v4-ed25519-transferable-public-key-v1",
+            public_key_base64=base64.b64encode(openpgp.key_bytes).decode("ascii"),
+            public_key_sha256=hashlib.sha256(openpgp.key_bytes).hexdigest(),
+        )
+        assert openpgp_key.fingerprint == openpgp.primary_fingerprint
 
 
 def test_public_builder_and_parser_signatures_have_no_raw_trust_boolean() -> None:
@@ -1703,6 +2121,22 @@ def test_ssh_keyed_verifier_pins_exact_sshsig_profile_and_cryptography() -> None
     )
     assert receipt.signed_payload_sha256 == hashlib.sha256(payload).hexdigest()
     assert receipt.signature_sha256 == hashlib.sha256(signature).hexdigest()
+
+    audit_seed, audit_key_blob, _ = audit_reviewer_ssh_key_material()
+    audit_signature = _ssh_signature(audit_seed, audit_key_blob, payload)
+    audit_key = audit_reviewer_signing_key()
+    audit_receipt = _verify_keyed_signature_v1(
+        key=audit_key,
+        signed_payload=payload,
+        signature=audit_signature,
+        verifier_tool_sha256=identity.protocol_signature_verifier_tool_sha256,
+        author_name_ascii=audit_key.author_name_ascii,
+        author_email_ascii=audit_key.author_email_ascii,
+        signed_at="2026-08-31T00:00:00Z",
+    )
+    assert audit_receipt.signed_payload_sha256 == hashlib.sha256(payload).hexdigest()
+    assert audit_receipt.signature_sha256 == hashlib.sha256(audit_signature).hexdigest()
+
     with pytest.raises(ValueError, match="verification failed"):
         _verify_keyed_signature_v1(
             key=identity.keys[0],
@@ -2921,49 +3355,49 @@ def test_serial_git_prefix_golden_bytes_oids_raw_sha256_and_sizes() -> None:
         )
     ) == (
         (
-            "3e3778073f1d6aac2cc1a8f9918ec3338c926c14",
-            "b7e98b2e00683837fd619a4fadd8cbd9d82ecf3a557fd568979c1d5861d08a27",
+            "ce664b80e759ed987b2a1e424454d1da9910b27d",
+            "bb514975acb47675f394d23b1abb540e0b9c0015d0fbbaac08ea701d0c9811c9",
             774,
         ),
         (
-            "55c0101910919ae27d829618f406b3aa2b660147",
-            "93881b56c8e741f8cc2b6438f3d7447e553bc9e945f983c0ceb8a4c61ad60cf3",
+            "557214a1052d9dc378aaeb71228da06ee48f4fa5",
+            "1ce0b4f496fba490d0e267eb6eecabc34b7cf5d6bffa487144540c0f066ac751",
             190,
         ),
         (
-            "71b846d00d31e62efa31b228cb83dfc7218200b9",
-            "18bf220290a1fd34f21365aa08cb47db6fdc64d92a0984c1d28a14ba11d951f6",
+            "4cb017d52988409d8c824a07e0fd633717f3647d",
+            "ca5f6cf85b0a02a8aa38d8dd053c0770f51c46b60227f24ee0ad2aa6b31513b7",
             484,
         ),
         (
-            "ca82da5a5b3ac33fffc7e8eb19014fc71195f131",
-            "12ec394ec9cf1cfe0265a02f371a4faa7e4b6aa2cf72365b063d413ec9f97aac",
+            "9be0652f440db7da477a5f80fb96f03a5453dac1",
+            "32b0c1a72b2e5e0a0e5c816111e625c25477e38e730465c2560b9419c46d31bd",
             492,
         ),
         (
-            "f57a562c189546f5cba99db45305df54d3394884",
-            "66ee6b398406b0184c346ba3a8456f43180aa25c06451a481b231b52e7448fb1",
+            "1c298825e5ff5a7dea8181f8e7da9da9a326556c",
+            "3fba954690fa3d5af95ec2511e8fb9773b206eb64f883838c5399e5c76a28e7e",
             688,
         ),
         (
-            "17c0b54fe28a010e13698932deded3e0e837dd5f",
-            "ceb6fcda81bbac032892fe4ea1e5faa077b4e41292c7e2f14379375322bffcd4",
+            "0841d092005415447b3f7ff3fb9501783c131752",
+            "c489dcba9c78001cbd65af4c2ab99d1bde6f71f17634ff8415e2749542ecd50c",
             462,
         ),
         (
-            "a57433d458550b25cd9b11e2ee8d8a80950bbc7f",
-            "914b23f7bb45edfaee304426b30aeaf5cdcaa61aae00fd78136b1052e1c2f0ef",
+            "9931185546afea7658d495b5c236cd3c27948371",
+            "acc8d2b23009e4a901e41f337d27a70b96c72b29e01a9a4db215c348291cbffd",
             1062,
         ),
     )
     assert fixture.bundle.protocol_attestation_bundle_sha256 == (
-        "ddb8a32c4a467dd426f1dbe1dcb17ce1e257b1860f18a34a2dd03ef984d792a6"
+        "12a588a15ab02a74dd1e37b21a0a87a12d567957fd09dc69aec855e9ab37f28d"
     )
     assert fixture.binding.object_closure_root == (
-        "ddea92ff7c9c90d689d1be7d660b444d1498dc18d5cd180dfa0b47408a9460f7"
+        "2aecf4f16440b747fa0ac44a27473e6d148e61ac2fa2654bafb819cac8fab20a"
     )
     assert fixture.archive.protocol_review_object_archive_sha256 == (
-        "f41c9a313732ec51e6286b280e0123d3ea902296c6ed371c939dbadada7f07e3"
+        "4ab9b134ec28b4a9a68dae4a37515951551fde570070dc89bdc9dcbb2aca8b0a"
     )
 
 
@@ -2979,6 +3413,31 @@ def test_prefix_verification_reconstructs_source_backed_signature_evidence() -> 
         for item in fixture.prefix.attestations
     ) == tuple(item.evidence.github_rest_verification.verified_at for item in fixture.observations)
     assert fixture.prefix.attestations[2].signature_evidence.verification_mode == "ssh_sha256"
+
+    reviewer = fixture.registry.reviewers[2]
+    direct = verify_commit_signature_evidence_source(
+        source=fixture.observations[2].source,
+        commit=fixture.commits[2],
+        expected_parent_oid=fixture.commits[1].oid,
+        expected_primary_path=fixture.observations[2].evidence.statement_path,
+        expected_repository_id=fixture.ruleset_policy.repository_id,
+        expected_repository_owner="acme",
+        expected_repository_name="repo",
+        expected_signer_numeric_account_id=reviewer.reviewer_numeric_account_id,
+        expected_signer_login=reviewer.reviewer_login,
+        expected_verification_mode=reviewer.verification_mode,
+        expected_signing_fingerprint=reviewer.signing_fingerprint,
+        signing_key=fixture.identity_registry.keys[0],
+        expected_git_identity=(
+            reviewer.author_name_ascii,
+            reviewer.author_email_ascii,
+            reviewer.committer_name_ascii,
+            reviewer.committer_email_ascii,
+        ),
+        identity_registry_bundle=fixture.identity_registry,
+        audit_reviewer_registry=None,
+    )
+    assert direct == fixture.observations[2].evidence
 
 
 def test_complete_dag_bundle_binding_and_archive_replay_are_source_backed() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import shutil
 from dataclasses import dataclass, replace
@@ -32,6 +33,50 @@ def git_oid_marker(ordinal: int) -> str:
     """Return one deterministic lowercase Git-SHA-1-shaped test value."""
 
     return f"{ordinal:040x}"
+
+
+def audit_reviewer_ssh_key_material() -> tuple[bytes, bytes, str]:
+    """Return one deterministic Ed25519 seed, OpenSSH wire key, and fingerprint."""
+
+    seed = bytes.fromhex(
+        "9d61b19deffd5a60ba844af492ec2cc4"
+        "4449c5697b326919703bac031cae7f60"
+    )
+    public_key = bytes.fromhex(
+        "d75a980182b10ab7d54bfed3c964073"
+        "a0ee172f3daa62325af021a68f707511a"
+    )
+    algorithm = b"ssh-ed25519"
+    wire_key = (
+        len(algorithm).to_bytes(4, "big")
+        + algorithm
+        + len(public_key).to_bytes(4, "big")
+        + public_key
+    )
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(wire_key).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+    return seed, wire_key, fingerprint
+
+
+def audit_reviewer_signing_key() -> Any:
+    """Build the deterministic keyed audit-reviewer identity owned by protocol review."""
+
+    from laconian_eval.benchmark.protocol_review import AuditReviewerSigningKeyV1
+
+    _, wire_key, fingerprint = audit_reviewer_ssh_key_material()
+    return AuditReviewerSigningKeyV1(
+        schema_version="AuditReviewerSigningKeyV1",
+        verification_mode="ssh_sha256",
+        fingerprint=fingerprint,
+        author_name_ascii="Audit Reviewer B",
+        author_email_ascii="audit-reviewer-b@users.noreply.github.com",
+        committer_name_ascii="Audit Reviewer B",
+        committer_email_ascii="audit-reviewer-b@users.noreply.github.com",
+        public_key_encoding="openssh-ed25519-wire-v1",
+        public_key_base64=base64.b64encode(wire_key).decode("ascii"),
+        public_key_sha256=hashlib.sha256(wire_key).hexdigest(),
+    )
 
 
 def generation_layer_index_payload(*, campaign_id: str = "campaign-2026-08-31") -> dict[str, Any]:
@@ -159,6 +204,7 @@ def audit_reviewer_registry() -> Any:
         compute_audit_reviewer_registry_sha256,
     )
 
+    signing_key = audit_reviewer_signing_key()
     reviewers = (
         ReviewerAccountBindingV1(
             reviewer_id="audit-a",
@@ -166,6 +212,7 @@ def audit_reviewer_registry() -> Any:
             reviewer_login="audit-reviewer-a",
             verification_mode="github_verified_commit",
             signing_fingerprint=None,
+            signing_key=None,
             role="audit_reviewer",
         ),
         ReviewerAccountBindingV1(
@@ -173,12 +220,13 @@ def audit_reviewer_registry() -> Any:
             reviewer_numeric_account_id=202,
             reviewer_login="audit-reviewer-b",
             verification_mode="ssh_sha256",
-            signing_fingerprint="SHA256:" + "D" * 43,
+            signing_fingerprint=signing_key.fingerprint,
+            signing_key=signing_key,
             role="audit_reviewer",
         ),
     )
     return AuditReviewerRegistryV1(
-        schema_version="benchmark-reviewer-registry-v1",
+        schema_version="benchmark-reviewer-registry-v2",
         reviewers=reviewers,
         audit_reviewer_registry_sha256=compute_audit_reviewer_registry_sha256(reviewers),
     )
@@ -595,7 +643,7 @@ def _load_task3_shard_success(
         captured_arms=captured.arms,
     )
     shards = project_shard_plans(
-        campaign_id="public-foundations-v1",
+        campaign_id="benchmark-0123456789abcdef0123456789abcdef",
         resolved_manifest=captured.resolved_manifest,
         parent_manifest_sha256=captured.manifest_sha256,
         parent_plan=parent_plan,
@@ -1015,7 +1063,7 @@ def build_complete_generation_context_fixture(
     root_payload: dict[str, Any] = {
         "schema_version": "benchmark-layer-root-index-v1",
         "layer_kind": "generation",
-        "campaign_id": "public-foundations-v1",
+        "campaign_id": "benchmark-0123456789abcdef0123456789abcdef",
         "members": members,
     }
     root_payload["layer_root_index_sha256"] = stable_digest(
@@ -1047,7 +1095,7 @@ def generation_layer_index_for_evidence(
     evidence: VerifiedScoredCapsuleV2,
     *,
     sidecar_path: Path,
-    campaign_id: str = "public-foundations-v1",
+    campaign_id: str = "benchmark-0123456789abcdef0123456789abcdef",
 ) -> tuple[Any, int]:
     """Bind one real scored parent and 35 nonselected synthetic identities."""
 
@@ -1360,7 +1408,7 @@ def _build_public_model_generation(
         )
     )
     shards = project_shard_plans(
-        campaign_id="public-foundations-v1",
+        campaign_id="benchmark-0123456789abcdef0123456789abcdef",
         resolved_manifest=captured.resolved_manifest,
         parent_manifest_sha256=captured.manifest_sha256,
         parent_plan=parent_plan,
@@ -1550,7 +1598,7 @@ def _build_complete_public_generation_context(
         model_builds.append(build)
         raw_candidates.extend(build.candidates)
     validate_public_generation_partition(
-        campaign_id="public-foundations-v1",
+        campaign_id="benchmark-0123456789abcdef0123456789abcdef",
         resolved_manifests=tuple(item.manifest for item in model_builds),
         parent_manifest_sha256s=tuple(item.manifest_sha256 for item in model_builds),
         case_indexes=tuple(item.case_index for item in model_builds),
@@ -1597,7 +1645,7 @@ def _build_complete_public_generation_context(
     root_payload: dict[str, object] = {
         "schema_version": "benchmark-layer-root-index-v1",
         "layer_kind": "generation",
-        "campaign_id": "public-foundations-v1",
+        "campaign_id": "benchmark-0123456789abcdef0123456789abcdef",
         "members": members,
     }
     root_payload["layer_root_index_sha256"] = stable_digest(
@@ -2302,7 +2350,7 @@ def _build_provider_index(
         "workflow_root": index.workflow_root,
         "provider_projection_root": index.provider_projection_root,
         "audit_reviewer_registry": index.audit_reviewer_registry.model_dump(
-            mode="python", round_trip=True, warnings=False
+            mode="json", warnings=False
         ),
         "protocol_reviewer_registry": index.protocol_reviewer_registry.model_dump(
             mode="python", round_trip=True, warnings=False
