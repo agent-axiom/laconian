@@ -82,6 +82,103 @@ def compact_sensitivity_vectors() -> Any:
     return vectors
 
 
+def sensitivity_certificate_fixture(mode: str = "mixed") -> SimpleNamespace:
+    """Real complete populations for UTF-8 proof/tie and both normative cap cases."""
+
+    from decimal import Decimal
+
+    import numpy as np
+
+    from laconian_eval.benchmark.aggregation import _build_aggregated_model_from_rows
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.sensitivity import FalseFailCandidateV1, FalseFailLimitV1
+
+    if mode not in {"mixed", "bootstrap", "visited", "exact-cap", "cardinality-tie", "wide"}:
+        raise ValueError("unknown certificate fixture")
+    rows = []
+    ranks = {"if": 0, "concise": 0}
+    names = {"if": ("F-if", "a", "é"), "concise": ("F-concise", "z", "Ж")}
+    tied_keys = {
+        ("if", f"{0:064x}", "en", 0): "a",
+        ("if", f"{11:064x}", "en", 0): "é",
+        ("if", f"{11:064x}", "en", 1): "Ж",
+        ("if", f"{3:064x}", "en", 0): "F-if",
+        ("concise", f"{5:064x}", "en", 0): "z",
+        ("concise", f"{3:064x}", "en", 0): "F-concise",
+    }
+    for row in compact_sensitivity_aggregate().rows:
+        if row.arm not in ranks:
+            rows.append(row.model_copy(update={"semantic_success": True}))
+            continue
+        rank = ranks[row.arm]
+        ranks[row.arm] += 1
+        failed = (
+            row.scenario_uid == "0" * 64 and row.locale == "en" and row.repetition < 3
+            if mode == "mixed"
+            else rank < 12 and row.arm == "if"
+            if mode == "exact-cap"
+            else True
+        )
+        response_id = (
+            names[row.arm][row.repetition]
+            if mode == "mixed" and failed
+            else ("a" if row.arm == "if" else "z") + f"-{rank:03d}"
+        )
+        if mode == "cardinality-tie":
+            key = (row.arm, row.scenario_uid, row.locale, row.repetition)
+            failed = key in tied_keys
+            response_id = tied_keys.get(key, response_id)
+        elif mode == "wide":
+            failed = rank < 40
+        rows.append(row.model_copy(update={
+            "response_id": response_id, "semantic_success": not failed,
+        }))
+    aggregate = _build_aggregated_model_from_rows(generation_model="model-a", rows=rows)
+    candidates = tuple(
+        FalseFailCandidateV1(
+            response_id=row.response_id, generation_model="model-a", arm=row.arm,
+            scenario_uid=row.scenario_uid,
+            planned_key=canonical_json_v1({
+                "scenario_uid": row.scenario_uid, "case_id": row.case_id,
+                "locale": row.locale, "repetition": row.repetition,
+            }).decode("utf-8"),
+            known_false_fail=mode in {"mixed", "cardinality-tie"}
+            and row.response_id.startswith("F-"),
+        )
+        for row in aggregate.rows
+        if row.arm in ranks and not row.semantic_success
+    )
+    limits = []
+    for arm in ("if", "concise"):
+        m = sum(candidate.arm == arm for candidate in candidates)
+        d = 1 if mode in {"mixed", "cardinality-tie"} else 0
+        upper = Decimal("0.5") if mode == "mixed" else (
+            Decimal("0.01") if arm == "if" else Decimal("0")
+        ) if mode == "visited" else Decimal("1") if m else None
+        k = 2 if mode == "mixed" or (mode == "visited" and arm == "if") else (
+            0 if mode == "visited" else m
+        )
+        if mode == "cardinality-tie":
+            upper = Decimal("0.75") if arm == "if" else Decimal("0.5")
+            k = 3 if arm == "if" else 1
+        elif mode == "wide":
+            upper = Decimal("0.025")
+            k = 1
+        limits.append(FalseFailLimitV1(
+            generation_model="model-a", arm=arm, m_all_judge_fail=m,
+            d_known_false_fail=d, optional_candidates=m - d, upper_false_fail=upper,
+            model_audit_metric_sha256="7" * 64, k_max_reclassified=k, estimable=True,
+        ))
+    vectors = np.tile(np.arange(12, dtype=np.uint8), (10_000, 1))
+    if mode == "cardinality-tie":
+        vectors[:300] = 0
+        vectors[300:600] = [11] * 6 + [1] * 6
+    return SimpleNamespace(
+        aggregate=aggregate, candidates=candidates, limits=tuple(limits),
+        vectors=vectors,
+    )
+
+
 def git_oid_marker(ordinal: int) -> str:
     """Return one deterministic lowercase Git-SHA-1-shaped test value."""
 

@@ -6,24 +6,25 @@ false-fails only from audited consensus-pass records, and preserve every other
 H=1 judge-fail as optional, including audited consensus-fail records. The aggregate
 join here enforces the complete candidate universe but cannot authenticate audits.
 
-Direct enumeration visits one assignment node per evaluated assignment. Task 12's
-branch traversal and certificates are deliberately absent. An unavailable U defines
-no authorizing assignment space: inconclusive results report zero counts and null
-extrema; K=D in an unestimable limit is only a non-authorizing placeholder.
+Direct enumeration visits one assignment node per evaluated assignment. Certified
+search visits the optional-candidate binary tree and prunes only cardinality
+violations. An unavailable U defines no authorizing assignment space: inconclusive
+results report zero counts and null extrema; K=D is a non-authorizing placeholder.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Context, Decimal, localcontext
-from itertools import combinations
-from typing import Literal, Self, TypeAlias
+from itertools import combinations, pairwise
+from typing import Literal, Self, TypeAlias, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from laconian_eval.benchmark.aggregation import (
     AggregatedModelV1,
@@ -31,7 +32,11 @@ from laconian_eval.benchmark.aggregation import (
     _row_key,
 )
 from laconian_eval.benchmark.attachments import canonical_json_v1
-from laconian_eval.benchmark.audit_commit_reveal import _AuditModel
+from laconian_eval.benchmark.audit_commit_reveal import (
+    _AuditModel,
+    _exact_model_tuple,
+    _exact_value_tuple,
+)
 from laconian_eval.benchmark.audit_metrics import (
     ModelAuditMetricsV1,
     _load_json_decimal,
@@ -44,11 +49,13 @@ from laconian_eval.benchmark.bootstrap import (
     type7_quantile,
 )
 from laconian_eval.benchmark.protocol_review import _preflight_exact_model_owners_v1
-from laconian_eval.capsule.canonical import stable_digest
+from laconian_eval.capsule.canonical import canonical_json, stable_digest
 
 _PrimaryArm: TypeAlias = Literal["if", "concise"]
 _ARMS: tuple[_PrimaryArm, _PrimaryArm] = ("if", "concise")
 SensitivityExhaustionReason: TypeAlias = Literal["visited_node_cap", "bootstrap_evaluation_cap"]
+MAX_VISITED_NODES = 1_000_000
+MAX_BOOTSTRAP_LEAVES = 4_096
 
 
 def _ceil_product(upper: Decimal, count: int) -> int:
@@ -113,10 +120,64 @@ class FalseFailLimitV1(_AuditModel):
         return self
 
 
+_FalseFailInputT = TypeVar("_FalseFailInputT", FalseFailCandidateV1, FalseFailLimitV1)
+
+
+def _reject_undeclared_model_fields(value: BaseModel) -> None:
+    """Inspect actual supplied fields after owner preflight, before serializers can omit extras."""
+
+    pending: list[object] = [value]
+    completed: set[int] = set()
+    remaining = 16 * MAX_VISITED_NODES
+    while pending:
+        remaining -= 1
+        if remaining < 0:
+            raise TypeError("sensitivity model graph exceeds its field-inspection node limit")
+        current = pending.pop()
+        if not isinstance(current, (BaseModel, tuple, list, dict)):
+            continue
+        if id(current) in completed:
+            continue
+        completed.add(id(current))
+        if isinstance(current, BaseModel):
+            fields: dict[str, object] = object.__getattribute__(current, "__dict__")
+            extra: object = object.__getattribute__(current, "__pydantic_extra__")
+            if (
+                type(fields) is not dict
+                or set(fields) - set(type(current).model_fields)
+                or (extra is not None and (type(extra) is not dict or extra))
+            ):
+                raise ValueError("sensitivity models forbid undeclared supplied fields")
+            pending.extend(fields.values())
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+        else:
+            pending.extend(current)
+
+
+def _reload_false_fail_input(
+    value: _FalseFailInputT,
+    owner: type[_FalseFailInputT],
+) -> _FalseFailInputT:
+    """Reload our own inputs through the schema's serializer, never an instance substitute."""
+
+    if type(value) is not owner:
+        raise TypeError(f"expected exact {owner.__name__} owner")
+    _preflight_exact_model_owners_v1(value, owner)
+    _reject_undeclared_model_fields(value)
+    return owner.model_validate_json(
+        canonical_json_v1(
+            owner.__pydantic_serializer__.to_python(value, mode="json"),
+        )
+    )
+
+
 def _checked_candidates(
     candidates: Sequence[FalseFailCandidateV1],
 ) -> tuple[FalseFailCandidateV1, ...]:
-    checked = tuple(_reload(candidate, FalseFailCandidateV1) for candidate in candidates)
+    checked = tuple(
+        _reload_false_fail_input(candidate, FalseFailCandidateV1) for candidate in candidates
+    )
     if len({candidate.response_id for candidate in checked}) != len(checked):
         raise ValueError("duplicate candidate response ID")
     if len(
@@ -217,13 +278,82 @@ class SensitivityResultV1(_AuditModel):
                 "exhausted sensitivity requires a reason and no extrema or certificate"
             )
         if self.exhaustion_reason == "visited_node_cap":
-            if self.visited_nodes != 1_000_000:
-                raise ValueError("visited_node_cap requires exactly 1000000 visited nodes")
-        elif self.evaluated_assignments != 4096 or self.visited_nodes >= 1_000_000:
+            if (
+                self.visited_nodes != MAX_VISITED_NODES
+                or self.evaluated_assignments > MAX_BOOTSTRAP_LEAVES
+            ):
+                raise ValueError("visited_node_cap requires 1000000 nodes and at most 4096 leaves")
+        elif (
+            self.evaluated_assignments != MAX_BOOTSTRAP_LEAVES
+            or self.visited_nodes >= MAX_VISITED_NODES
+        ):
             raise ValueError(
                 "bootstrap_evaluation_cap requires 4096 evaluations below the node cap"
             )
         return self
+
+
+class PrunedSubtreeV1(_AuditModel):
+    prefix_bits: str = Field(pattern="^[01]*$")
+    selected_by_arm: Mapping[_PrimaryArm, int]
+    remaining_by_arm: Mapping[_PrimaryArm, int]
+    assignment_count: int = Field(gt=0)
+    reason: Literal["cardinality-infeasible"]
+
+    @field_validator("selected_by_arm", "remaining_by_arm")
+    @classmethod
+    def validate_arm_counts(cls, value: Mapping[_PrimaryArm, int]) -> Mapping[_PrimaryArm, int]:
+        if set(value) != set(_ARMS) or any(count < 0 for count in value.values()):
+            raise ValueError("subtree counts require both primary arms and nonnegative counts")
+        return value
+
+
+class EvaluatedLeafV1(_AuditModel):
+    assignment_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    selected_response_ids: tuple[str, ...]
+    semantic_lower: float | None = Field(allow_inf_nan=False)
+    semantic_upper: float | None = Field(allow_inf_nan=False)
+    token_lower: float | None = Field(allow_inf_nan=False)
+    token_upper: float | None = Field(allow_inf_nan=False)
+
+    @field_validator("selected_response_ids", mode="before")
+    @classmethod
+    def load_selected_ids(cls, value: object, info: ValidationInfo) -> object:
+        return _exact_value_tuple(value, json_mode=info.mode == "json")
+
+
+class SensitivityCertificateV1(_AuditModel):
+    schema_version: Literal["sensitivity-certificate-v1"]
+    generation_model: str
+    model_audit_metric_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    candidate_order: tuple[str, ...]
+    limits: tuple[FalseFailLimitV1, FalseFailLimitV1]
+    bootstrap_vectors_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    visited_nodes: int = Field(ge=0, le=MAX_VISITED_NODES)
+    evaluated_leaves: tuple[EvaluatedLeafV1, ...]
+    pruned_subtrees: tuple[PrunedSubtreeV1, ...]
+    semantic_min_lower: SensitivityExtremumV1 | None
+    semantic_max_upper: SensitivityExtremumV1 | None
+    token_min_lower: SensitivityExtremumV1 | None
+    token_max_upper: SensitivityExtremumV1 | None
+    certificate_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @field_validator("candidate_order", mode="before")
+    @classmethod
+    def load_candidate_order(cls, value: object, info: ValidationInfo) -> object:
+        return _exact_value_tuple(value, json_mode=info.mode == "json")
+
+    @field_validator("limits", "evaluated_leaves", "pruned_subtrees", mode="before")
+    @classmethod
+    def load_model_tuples(cls, value: object, info: ValidationInfo) -> object:
+        owners: dict[str, type[BaseModel]] = {
+            "limits": FalseFailLimitV1,
+            "evaluated_leaves": EvaluatedLeafV1,
+            "pruned_subtrees": PrunedSubtreeV1,
+        }
+        return _exact_model_tuple(
+            value, owners[str(info.field_name)], json_mode=info.mode == "json"
+        )
 
 
 def _assignment_count(limits: tuple[FalseFailLimitV1, FalseFailLimitV1]) -> int:
@@ -422,6 +552,16 @@ def _intervals_for_assignment(
 ) -> tuple[BootstrapIntervalV1, BootstrapIntervalV1]:
     # Repeated vectors are evaluated once, then expanded before percentile ranks.
     unique, inverse = np.unique(vectors, axis=0, return_inverse=True)
+    return _intervals_for_unique_vectors(prepared, unique, inverse)
+
+
+def _intervals_for_unique_vectors(
+    prepared: _PreparedAssignment,
+    unique: NDArray[np.uint8],
+    inverse: NDArray[np.intp],
+) -> tuple[BootstrapIntervalV1, BootstrapIntervalV1]:
+    """Reuse a call's immutable vector compression, preserving all 10000 replicate ranks."""
+
     estimates = _estimate_prepared(prepared, unique)
     points = _estimate_prepared(prepared, np.arange(12, dtype=np.uint8)[None, :])
 
@@ -440,14 +580,19 @@ def _intervals_for_assignment(
     return interval(estimates[0], float(points[0][0])), interval(estimates[1], float(points[1][0]))
 
 
-def enumerate_sensitivity_exact(
+def _checked_sensitivity_inputs(
     *,
     aggregate: AggregatedModelV1,
     limits: tuple[FalseFailLimitV1, FalseFailLimitV1],
     candidates: Sequence[FalseFailCandidateV1],
     vectors: NDArray[np.uint8],
-) -> SensitivityResultV1:
-    """Enumerate at most 4096 assignments using the same frozen 10000 cluster vectors."""
+) -> tuple[
+    AggregatedModelV1,
+    tuple[FalseFailLimitV1, FalseFailLimitV1],
+    tuple[FalseFailCandidateV1, ...],
+    NDArray[np.uint8],
+]:
+    """Snapshot class-bound normalized rows and vectors before either exact calculation."""
 
     if type(aggregate) is not AggregatedModelV1:
         raise TypeError("expected exact AggregatedModelV1 owner")
@@ -462,7 +607,10 @@ def enumerate_sensitivity_exact(
     checked_aggregate = AggregatedModelV1.model_validate(aggregate_payload)
     if type(limits) is not tuple or len(limits) != 2:
         raise ValueError("limits must be an exact (if, concise) tuple")
-    checked_limits = (_reload(limits[0], FalseFailLimitV1), _reload(limits[1], FalseFailLimitV1))
+    checked_limits = (
+        _reload_false_fail_input(limits[0], FalseFailLimitV1),
+        _reload_false_fail_input(limits[1], FalseFailLimitV1),
+    )
     if (
         tuple(limit.arm for limit in checked_limits) != _ARMS
         or any(
@@ -477,6 +625,27 @@ def enumerate_sensitivity_exact(
     checked_candidates = _checked_candidates(candidates)
     _validate_candidate_universe(checked_aggregate, checked_limits, checked_candidates)
     index_snapshot = _validate_index_matrix(vectors).copy(order="C")
+    index_snapshot.flags.writeable = False
+    return checked_aggregate, checked_limits, checked_candidates, index_snapshot
+
+
+def enumerate_sensitivity_exact(
+    *,
+    aggregate: AggregatedModelV1,
+    limits: tuple[FalseFailLimitV1, FalseFailLimitV1],
+    candidates: Sequence[FalseFailCandidateV1],
+    vectors: NDArray[np.uint8],
+) -> SensitivityResultV1:
+    """Enumerate at most 4096 assignments using the same frozen 10000 cluster vectors."""
+
+    checked_aggregate, checked_limits, checked_candidates, index_snapshot = (
+        _checked_sensitivity_inputs(
+            aggregate=aggregate,
+            limits=limits,
+            candidates=candidates,
+            vectors=vectors,
+        )
+    )
     estimable = all(limit.estimable for limit in checked_limits)
     count = _assignment_count(checked_limits) if estimable else 0
     if count > 4096:
@@ -526,12 +695,431 @@ def enumerate_sensitivity_exact(
     )
 
 
+def _evaluate_leaf(
+    aggregate: AggregatedModelV1,
+    limits: tuple[FalseFailLimitV1, FalseFailLimitV1],
+    candidates: tuple[FalseFailCandidateV1, ...],
+    selected: tuple[str, ...],
+    unique: NDArray[np.uint8],
+    inverse: NDArray[np.intp],
+) -> EvaluatedLeafV1:
+    prepared = _prepare_assignment(aggregate.rows, frozenset(selected))
+    semantic, token = _intervals_for_unique_vectors(prepared, unique, inverse)
+    return EvaluatedLeafV1(
+        assignment_sha256=_assignment_digest(
+            aggregate.generation_model, selected, limits, candidates
+        ),
+        selected_response_ids=tuple(sorted(selected, key=str.encode)),
+        semantic_lower=semantic.lower,
+        semantic_upper=semantic.upper,
+        token_lower=token.lower,
+        token_upper=token.upper,
+    )
+
+
+_TieRank: TypeAlias = tuple[int, tuple[bytes, ...], int, tuple[bytes, ...]]
+_Extrema: TypeAlias = tuple[
+    SensitivityExtremumV1 | None,
+    SensitivityExtremumV1 | None,
+    SensitivityExtremumV1 | None,
+    SensitivityExtremumV1 | None,
+]
+
+
+def _leaf_extrema(
+    leaves: Sequence[EvaluatedLeafV1],
+    candidates: tuple[FalseFailCandidateV1, ...],
+) -> _Extrema:
+    """Task 11 tie order: if cardinality/combinations outside concise cardinality/combinations."""
+
+    optional = {arm: frozenset(_partition(arm, candidates)[1]) for arm in _ARMS}
+    ranks: list[_TieRank] = []
+    for leaf in leaves:
+        by_arm = [
+            tuple(
+                value.encode("utf-8")
+                for value in leaf.selected_response_ids
+                if value in optional[arm]
+            )
+            for arm in _ARMS
+        ]
+        ranks.append((len(by_arm[0]), by_arm[0], len(by_arm[1]), by_arm[1]))
+    extrema: list[SensitivityExtremumV1 | None] = []
+    for index, name in enumerate(
+        ("semantic_lower", "semantic_upper", "token_lower", "token_upper")
+    ):
+        endpoints: list[float | None] = [getattr(leaf, name) for leaf in leaves]
+        if not endpoints or any(value is None for value in endpoints):
+            extrema.append(None)
+            continue
+        available = [
+            (value, rank, leaf.assignment_sha256)
+            for value, rank, leaf in zip(endpoints, ranks, leaves, strict=True)
+            if value is not None
+        ]
+        value, _, digest = min(
+            available,
+            key=lambda item: (
+                item[0] if index % 2 == 0 else -item[0],
+                item[1],
+            ),
+        )
+        extrema.append(SensitivityExtremumV1(value=value, assignment_sha256=digest))
+    return extrema[0], extrema[1], extrema[2], extrema[3]
+
+
+def _search_result(
+    aggregate: AggregatedModelV1,
+    limits: tuple[FalseFailLimitV1, FalseFailLimitV1],
+    *,
+    count: int,
+    visited: int,
+    evaluated: int,
+    extrema: _Extrema = (None, None, None, None),
+    reason: SensitivityExhaustionReason | None = None,
+    certificate_sha256: str | None = None,
+) -> SensitivityResultV1:
+    return SensitivityResultV1(
+        generation_model=aggregate.generation_model,
+        model_audit_metric_sha256=limits[0].model_audit_metric_sha256,
+        assignment_count=count,
+        visited_nodes=visited,
+        evaluated_assignments=evaluated,
+        semantic_min_lower=extrema[0],
+        semantic_max_upper=extrema[1],
+        token_min_lower=extrema[2],
+        token_max_upper=extrema[3],
+        search_exhausted=reason is not None,
+        exhaustion_reason=reason,
+        certificate_sha256=certificate_sha256,
+    )
+
+
+def search_sensitivity_exact(
+    *,
+    aggregate: AggregatedModelV1,
+    limits: tuple[FalseFailLimitV1, FalseFailLimitV1],
+    candidates: Sequence[FalseFailCandidateV1],
+    vectors: NDArray[np.uint8],
+) -> tuple[SensitivityResultV1, SensitivityCertificateV1 | None]:
+    """Certify exhaustive cardinality-only DFS, or discard all partial extrema at either cap.
+
+    The vector commitment is SHA-256 of the validated C-order uint8 snapshot,
+    distinct from BootstrapVectorsV1's seeded metadata digest. Source verification
+    and binding that metadata to the raw matrix remain external preconditions.
+    """
+
+    aggregate, limits, checked, snapshot = _checked_sensitivity_inputs(
+        aggregate=aggregate,
+        limits=limits,
+        candidates=candidates,
+        vectors=vectors,
+    )
+    if not all(limit.estimable for limit in limits):
+        return _search_result(aggregate, limits, count=0, visited=0, evaluated=0), None
+    count = _assignment_count(limits)
+    optional = tuple(
+        sorted(
+            (candidate for candidate in checked if not candidate.known_false_fail),
+            key=lambda candidate: candidate.response_id.encode("utf-8"),
+        )
+    )
+    order = tuple(candidate.response_id for candidate in optional)
+    arm_indices = tuple(_ARMS.index(candidate.arm) for candidate in optional)
+    forced = tuple(candidate.response_id for candidate in checked if candidate.known_false_fail)
+    capacity = tuple(limit.k_max_reclassified - limit.d_known_false_fail for limit in limits)
+    unique, inverse = np.unique(snapshot, axis=0, return_inverse=True)
+    unique.flags.writeable = inverse.flags.writeable = False
+    # A space larger than the leaf cap cannot yield a certificate. Its traversal
+    # and every permitted leaf evaluation still run; avoid retaining a doomed proof.
+    retain_proof = count <= MAX_BOOTSTRAP_LEAVES
+    leaves: list[EvaluatedLeafV1] = []
+    prunes: list[PrunedSubtreeV1] = []
+    pending = [("", (0, 0), (limits[0].optional_candidates, limits[1].optional_candidates))]
+    visited = evaluated = 0
+    reason: SensitivityExhaustionReason | None = None
+    while pending:
+        if visited == MAX_VISITED_NODES:
+            reason = "visited_node_cap"
+            break
+        prefix, selected_counts, remaining = pending.pop()
+        visited += 1
+        if any(selected_counts[index] > capacity[index] for index in range(2)):
+            if retain_proof:
+                prunes.append(
+                    PrunedSubtreeV1(
+                        prefix_bits=prefix,
+                        selected_by_arm=dict(zip(_ARMS, selected_counts, strict=True)),
+                        remaining_by_arm=dict(zip(_ARMS, remaining, strict=True)),
+                        assignment_count=2 ** sum(remaining),
+                        reason="cardinality-infeasible",
+                    )
+                )
+            continue
+        depth = len(prefix)
+        if depth == len(order):
+            if evaluated == MAX_BOOTSTRAP_LEAVES:
+                reason = (
+                    "visited_node_cap"
+                    if visited == MAX_VISITED_NODES
+                    else "bootstrap_evaluation_cap"
+                )
+                break
+            selected = forced + tuple(
+                value for value, bit in zip(order, prefix, strict=True) if bit == "1"
+            )
+            evaluated += 1
+            leaf = _evaluate_leaf(aggregate, limits, checked, selected, unique, inverse)
+            if retain_proof:
+                leaves.append(leaf)
+            continue
+        arm = arm_indices[depth]
+        next_remaining = (remaining[0] - (arm == 0), remaining[1] - (arm == 1))
+        included = (selected_counts[0] + (arm == 0), selected_counts[1] + (arm == 1))
+        # Stack reversal makes the exclude child the next entered prefix.
+        pending.append((prefix + "1", included, next_remaining))
+        pending.append((prefix + "0", selected_counts, next_remaining))
+    if reason is not None:
+        return _search_result(
+            aggregate, limits, count=count, visited=visited, evaluated=evaluated, reason=reason
+        ), None
+    extrema = _leaf_extrema(leaves, checked)
+    payload = {
+        "schema_version": "sensitivity-certificate-v1",
+        "generation_model": aggregate.generation_model,
+        "model_audit_metric_sha256": limits[0].model_audit_metric_sha256,
+        "candidate_order": order,
+        "limits": [limit.model_dump(mode="json") for limit in limits],
+        "bootstrap_vectors_sha256": hashlib.sha256(snapshot.tobytes(order="C")).hexdigest(),
+        "visited_nodes": visited,
+        "evaluated_leaves": [leaf.model_dump(mode="json") for leaf in leaves],
+        "pruned_subtrees": [prune.model_dump(mode="json") for prune in prunes],
+        **{
+            name: value.model_dump(mode="json") if value is not None else None
+            for name, value in zip(
+                ("semantic_min_lower", "semantic_max_upper", "token_min_lower", "token_max_upper"),
+                extrema,
+                strict=True,
+            )
+        },
+    }
+    # The certificate commits its complete payload before a result refers to it.
+    digest = stable_digest("laconian-sensitivity-certificate-v1", payload)
+    certificate = SensitivityCertificateV1.model_validate_json(
+        canonical_json(
+            {
+                **payload,
+                "certificate_sha256": digest,
+            }
+        )
+    )
+    return _search_result(
+        aggregate,
+        limits,
+        count=count,
+        visited=visited,
+        evaluated=evaluated,
+        extrema=extrema,
+        certificate_sha256=digest,
+    ), certificate
+
+
+def verify_sensitivity_certificate(
+    certificate: SensitivityCertificateV1,
+    *,
+    aggregate: AggregatedModelV1,
+    candidates: Sequence[FalseFailCandidateV1],
+    vectors: NDArray[np.uint8],
+) -> SensitivityResultV1:
+    """Independently prove coverage and recompute every leaf; never invoke the producer."""
+
+    if type(certificate) is not SensitivityCertificateV1:
+        raise TypeError("expected exact SensitivityCertificateV1 owner")
+    # A legal large partition can exceed the audit preflight's generic graph
+    # budget. This bound covers every field of at most one million tree records.
+    _preflight_exact_model_owners_v1(
+        certificate,
+        SensitivityCertificateV1,
+        remaining_nodes=[16 * MAX_VISITED_NODES],
+    )
+    _reject_undeclared_model_fields(certificate)
+    certificate = SensitivityCertificateV1.model_validate_json(
+        canonical_json(
+            SensitivityCertificateV1.__pydantic_serializer__.to_python(certificate, mode="json"),
+        )
+    )
+    payload = certificate.model_dump(mode="json", exclude={"certificate_sha256"})
+    if (
+        stable_digest("laconian-sensitivity-certificate-v1", payload)
+        != certificate.certificate_sha256
+    ):
+        raise ValueError("certificate digest differs from its canonical payload")
+    aggregate, limits, checked, snapshot = _checked_sensitivity_inputs(
+        aggregate=aggregate,
+        limits=certificate.limits,
+        candidates=candidates,
+        vectors=vectors,
+    )
+    if not all(limit.estimable for limit in limits):
+        raise ValueError("unestimable limits cannot authorize a sensitivity certificate")
+    if (
+        certificate.generation_model != aggregate.generation_model
+        or certificate.model_audit_metric_sha256 != limits[0].model_audit_metric_sha256
+    ):
+        raise ValueError("certificate model or audit metric differs from the ordered limits")
+    if (
+        certificate.bootstrap_vectors_sha256
+        != hashlib.sha256(snapshot.tobytes(order="C")).hexdigest()
+    ):
+        raise ValueError("certificate bootstrap vector digest mismatch")
+    optional = tuple(
+        sorted(
+            (candidate for candidate in checked if not candidate.known_false_fail),
+            key=lambda candidate: candidate.response_id.encode("utf-8"),
+        )
+    )
+    order = tuple(candidate.response_id for candidate in optional)
+    if certificate.candidate_order != order:
+        raise ValueError("certificate candidate order differs from the exact optional pool")
+    count = _assignment_count(limits)
+    if len(certificate.evaluated_leaves) != count or count > MAX_BOOTSTRAP_LEAVES:
+        raise ValueError("certificate must evaluate every feasible assignment within the leaf cap")
+    forced = {candidate.response_id for candidate in checked if candidate.known_false_fail}
+    pool = forced | set(order)
+    capacity = {limit.arm: limit.k_max_reclassified - limit.d_known_false_fail for limit in limits}
+    optional_counts = {limit.arm: limit.optional_candidates for limit in limits}
+    prune_prefixes: list[str] = []
+    excluded = 0
+    for prune in certificate.pruned_subtrees:
+        prefix = prune.prefix_bits
+        if not prefix or len(prefix) > len(order):
+            raise ValueError("pruned prefix must name an optional-candidate subtree")
+        selected = {
+            arm: sum(
+                candidate.arm == arm and bit == "1"
+                for candidate, bit in zip(optional, prefix, strict=False)
+            )
+            for arm in _ARMS
+        }
+        remaining = {
+            arm: optional_counts[arm]
+            - sum(candidate.arm == arm for candidate in optional[: len(prefix)])
+            for arm in _ARMS
+        }
+        residual = math.prod(
+            sum(
+                math.comb(remaining[arm], q)
+                for q in range(remaining[arm] + 1)
+                if selected[arm] + q <= capacity[arm]
+            )
+            for arm in _ARMS
+        )
+        parent = dict(selected)
+        parent[optional[len(prefix) - 1].arm] -= prefix[-1] == "1"
+        if (
+            dict(prune.selected_by_arm) != selected
+            or dict(prune.remaining_by_arm) != remaining
+            or residual != 0
+            or any(parent[arm] > capacity[arm] for arm in _ARMS)
+            or prune.assignment_count != 2 ** sum(remaining.values())
+        ):
+            raise ValueError("pruned subtree has wrong cardinality, residual, or completion count")
+        prune_prefixes.append(prefix)
+        excluded += prune.assignment_count
+    leaf_prefixes: list[str] = []
+    for leaf in certificate.evaluated_leaves:
+        selected_ids = set(leaf.selected_response_ids)
+        if (
+            leaf.selected_response_ids != tuple(sorted(selected_ids, key=str.encode))
+            or not forced <= selected_ids <= pool
+        ):
+            raise ValueError("leaf must select every forced row and only exact candidate IDs")
+        if any(
+            sum(
+                candidate.arm == arm and candidate.response_id in selected_ids
+                for candidate in optional
+            )
+            > capacity[arm]
+            for arm in _ARMS
+        ):
+            raise ValueError("evaluated leaf violates cardinality")
+        leaf_prefixes.append("".join("1" if value in selected_ids else "0" for value in order))
+    if prune_prefixes != sorted(prune_prefixes) or leaf_prefixes != sorted(leaf_prefixes):
+        raise ValueError("certificate records must follow exclude-before-include DFS order")
+    terminals = sorted(prune_prefixes + leaf_prefixes)
+    if any(right.startswith(left) for left, right in pairwise(terminals)):
+        raise ValueError("certificate subtrees overlap or duplicate an evaluated leaf")
+    # Reconstruct the tree bottom-up. Every internal prefix must have both
+    # children; totals alone cannot substitute for this exhaustive partition proof.
+    frontier: list[str] = []
+    reconstructed_nodes = len(terminals)
+    for prefix in terminals:
+        frontier.append(prefix)
+        while (
+            len(frontier) >= 2
+            and frontier[-2].endswith("0")
+            and frontier[-1] == frontier[-2][:-1] + "1"
+        ):
+            frontier.pop()
+            frontier[-1] = frontier[-1][:-1]
+            reconstructed_nodes += 1
+    if (
+        frontier != [""]
+        or len(certificate.evaluated_leaves) + excluded != 2 ** len(order)
+        or reconstructed_nodes != certificate.visited_nodes
+    ):
+        raise ValueError("certificate does not prove the complete prefix tree or visited count")
+    unique, inverse = np.unique(snapshot, axis=0, return_inverse=True)
+    unique.flags.writeable = inverse.flags.writeable = False
+    verified: list[EvaluatedLeafV1] = []
+    for leaf in certificate.evaluated_leaves:
+        recomputed = _evaluate_leaf(
+            aggregate, limits, checked, leaf.selected_response_ids, unique, inverse
+        )
+        if canonical_json(recomputed.model_dump(mode="json")) != canonical_json(
+            leaf.model_dump(mode="json")
+        ):
+            raise ValueError(
+                "certificate leaf digest or bootstrap endpoints differ from recomputation"
+            )
+        verified.append(recomputed)
+    extrema = _leaf_extrema(verified, checked)
+    expected = [value.model_dump(mode="json") if value is not None else None for value in extrema]
+    actual = [
+        payload[name]
+        for name in (
+            "semantic_min_lower",
+            "semantic_max_upper",
+            "token_min_lower",
+            "token_max_upper",
+        )
+    ]
+    if canonical_json(expected) != canonical_json(actual):
+        raise ValueError("certificate extrema differ from the verified leaves")
+    return _search_result(
+        aggregate,
+        limits,
+        count=count,
+        visited=reconstructed_nodes,
+        evaluated=len(verified),
+        extrema=extrema,
+        certificate_sha256=certificate.certificate_sha256,
+    )
+
+
 __all__ = (
+    "MAX_BOOTSTRAP_LEAVES",
+    "MAX_VISITED_NODES",
+    "EvaluatedLeafV1",
     "FalseFailCandidateV1",
     "FalseFailLimitV1",
+    "PrunedSubtreeV1",
+    "SensitivityCertificateV1",
     "SensitivityExhaustionReason",
     "SensitivityExtremumV1",
     "SensitivityResultV1",
     "derive_false_fail_limit",
     "enumerate_sensitivity_exact",
+    "search_sensitivity_exact",
+    "verify_sensitivity_certificate",
 )
