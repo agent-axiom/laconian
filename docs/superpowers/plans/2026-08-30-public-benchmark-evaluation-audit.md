@@ -6946,6 +6946,12 @@ git commit -m "feat: enumerate exact false-fail sensitivity"
 
 ### Task 12: Add verifier-checked exact branch-and-bound certificates
 
+**Approved Task 12 correction (2026-09-05):** The maintainer/user replied `да` to the
+explicit proposal to correct the infeasible-subtree count and use a separate reachable
+visited-node-cap fixture, then continue implementation. The two corrections below keep the
+1,000,000-node and 4,096-bootstrap-leaf caps, bootstrap methodology, and outcome rules unchanged.
+They authorize no live API run and make no other normative change.
+
 **Files:**
 
 - Modify: `src/laconian_eval/benchmark/sensitivity.py`
@@ -6966,12 +6972,19 @@ Create tests named:
 - `test_each_search_cap_emits_its_closed_reason_and_no_certificate`
 - `test_sensitivity_result_rejects_unknown_or_inconsistent_exhaustion_reason`
 
-The cap fixtures use `M=K=120` and `D=0` for both arms, so each literal optional pool has `M-D=120`
-and the independent formula oracle yields `A_m = 2^240`; they set the operation caps to the normative values and
-exercise each guard independently. Assert exactly 1,000,000 visited nodes with
-`exhaustion_reason="visited_node_cap"` or exactly 4,096 evaluated leaves with
-`exhaustion_reason="bootstrap_evaluation_cap"`, `search_exhausted=True`, a null certificate, and
-all four published extrema null even when an incumbent was found earlier. Unknown reasons, a reason
+Both cap fixtures keep both operation caps at their normative values. The bootstrap-cap fixture
+uses `M=K=120` and `D=0` for both arms, so each optional pool has 120 rows and the independent
+formula oracle yields `A_m = 2^240`. It evaluates exactly 4,096 leaves and enters 8,432 nodes
+before the next leaf evaluation is prevented with `exhaustion_reason="bootstrap_evaluation_cap"`.
+The separate visited-node-cap fixture uses `M=120,D=0` for both arms, `K_if=2,K_concise=0`, and
+response IDs placing every optional `if` row before every optional `concise` row in UTF-8 order.
+Its independent formula oracle is `A_m = 1 + 120 + C(120,2) = 7,261`; it enters exactly
+1,000,000 nodes and evaluates 3,402 leaves before the next node is prevented with
+`exhaustion_reason="visited_node_cap"`. Do not change a cap or bypass the other guard to obtain
+either result. The existing `test_m_equals_k_120_exhausts_at_exact_caps_and_discards_partial_extrema`
+name covers the bootstrap fixture; `test_each_search_cap_emits_its_closed_reason_and_no_certificate`
+covers both fixtures. Assert `search_exhausted=True`, a null certificate, and all four published
+extrema null even when an incumbent was found earlier. Unknown reasons, a reason
 when `search_exhausted=False`, a reason inconsistent with its exact cap counter, or any
 extremum/certificate on an exhausted result must fail model validation.
 
@@ -7044,12 +7057,25 @@ result to carry that same digest.
 
 - [ ] **Step 4: Implement only mechanically exact cardinality pruning in v1**
 
-For each prefix over the UTF-8-ordered `M-D` optional rows, first prune when an arm already has more
-than `K-D` optional selections or cannot complete a cardinality in `0..K-D`. Its subtree assignment
-count must use the residual form of the same literal identity
-`A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`; the certificate
-verifier independently recomputes that integer and proves the disjoint evaluated-leaf plus pruned-
-subtree counts sum to it exactly.
+For each prefix over the UTF-8-ordered `M-D` optional rows, let `selected_by_arm` count optional
+selections already made (excluding the forced `D` rows), and let `remaining_by_arm` count optional
+rows not yet assigned a bit. First prune when an arm already has more than `K-D` optional
+selections. Because the optional lower bound is zero, there is no additional insufficient-remaining
+case. The residual feasible count is
+`F(prefix) = product_a sum_{q=0}^{remaining_a} [selected_a + q <= K_a-D_a] C(remaining_a,q)`.
+The verifier must independently establish `F(prefix)=0` for every pruned subtree.
+
+`PrunedSubtreeV1.assignment_count` instead records the positive number of all excluded binary
+completions, `2^(remaining_if + remaining_concise)`. These are not feasible assignments and must
+not be added to the feasible total. Independently reconstruct a disjoint, exhaustive prefix-tree
+partition and prove both identities:
+
+- `len(evaluated_leaves) = A_m`, where
+  `A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})`;
+- `len(evaluated_leaves) + sum(pruned.assignment_count) = 2^sum_a(M_a-D_a)`.
+
+The verifier recomputes every residual feasible count and excluded binary count; matching totals
+alone do not establish disjointness or coverage. Forced `D` rows remain present in every leaf.
 
 Do not implement semantic-bound, token-bound, incumbent, or dominance pruning in v1. The interaction
 among reclassification, matched-pair eligibility, medians, missing token intervals, and type-7
@@ -7058,8 +7084,8 @@ leaf must receive the full 10,000-vector evaluation. `PrunedSubtreeV1` deliberat
 bounds and rejects any reason other than `cardinality-infeasible`; producer and verifier tests must
 also reject extra “witness” fields. A future schema version may add dominance only with an exact,
 independently replayable witness proving the full endpoint bound and matched-record coupling. Until
-then, a space with more than 4,096 feasible leaves necessarily exhausts the bootstrap-evaluation cap
-and is inconclusive, which is preferable to an unsound certified extremum.
+then, a space with more than 4,096 feasible leaves necessarily exhausts one of the two operation
+caps and is inconclusive, which is preferable to an unsound certified extremum.
 
 - [ ] **Step 5: Implement an independent exact certificate verifier**
 
