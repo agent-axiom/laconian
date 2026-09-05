@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -2887,3 +2888,1578 @@ def get_cached_complete_provider_evidence_fixture(
         monkeypatch.undo()
     _CACHED_COMPLETE_PROVIDER_EVIDENCE_FIXTURE = fixture
     return fixture
+
+
+def _build_synthetic_model_generation(
+    build_root: Path, *, generation_model: str, model_ordinal: int
+) -> _PublicModelGeneration:
+    """Write deterministic response DATA and verify twelve real sealed capsules.
+
+    Model names are frozen schema slots. These authored observations make no claim
+    about any service. No provider object, credential, transport or clock is used.
+    """
+
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    import pytest
+    import yaml
+
+    from laconian_eval.capsule.attempts import (
+        PublicBenchmarkResponseEvidenceV1,
+        RawAttemptV2,
+        normalize_public_benchmark_outcome,
+        raw_attempt_jsonl,
+        raw_record_sha256,
+    )
+    from laconian_eval.capsule.canonical import canonical_jsonl
+    from laconian_eval.capsule.events import event_jsonl, make_event
+    from laconian_eval.capsule.finalize import _finalize_capsule, _FinalizeSeams
+    from laconian_eval.capsule.planning import materialize_case_index, materialize_parent_plan
+    from laconian_eval.capsule.record_models import CapsuleV1, EnvironmentV1
+    from laconian_eval.capsule.sanitizer import SanitizerPatterns
+    from laconian_eval.capsule.sharding import (
+        materialize_shard_projection,
+        project_shard_plans,
+        shard_plan_file_bytes,
+    )
+    from laconian_eval.capsule.sidecars import load_verified_scored_capsule, write_scored_sidecar
+    from laconian_eval.capsule.verify import VerificationMode, verify_capsule
+    from tests.capsule import test_attempts_v2 as attempts_data
+    from tests.capsule import test_prepare as prepare_data
+    from tests.capsule.test_lifecycle import _session_payload
+
+    fixed_time = datetime(2026, 8, 31, tzinfo=UTC)
+
+    class FixedPreparationDateTime:
+        @staticmethod
+        def now(_timezone: object) -> datetime:
+            return fixed_time
+
+    repository_root = Path(__file__).parents[2]
+    source = build_root / "source"
+    case_path = source / "cases/response-smoke.yaml"
+    case_path.parent.mkdir(parents=True)
+    shutil.copy2(repository_root / "evals/cases/response-smoke.yaml", case_path)
+    manifest_payload = prepare_data._manifest_payload(
+        provider_kind="openai",
+        api_key_env="LIVE_TEST_API_KEY",
+        case_files=["cases/response-smoke.yaml"],
+        arms=["baseline", "concise", "caveman", "if"],
+        repetitions=5,
+    )
+    manifest_payload["provider"]["model"] = generation_model
+    manifest_payload["generation"].update(
+        max_output_tokens=1024,
+        temperature=None,
+        reasoning_effort="medium",
+        text_verbosity="medium",
+        reasoning_mode="omitted",
+        prompt_cache_mode="explicit",
+        prompt_cache_ttl="30m",
+        service_tier="default",
+    )
+    manifest_payload["price_snapshot"] = _public_price_snapshot_payload(model_ordinal)
+    manifest_path = source / "manifest.yaml"
+    manifest_path.write_bytes(
+        yaml.safe_dump(manifest_payload, allow_unicode=True, sort_keys=False).encode()
+    )
+    source_capture = prepare_data.prepare_module.load_source_manifest_capture(
+        manifest_path,
+        input_root=None,
+        invocation_cwd=source,
+    )
+    capture = prepare_data.prepare_module.capture_authored_inputs(
+        source_capture,
+        source_root=repository_root,
+    )
+    case_index = tuple(materialize_case_index(capture, capture.resolved_manifest))
+    parent_plan = tuple(
+        materialize_parent_plan(
+            parent_manifest_sha256=capture.manifest_sha256,
+            resolved_manifest=capture.resolved_manifest,
+            case_index=case_index,
+            captured_arms=capture.arms,
+        )
+    )
+    shards = project_shard_plans(
+        campaign_id="benchmark-0123456789abcdef0123456789abcdef",
+        resolved_manifest=capture.resolved_manifest,
+        parent_manifest_sha256=capture.manifest_sha256,
+        parent_plan=parent_plan,
+        case_index=case_index,
+        captured_arms=capture.arms,
+    )
+    planning = build_root / "planning"
+    planning.mkdir()
+    (planning / "parent-plan.jsonl").write_bytes(
+        canonical_jsonl(row.model_dump(mode="json") for row in parent_plan)
+    )
+    candidates = []
+    for shard_ordinal, shard in enumerate(shards):
+        results_root = build_root / f"results-{shard_ordinal:02d}"
+        results_root.mkdir()
+        (planning / "shard-plan.json").write_bytes(shard_plan_file_bytes(shard))
+        identity_base = 10000 + model_ordinal * 1000 + shard_ordinal * 10
+        uuid_values = iter(UUID(int=identity_base + offset, version=4) for offset in range(10))
+        with pytest.MonkeyPatch.context() as data_patch:
+            prepare_data._install_harness(
+                data_patch,
+                results_root,
+                skip_post_publish_verification=False,
+            )
+            data_patch.setattr(prepare_data.prepare_module, "datetime", FixedPreparationDateTime)
+            data_patch.setattr(
+                prepare_data.prepare_module, "uuid4", lambda values=uuid_values: next(values)
+            )
+            prepared = prepare_data.prepare_module.prepare_shard_capsule(
+                prepare_data.prepare_module.PrepareShardRequest(
+                    prepare=prepare_data._request(
+                        manifest_path,
+                        results_root,
+                        invocation_cwd=build_root,
+                        source_root=repository_root,
+                    ),
+                    parent_plan_path=Path("planning/parent-plan.jsonl"),
+                    shard_plan_path=Path("planning/shard-plan.json"),
+                )
+            )
+        capsule = CapsuleV1.model_validate_json((prepared.path / "capsule.json").read_bytes())
+        environment = EnvironmentV1.model_validate_json(
+            (prepared.path / "environment.json").read_bytes()
+        )
+        selected_plan = materialize_shard_projection(shard, parent_plan)
+        operation = UUID(int=identity_base + 3, version=4)
+        session = UUID(int=identity_base + 4, version=4)
+        events = []
+
+        def event(
+            kind: str,
+            payload: dict[str, Any],
+            *,
+            selected_events=events,
+            selected_capsule=capsule,
+            selected_operation=operation,
+            selected_session=session,
+        ) -> Any:
+            result = make_event(
+                sequence=len(selected_events) + 1,
+                run_id=selected_capsule.run_id,
+                occurred_at=fixed_time,
+                kind=kind,
+                operation_id=selected_operation,
+                execution_session_id=selected_session,
+                payload=payload,
+            )
+            selected_events.append(result)
+            return result
+
+        event(
+            "execution_started",
+            {
+                "resume_from_plan_ordinal": 0,
+                "session_environment": _session_payload(environment),
+            },
+        )
+        raw_attempts = []
+        for sequence, row in enumerate(selected_plan):
+            output = _response_smoke_output(row.case_id)
+            post_retry = row.case_id.startswith("coding-post-retry-")
+            shifted_pair = row.case_id == "preserve-config-en" and row.repetition == 1
+            negative_primary = (
+                generation_model == "gpt-5.6-sol"
+                and not post_retry
+                and (
+                    (row.arm == "if" and row.repetition < 2 and not shifted_pair)
+                    or (row.arm == "baseline" and shifted_pair)
+                )
+            )
+            if (generation_model == "gpt-5.6-luna" and post_retry) or negative_primary:
+                output = "Done."
+            visible_tokens = 30 if row.arm == "concise" else 20
+            raw_source = attempts_data._benchmark_raw_source(
+                overrides={
+                    "response.id": (True, f"synthetic-{model_ordinal}-{shard_ordinal}-{sequence}"),
+                    "response.output": (
+                        True,
+                        [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {"type": "output_text", "text": output},
+                                ],
+                            }
+                        ],
+                    ),
+                    "response.model": (True, generation_model + "-synthetic"),
+                    "response.usage.input_tokens": (True, 20),
+                    "response.usage.output_tokens": (True, visible_tokens + 2),
+                    "response.usage.output_tokens_details.reasoning_tokens": (True, 2),
+                    "response.usage.total_tokens": (True, visible_tokens + 22),
+                }
+            )
+            usage = attempts_data._benchmark_usage()
+            usage.update(
+                input_tokens=20,
+                output_tokens=visible_tokens + 2,
+                total_tokens=visible_tokens + 22,
+                ordinary_uncached_input_tokens=20,
+                reasoning_tokens=2,
+            )
+            response_payload = attempts_data._benchmark_response_payload_for_source(
+                raw_source,
+                response_id=f"synthetic-{model_ordinal}-{shard_ordinal}-{sequence}",
+                output_text=output,
+                returned_model_id=generation_model + "-synthetic",
+                usage=usage,
+            )
+            response_payload["requested_model_id"] = generation_model
+            normalized = normalize_public_benchmark_outcome(
+                PublicBenchmarkResponseEvidenceV1.model_validate(response_payload),
+                requested_service_tier="default",
+                patterns=SanitizerPatterns(),
+            )
+            raw_payload = attempts_data._benchmark_success_attempt_from_normalized(normalized)
+            raw_payload.update(
+                run_id=str(capsule.run_id),
+                manifest_sha256=capture.manifest_sha256,
+                plan_item_id=row.plan_item_id,
+                scenario_uid=row.scenario_uid,
+                case_uid=row.case_uid,
+                case_id=row.case_id,
+                locale=row.locale,
+                case_definition_sha256=row.case_definition_sha256,
+                arm=row.arm,
+                repetition=row.repetition,
+                call_sequence=sequence,
+                prompt_sha256=row.prompt_sha256,
+                instruction_sha256=row.instruction_sha256,
+                request_config_sha256=row.request_config_sha256,
+                provider="openai",
+                started_at=fixed_time,
+                elapsed_ms=25,
+            )
+            attempts_data._recompute_success_identities(raw_payload)
+            raw = RawAttemptV2.model_validate(raw_payload)
+            raw_attempts.append(raw)
+            start = event(
+                "request_started",
+                {
+                    "call_sequence": sequence,
+                    "plan_item_id": row.plan_item_id,
+                    "attempt_id": raw.attempt_id,
+                    "attempt": 1,
+                    "retry_of_attempt": None,
+                    "request_config_sha256": row.request_config_sha256,
+                    "prompt_sha256": row.prompt_sha256,
+                    "case_definition_sha256": row.case_definition_sha256,
+                    "instruction_sha256": row.instruction_sha256,
+                    "provider": "openai",
+                    "model": generation_model,
+                },
+            )
+            finish = event(
+                "request_finished",
+                {
+                    "call_sequence": sequence,
+                    "plan_item_id": row.plan_item_id,
+                    "attempt_id": raw.attempt_id,
+                    "request_started_event_id": start.event_id,
+                    "raw_record_sha256": raw_record_sha256(raw),
+                    "recovered": False,
+                },
+            )
+        event(
+            "generation_completed",
+            {
+                "terminal_plan_item_count": 40,
+                "final_plan_ordinal": 39,
+                "origin_request_finished_event_id": finish.event_id,
+                "recovered": False,
+            },
+        )
+        prepared_bytes = (prepared.path / "events.jsonl").read_bytes()
+        (prepared.path / "events.jsonl").write_bytes(
+            prepared_bytes + b"".join(event_jsonl(item) for item in events)
+        )
+        (prepared.path / "raw.jsonl").write_bytes(
+            b"".join(raw_attempt_jsonl(item) for item in raw_attempts)
+        )
+        sealed = _finalize_capsule(
+            prepared.path,
+            seams=_FinalizeSeams(
+                utc_now=lambda: fixed_time,
+                new_uuid=lambda values=uuid_values: next(values),
+            ),
+        )
+        assert sealed.state == "SEALED_COMPLETE", sealed
+        verified = verify_capsule(prepared.path, mode=VerificationMode.PREPARED)
+        assert verified.status == "valid", verified
+        sidecar = results_root / "scored.json"
+        write_scored_sidecar(prepared.path, sidecar)
+        evidence = load_verified_scored_capsule(prepared.path, sidecar)
+        candidates.append((prepared.path, sidecar, evidence))
+    return _PublicModelGeneration(
+        manifest=capture.resolved_manifest,
+        manifest_sha256=capture.manifest_sha256,
+        case_index=case_index,
+        captured_arms=tuple(capture.arms),
+        parent_plan=parent_plan,
+        shards=shards,
+        candidates=tuple(candidates),
+    )
+
+
+def _synthetic_generation_context(workspace: Path, protocol: Any) -> tuple[Path, Path, Any, Any]:
+    """Bind thirty-six actual capsule sources to the independently fixed C0 authority."""
+
+    from laconian_eval.benchmark.context import (
+        GenerationContextIndexV1,
+        LayerRootIndexV1,
+        load_verified_generation_context_index,
+        write_generation_context_index,
+        write_layer_root_index,
+    )
+    from laconian_eval.capsule.sharding import validate_public_generation_partition
+
+    root = workspace / "GENERATION"
+    (root / "generation").mkdir(parents=True)
+    builds = tuple(
+        _build_synthetic_model_generation(
+            workspace / f"build-{ordinal}",
+            generation_model=model,
+            model_ordinal=ordinal,
+        )
+        for ordinal, model in enumerate(_PUBLIC_BENCHMARK_MODELS)
+    )
+    campaign_id = "benchmark-0123456789abcdef0123456789abcdef"
+    validate_public_generation_partition(
+        campaign_id=campaign_id,
+        resolved_manifests=tuple(item.manifest for item in builds),
+        parent_manifest_sha256s=tuple(item.manifest_sha256 for item in builds),
+        case_indexes=tuple(item.case_index for item in builds),
+        captured_arms_by_parent=tuple(item.captured_arms for item in builds),
+        parent_plans=tuple(item.parent_plan for item in builds),
+        shard_plans=tuple(shard for item in builds for shard in item.shards),
+    )
+    candidates = sorted(
+        (item for build in builds for item in build.candidates),
+        key=lambda item: (
+            item[2].manifest.provider.model.encode(),
+            bytes.fromhex(item[2].plan[0].scenario_uid),
+        ),
+    )
+    members = []
+    for ordinal, (capsule, sidecar, evidence) in enumerate(candidates):
+        destination = root / "generation" / f"{ordinal:03d}"
+        destination.mkdir()
+        shutil.copytree(capsule, destination / "capsule")
+        shutil.copy2(sidecar, destination / "scored.json")
+        members.append(
+            {
+                "member_kind": "generation",
+                "ordinal": ordinal,
+                "generation_model": evidence.manifest.provider.model,
+                "scenario_uid": evidence.plan[0].scenario_uid,
+                "capsule_relative_path": f"generation/{ordinal:03d}/capsule",
+                "generation_capsule_sha256": evidence.capsule_sha256,
+                "scored_sidecar_relative_path": f"generation/{ordinal:03d}/scored.json",
+                "scored_sidecar_sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+            }
+        )
+    layer_payload = {
+        "schema_version": "benchmark-layer-root-index-v1",
+        "layer_kind": "generation",
+        "campaign_id": campaign_id,
+        "members": members,
+    }
+    layer_payload["layer_root_index_sha256"] = stable_digest(
+        "laconian-benchmark-layer-root-index-v1",
+        layer_payload,
+    )
+    layer = LayerRootIndexV1.model_validate(layer_payload)
+    write_layer_root_index(root, layer)
+    subjects = {
+        item.kind: item.sha256
+        for statement in protocol.prefix.statements
+        for item in statement.subjects
+    }
+    # Values are fixed by the golden C0 input and signed role statements. None is
+    # computed from the subsequent audit, analysis or bootstrap output.
+    seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    payload = {
+        "schema_version": "benchmark-generation-context-index-v1",
+        "campaign_id": campaign_id,
+        "campaign_registry_sha256": hashlib.sha256(b"synthetic campaign registry v1").hexdigest(),
+        "protocol_attestation_tag_binding_sha256": (
+            protocol.binding.protocol_attestation_tag_binding_sha256
+        ),
+        "protocol_attestation_bundle_sha256": protocol.bundle.protocol_attestation_bundle_sha256,
+        "protocol_review_object_archive_sha256": (
+            protocol.archive.protocol_review_object_archive_sha256
+        ),
+        "object_closure_root": protocol.archive.object_closure_root,
+        "audit_reviewer_registry_sha256": protocol.audit_registry.audit_reviewer_registry_sha256,
+        "protocol_reviewer_registry_sha256": protocol.registry.protocol_reviewer_registry_sha256,
+        "protocol_attestations_root": protocol.bundle.protocol_attestations_root,
+        "campaign_seed": seed,
+        "campaign_seed_sha256": stable_digest(
+            "laconian-campaign-seed-v1",
+            {
+                "schema_version": "1",
+                "algorithm": "public-hex-seed-v1",
+                "campaign_seed": seed,
+            },
+        ),
+        "input_tag_commit": protocol.c0.oid,
+        "hard_scorer_source_sha256": hashlib.sha256(
+            (Path(__file__).parents[2] / "src/laconian_eval/benchmark/hard_score.py").read_bytes()
+        ).hexdigest(),
+        "judge_protocol_sha256": "2aee6c1afaa8fb59958113566a73a547ae2b70c93b454fcd6afef2889c7563e8",
+        "judge_requested_service_tier": "default",
+        "judge_service_tier_wire_field": "service_tier",
+        "audit_protocol_sha256": "2" * 64,
+        "workflow_root": protocol.workflow_inventory.workflow_root,
+        "audit_reviewer_registry": protocol.audit_registry.model_dump(mode="json"),
+        "protocol_reviewer_registry": protocol.registry.model_dump(mode="json"),
+        "protocol_attestations": [
+            item.model_dump(mode="json") for item in protocol.prefix.attestations
+        ],
+        "generation_root_index_sha256": layer.layer_root_index_sha256,
+        "provider_projection_root": hashlib.sha256(
+            b"synthetic provider projection authority v1"
+        ).hexdigest(),
+        "ordered_generation_capsule_sha256s": [
+            item["generation_capsule_sha256"] for item in members
+        ],
+    }
+    for field in (
+        "hard_score_protocol_sha256",
+        "judge_prompt_sha256",
+        "judge_schema_sha256",
+        "corpus_case_root",
+        "statistical_protocol_sha256",
+        "estimand_protocol_sha256",
+        "bootstrap_protocol_sha256",
+        "outcome_classification_protocol_sha256",
+        "false_fail_sensitivity_protocol_sha256",
+        "audit_sampling_protocol_sha256",
+        "audit_commit_reveal_protocol_sha256",
+        "audit_adjudication_protocol_sha256",
+    ):
+        payload[field] = subjects[field]
+    payload["generation_context_index_sha256"] = stable_digest(
+        "laconian-benchmark-generation-context-index-v1",
+        payload,
+    )
+    index = GenerationContextIndexV1.model_validate(payload)
+    index_path = root / "generation-context.json"
+    write_generation_context_index(index_path, index)
+    expectation = _verified_expectation_for_index(index, layer)
+    context = load_verified_generation_context_index(
+        generation_index_path=index_path,
+        generation_root=root,
+        expectation=expectation,
+    )
+    # These exact directories were created above; their captured copies now live
+    # under the retained generation root. No unowned paths are removed.
+    for ordinal in range(3):
+        shutil.rmtree(workspace / f"build-{ordinal}")
+    return root, index_path, expectation, context
+
+
+def _synthetic_attempt(payload: dict[str, Any]) -> Any:
+    """Strictly parse deterministic attempt data before it becomes a parent."""
+
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.judge import JudgeAttemptEvidenceV1
+
+    payload = dict(payload)
+    payload.pop("judge_attempt_evidence_sha256", None)
+    payload["judge_attempt_id"] = stable_digest(
+        "laconian-judge-attempt-id-v1",
+        {
+            "judge_request_id": payload["judge_request_id"],
+            "attempt_number": payload["attempt_number"],
+            "batch_plan_sha256": payload["batch_plan_sha256"],
+            "consumed_batch_receipt_sha256": payload["consumed_batch_receipt_sha256"],
+        },
+    )
+    payload["judge_attempt_evidence_sha256"] = stable_digest(
+        "laconian-judge-attempt-evidence-v1",
+        payload,
+    )
+    return JudgeAttemptEvidenceV1.model_validate_json(canonical_json_v1(payload))
+
+
+def _synthetic_judge_attempts(
+    workspace: Path,
+    *,
+    context: Any,
+    request_root_index: Any,
+    hard_score_sets: tuple[Any, ...],
+    request_attachments: tuple[Any, ...],
+) -> tuple[Path, Any, Any, Any]:
+    """Seal 1,376 judgments, one definite 429 retry, and one explicit empty boundary."""
+
+    from laconian_eval.benchmark.judge import (
+        JudgeAttemptBoundaryV1,
+        JudgeAttemptRootIndexV1,
+        JudgeAttemptRootMemberV1,
+        load_verified_judge_attempt_root,
+        write_judge_attempt_root,
+    )
+
+    boundaries = []
+    root_members = []
+    rejected = None
+    for ordinal, (member, request_set, attachment) in enumerate(
+        zip(
+            context.root_index.members,
+            hard_score_sets,
+            request_attachments,
+            strict=True,
+        )
+    ):
+        plans = {
+            record.judge_request_id: plan
+            for record, plan in zip(
+                request_set.records,
+                context.generation_evidence[ordinal].plan,
+                strict=True,
+            )
+            if record.hard_pass
+        }
+        attempts = []
+        for position, wrapper in enumerate(attachment.requests):
+            attempt = with_all_passing_judgment(
+                _successful_judge_attempt(
+                    context=context,
+                    boundary_ordinal=ordinal,
+                    request_set=request_set,
+                    request_attachment=attachment,
+                    position=position,
+                )
+            )
+            payload = attempt.model_dump(mode="json")
+            plan = plans[wrapper.blind_request.judge_request_id]
+            if (
+                member.generation_model == "gpt-5.6-sol"
+                and plan.case_id == "safety-medical-en"
+                and plan.repetition == 0
+                and plan.arm in {"if", "concise"}
+            ):
+                payload["judgment"].update(
+                    semantic_pass=False,
+                    material_contradiction=True,
+                    contradiction_evidence="Synthetic counterexample.",
+                )
+                attempt = _synthetic_attempt(payload)
+            if ordinal == 0 and position == 0:
+                bad = attempt.model_dump(mode="json")
+                bad.update(
+                    returned_service_tier="priority",
+                    service_tier_status="mismatch",
+                    cost_availability="retained_worst_case",
+                    disposition="service_tier_mismatch",
+                    judgment=None,
+                )
+                rejected = _synthetic_attempt(bad)
+                retry = attempt.model_dump(mode="json")
+                retry.update(
+                    structured_retry_status=429,
+                    retry_evidence_sha256="9" * 64,
+                    delivery_certainty="definitely_rejected",
+                    terminal=False,
+                    disposition="retry_scheduled",
+                    applied_prompt_cache_mode=None,
+                    applied_prompt_cache_ttl=None,
+                    applied_cache_control_status="not_applicable_definitely_rejected",
+                    service_tier_status="not_applicable_definitely_rejected",
+                    returned_service_tier=None,
+                    cost_availability="definitely_rejected_zero",
+                    provider_request_id=None,
+                    returned_judge_model_id=None,
+                    raw_response_sha256=None,
+                    usage={
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "total_tokens": None,
+                        "cache_read_tokens": None,
+                        "cache_write_tokens": None,
+                        "ordinary_uncached_input_tokens": None,
+                        "reasoning_tokens": None,
+                        "availability": "unavailable",
+                        "cache_read_status": "not_applicable_definitely_rejected",
+                        "cache_write_status": "not_applicable_definitely_rejected",
+                        "reasoning_accounting": "not_applicable",
+                    },
+                    judgment=None,
+                    terminal_evidence_sha256=None,
+                )
+                retry_attempt = _synthetic_attempt(retry)
+                attempts.append(retry_attempt)
+                payload = attempt.model_dump(mode="json")
+                payload.update(
+                    attempt_number=2,
+                    retry_of_judge_attempt_sha256=retry_attempt.judge_attempt_evidence_sha256,
+                    retry_authorization_sha256=retry_attempt.retry_evidence_sha256,
+                )
+                attempt = _synthetic_attempt(payload)
+            attempts.append(attempt)
+        body = {
+            "schema_version": "judge-attempt-boundary-v1",
+            "boundary_ordinal": ordinal,
+            "campaign_id": context.index.campaign_id,
+            "generation_model": member.generation_model,
+            "scenario_uid": member.scenario_uid,
+            "generation_capsule_sha256": member.generation_capsule_sha256,
+            "hard_score_request_set_sha256": request_set.hard_score_request_set_sha256,
+            "judge_request_attachment_sha256": attachment.judge_request_attachment_sha256,
+            "judge_protocol_sha256": context.index.judge_protocol_sha256,
+            "ordered_judge_request_ids": request_set.ordered_judge_request_ids,
+            "attempts": tuple(row.model_dump(mode="python") for row in attempts),
+        }
+        body["judge_attempt_boundary_sha256"] = stable_digest(
+            "laconian-judge-attempt-boundary-v1", body
+        )
+        boundary = JudgeAttemptBoundaryV1.model_validate(body)
+        boundaries.append(boundary)
+        root_members.append(
+            JudgeAttemptRootMemberV1(
+                ordinal=ordinal,
+                generation_model=member.generation_model,
+                scenario_uid=member.scenario_uid,
+                relative_path=f"judge-attempts/{ordinal:03d}.json",
+                judge_request_attachment_sha256=attachment.judge_request_attachment_sha256,
+                judge_attempt_boundary_sha256=boundary.judge_attempt_boundary_sha256,
+                request_count=len(attachment.requests),
+                attempt_count=len(attempts),
+            )
+        )
+    body = {
+        "schema_version": "judge-attempt-root-index-v1",
+        "campaign_id": context.index.campaign_id,
+        "judge_request_root_index_sha256": request_root_index.layer_root_index_sha256,
+        "members": tuple(row.model_dump(mode="json") for row in root_members),
+    }
+    body["judge_attempt_root_index_sha256"] = stable_digest(
+        "laconian-judge-attempt-root-index-v1", body
+    )
+    index = JudgeAttemptRootIndexV1.model_validate(body)
+    root = workspace / "ATTEMPTS"
+    root.mkdir()
+    write_judge_attempt_root(root, index=index, boundaries=tuple(boundaries))
+    verified = load_verified_judge_attempt_root(
+        root,
+        expected_request_root_index_sha256=request_root_index.layer_root_index_sha256,
+        request_attachments=request_attachments,
+    )
+    return root, index, verified, rejected
+
+
+def _synthetic_broker_input_package():
+    """Frozen synthetic broker bytes from the approved LF-domain wire contract."""
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.protocol_review import protocol_review_digest
+
+    roles = ("publisher", "release_finalizer", "security_attestor")
+    public_keys = (
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+        "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+    )
+    keys = []
+    for role, public in zip(roles, public_keys, strict=True):
+        spki = bytes.fromhex("302a300506032b6570032100" + public)
+        key = {
+            "schema_version": "BrokerSigningKeyV1",
+            "broker_role": role,
+            "key_id": "synthetic-" + role.replace("_", "-") + "-2026",
+            "algorithm": "Ed25519",
+            "public_key_spki_der_base64url": base64.urlsafe_b64encode(spki).decode().rstrip("="),
+            "not_before": "2026-08-01T00:00:00Z",
+            "not_after": "2026-10-01T00:00:00Z",
+        }
+        key["broker_signing_key_sha256"] = protocol_review_digest(
+            "laconian-broker-signing-key-v1", key
+        )
+        keys.append(key)
+    leaves = [
+        bytes.fromhex(protocol_review_digest("laconian-broker-signing-key-leaf-v1", key))
+        for key in keys
+    ]
+
+    def node(left, right):
+        return hashlib.sha256(b"laconian-broker-signing-key-node-v1\n" + left + right).digest()
+
+    merkle_root = node(node(leaves[0], leaves[1]), node(leaves[2], leaves[2])).hex()
+    keys_root = protocol_review_digest(
+        "laconian-broker-signing-keys-root-v1", {"count": 3, "merkle_root": merkle_root}
+    )
+    policy = {
+        "schema_version": "BrokerTokenDeliveryIsolationPolicyV1",
+        "api_origin": "https://api.github.com",
+        "api_version": "2022-11-28",
+        "installation_token_endpoint": "POST /app/installations/{installation_id}/access_tokens",
+        "broker_roles": list(roles),
+        "vault_implementation_measurements": [
+            {"broker_role": role, "vault_measurement_sha256": marker * 64}
+            for role, marker in zip(roles, ("a", "b", "c"), strict=True)
+        ],
+        "github_tls_terminates_inside_token_vault": True,
+        "complete_response_validation_precedes_token_commit": True,
+        "token_commit_precedes_executor_visibility": True,
+        "failed_token_commit_zeroizes_response_bytes": True,
+        "executor_accepts_only_committed_token_handles": True,
+        "raw_token_bytes_leave_token_vault": False,
+        "raw_token_bytes_enter_actions": False,
+        "unknown_delivery_allows_operation_dispatch": False,
+    }
+    policy["broker_token_delivery_isolation_policy_sha256"] = protocol_review_digest(
+        "laconian-broker-token-delivery-isolation-policy-v1", policy
+    )
+    payload = {
+        "broker_signing_keys": keys,
+        "broker_signing_keys_root_sha256": keys_root,
+        "broker_token_delivery_isolation_policy": policy,
+        "statistical_protocol_sha256": "1" * 64,
+        "audit_protocol_sha256": "2" * 64,
+    }
+    return SimpleNamespace(
+        payload=payload,
+        raw=canonical_json_v1(payload),
+        keys=tuple(keys),
+        keys_root=keys_root,
+        policy=policy,
+        policy_sha256=policy["broker_token_delivery_isolation_policy_sha256"],
+    )
+
+
+def _build_synthetic_protocol_review():
+    """Build and publicly verify an offline DAG, its raw archive, and negative DATA."""
+    import laconian_eval.benchmark.protocol_review as protocol
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from tests.benchmark import helpers
+    from tests.benchmark import test_protocol_review as data
+
+    store = {}
+    workflows = {
+        path: f"name: workflow-{ordinal}\n".encode()
+        for ordinal, path in enumerate(protocol.BENCHMARK_WORKFLOW_PATHS_V1)
+    }
+    workflow = protocol.build_workflow_inventory(c0_workflow_bytes=workflows)
+    operator_registry = data._operator_registry()
+    ruleset_policy = data._ruleset_policy()
+    builder_identity = data._builder_identity()
+    registry = data._protocol_reviewer_registry("ssh_sha256")
+    # The DATA builder reads actual source, actual lock and installed dependency inventory.
+    # Both public verification entrypoints below independently verify the active runtime.
+    identity_registry = data._identity_registry_bundle(registry)
+    audit_registry = helpers.audit_reviewer_registry()
+    broker_input = _synthetic_broker_input_package()
+    input_package_path = "benchmarks/campaigns/public-three-model-v1/synthetic-input-package.json"
+    project_root = Path(helpers.__file__).resolve().parents[2]
+    files = dict(workflows)
+    files.update(
+        {
+            "benchmark/security/tag-operator-registry.json": canonical_json_v1(
+                operator_registry.model_dump(mode="json")
+            ),
+            "benchmark/security/tag-ruleset-policy.json": canonical_json_v1(
+                ruleset_policy.model_dump(mode="json")
+            ),
+            "benchmark/security/protocol-bundle-builder-git-identity.json": canonical_json_v1(
+                builder_identity.model_dump(mode="json")
+            ),
+            "benchmark/security/protocol-review-identity-registry.json": canonical_json_v1(
+                identity_registry.model_dump(mode="json")
+            ),
+            identity_registry.verifier_source_path: (
+                project_root / identity_registry.verifier_source_path
+            ).read_bytes(),
+            identity_registry.dependency_lock_path: (
+                project_root / identity_registry.dependency_lock_path
+            ).read_bytes(),
+            "benchmarks/campaigns/public-three-model-v1/protocol-reviewers.yaml": canonical_json_v1(
+                registry.model_dump(mode="json")
+            ),
+            "benchmarks/campaigns/public-three-model-v1/audit-reviewers.yaml": canonical_json_v1(
+                audit_registry.model_dump(mode="json")
+            ),
+            "benchmarks/campaigns/public-three-model-v1/repository-trust-boundary.json": (
+                canonical_json_v1(
+                    {"repository_id": 123, "repository_name": "repo", "repository_owner": "acme"}
+                )
+            ),
+            input_package_path: broker_input.raw,
+        }
+    )
+    c0_files = dict(files)
+    c0_tree = data._tree_for_files(store, files)
+    c0 = data._git_object(
+        store,
+        "commit",
+        (
+            b"tree "
+            + c0_tree.oid.encode()
+            + b"\nauthor Campaign Input <campaign@example.com> 1788134400 +0000"
+            + b"\ncommitter Campaign Input <campaign@example.com> 1788134400 +0000"
+            + b"\n\nbenchmark input\n"
+        ),
+    )
+    input_message = protocol.InputTagMessageV1(
+        schema_version="InputTagMessageV1",
+        input_tag_ref="refs/tags/benchmark-input-20260831.1",
+        companion_tag_ref="refs/tags/benchmark-attestations-20260831.1",
+        peeled_c0_oid=c0.oid,
+        protocol_reviewer_registry_sha256=registry.protocol_reviewer_registry_sha256,
+        tag_operator_registry_sha256=operator_registry.tag_operator_registry_sha256,
+        tag_ruleset_policy_root=ruleset_policy.tag_ruleset_policy_root,
+        workflow_root=workflow.workflow_root,
+    )
+    input_tag = data._git_object(
+        store,
+        "tag",
+        (
+            b"object "
+            + c0.oid.encode()
+            + b"\ntype commit\ntag benchmark-input-20260831.1"
+            + b"\ntagger Laconian Tag Operator <tag-operator@users.noreply.github.com> "
+            + b"1788134400 +0000\n\n"
+            + canonical_json_v1(input_message.model_dump(mode="json"))
+            + b"\n"
+        ),
+    )
+    subject_values = helpers.protocol_subject_values()
+    subject_values.update(
+        statistical_protocol_sha256="1" * 64,
+        audit_protocol_sha256="2" * 64,
+        audit_reviewer_registry_sha256=audit_registry.audit_reviewer_registry_sha256,
+        identity_registry_bundle_sha256=identity_registry.identity_registry_bundle_sha256,
+        tag_operator_registry_sha256=operator_registry.tag_operator_registry_sha256,
+        tag_ruleset_policy_root=ruleset_policy.tag_ruleset_policy_root,
+        broker_token_delivery_isolation_policy_sha256=broker_input.policy_sha256,
+        broker_signing_keys_root_sha256=broker_input.keys_root,
+    )
+    names = (
+        "01-statistical-method.json",
+        "02-blind-judge-audit-protocol.json",
+        "03-security-evidence.json",
+    )
+    review_root = "benchmarks/protocol-reviews/benchmark-input-20260831.1/"
+    commits, observations = [], []
+    parent = c0
+    for ordinal, (reviewer, name) in enumerate(zip(registry.reviewers, names, strict=True)):
+        subjects = [
+            {"kind": kind, "sha256": subject_values[kind]}
+            for kind in protocol.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1[reviewer.role]
+        ]
+        statement_payload = {
+            "schema_version": "ProtocolReviewStatementV1",
+            "role": reviewer.role,
+            "protocol_registry_sha256": registry.protocol_reviewer_registry_sha256,
+            "reviewer_numeric_account_id": reviewer.reviewer_numeric_account_id,
+            "reviewer_login": reviewer.reviewer_login,
+            "verification_mode": reviewer.verification_mode,
+            "signing_fingerprint": reviewer.signing_fingerprint,
+            "input_tag_ref": "refs/tags/benchmark-input-20260831.1",
+            "input_tag_oid": input_tag.oid,
+            "input_tag_object_sha256": input_tag.git_object_sha256,
+            "peeled_c0_oid": c0.oid,
+            "peeled_c0_sha256": c0.git_object_sha256,
+            "workflow_root": workflow.workflow_root,
+            "subjects": subjects,
+            "subject_root": protocol.protocol_review_digest(
+                "laconian-protocol-review-subjects-root-v1", subjects
+            ),
+            "signed_at": "2026-08-31T00:00:00Z",
+        }
+        statement_payload["statement_sha256"] = protocol.protocol_review_digest(
+            "laconian-protocol-review-statement-v1", statement_payload
+        )
+        statement = protocol.ProtocolReviewStatementV1.model_validate(statement_payload)
+        files[review_root + "statements/" + name] = canonical_json_v1(
+            statement.model_dump(mode="json")
+        )
+        review_tree = data._tree_for_files(store, files)
+        commit, signed_payload, signature = data._review_commit(
+            store,
+            tree_oid=review_tree.oid,
+            parent_oid=parent.oid,
+            reviewer=reviewer,
+            statement=statement,
+        )
+        observation = data._signature_observation(
+            commit=commit,
+            reviewer=reviewer,
+            signed_payload=signed_payload,
+            signature=signature,
+            ordinal=ordinal,
+            identity_registry=identity_registry,
+        )
+        commits.append(commit)
+        observations.append(observation)
+        parent = commit
+    t0_suite = data._creation_suite("refs/tags/benchmark-input-20260831.1", input_tag.oid, 1001)
+    prefix = protocol.verify_protocol_review_prefix(
+        input_tag_ref="refs/tags/benchmark-input-20260831.1",
+        objects=tuple(store[oid] for oid in sorted(store)),
+        protocol_reviewer_registry=registry,
+        tag_operator_registry=operator_registry,
+        tag_ruleset_policy=ruleset_policy,
+        signature_evidence_sources=tuple(item.source for item in observations),
+        input_tag_creation_suite=t0_suite.receipt,
+    )
+    bundle = protocol.build_protocol_attestation_bundle(verified_prefix=prefix)
+    for name, attestation in zip(names, prefix.attestations, strict=True):
+        files[review_root + "attestations/" + name] = canonical_json_v1(
+            attestation.model_dump(mode="json")
+        )
+    files[review_root + "bundle.json"] = canonical_json_v1(bundle.model_dump(mode="json"))
+    b0_tree = data._tree_for_files(store, files)
+    b0 = data._git_object(
+        store,
+        "commit",
+        (
+            b"tree "
+            + b0_tree.oid.encode()
+            + b"\nparent "
+            + commits[-1].oid.encode()
+            + b"\nauthor Laconian Protocol Bundle Builder "
+            + b"<laconian-protocol-bundle-builder@users.noreply.github.com> 1788134400 +0000"
+            + b"\ncommitter Laconian Protocol Bundle Builder "
+            + b"<laconian-protocol-bundle-builder@users.noreply.github.com> 1788134400 +0000"
+            + b"\n\nlaconian protocol attestation bundle benchmark-input-20260831.1: "
+            + bundle.protocol_attestation_bundle_sha256.encode()
+            + b"\n"
+        ),
+    )
+    companion_message = {
+        "schema_version": "ProtocolAttestationTagMessageV1",
+        "input_tag_ref": "refs/tags/benchmark-input-20260831.1",
+        "input_tag_oid": input_tag.oid,
+        "input_tag_object_sha256": input_tag.git_object_sha256,
+        "companion_tag_ref": "refs/tags/benchmark-attestations-20260831.1",
+        "bundle_commit_oid": b0.oid,
+        "bundle_commit_object_sha256": b0.git_object_sha256,
+        "protocol_attestation_bundle_sha256": bundle.protocol_attestation_bundle_sha256,
+        "protocol_attestations_root": bundle.protocol_attestations_root,
+        "tag_operator_registry_sha256": operator_registry.tag_operator_registry_sha256,
+        "tag_ruleset_policy_root": ruleset_policy.tag_ruleset_policy_root,
+    }
+    companion_tag = data._git_object(
+        store,
+        "tag",
+        (
+            b"object "
+            + b0.oid.encode()
+            + b"\ntype commit\ntag benchmark-attestations-20260831.1"
+            + b"\ntagger Laconian Tag Operator "
+            + b"<tag-operator@users.noreply.github.com> 1788134400 +0000\n\n"
+            + canonical_json_v1(companion_message)
+            + b"\n"
+        ),
+    )
+    t1_suite = data._creation_suite(
+        "refs/tags/benchmark-attestations-20260831.1", companion_tag.oid, 1002
+    )
+    dag = protocol.verify_protocol_review_dag(
+        input_tag_ref="refs/tags/benchmark-input-20260831.1",
+        companion_tag_ref="refs/tags/benchmark-attestations-20260831.1",
+        objects=tuple(store[oid] for oid in sorted(store)),
+        protocol_reviewer_registry=registry,
+        tag_operator_registry=operator_registry,
+        tag_ruleset_policy=ruleset_policy,
+        signature_evidence_sources=tuple(item.source for item in observations),
+        tag_creation_suites=(t0_suite.receipt, t1_suite.receipt),
+    )
+    binding = protocol.build_protocol_attestation_tag_binding(verified_dag=dag, bundle=bundle)
+    evidence_by_kind = [
+        *(("github_signature", item) for item in observations),
+        ("tag_ruleset_observation", data._ruleset_observation()),
+        ("t0_creation_suite", t0_suite),
+        ("t1_creation_suite", t1_suite),
+    ]
+    wrappers = [
+        (kind, evidence, data._archive_binding(kind, evidence))
+        for kind, evidence in evidence_by_kind
+    ]
+    rank = {
+        "github_signature": 0,
+        "tag_ruleset_observation": 1,
+        "t0_creation_suite": 2,
+        "t1_creation_suite": 3,
+    }
+    wrappers.sort(key=lambda item: (rank[item[0]], item[2].receipt_sha256))
+    archive = protocol.build_protocol_review_object_archive(
+        verified_dag=dag,
+        api_blobs=tuple(
+            sorted(
+                (
+                    blob
+                    for _, evidence, wrapper in wrappers
+                    for blob in data._archive_blobs(wrapper, evidence)
+                ),
+                key=lambda item: item.path.encode(),
+            )
+        ),
+        api_receipts=tuple(item[2] for item in wrappers),
+    )
+    replayed = protocol.load_verified_protocol_review_object_archive(archive)
+    assert replayed == dag
+    fixture = SimpleNamespace(
+        prefix=prefix,
+        dag=dag,
+        bundle=bundle,
+        binding=binding,
+        archive=archive,
+        input_tag=input_tag,
+        c0=c0,
+        commits=tuple(commits),
+        b0=b0,
+        companion_tag=companion_tag,
+        observations=tuple(observations),
+        registry=registry,
+        operator_registry=operator_registry,
+        ruleset_policy=ruleset_policy,
+        identity_registry=identity_registry,
+        audit_registry=audit_registry,
+        t0_suite=t0_suite,
+        t1_suite=t1_suite,
+        workflow_inventory=workflow,
+        input_package_bytes=broker_input.raw,
+        input_package_path=input_package_path,
+        broker_signing_keys=broker_input.keys,
+        broker_signing_keys_root_sha256=broker_input.keys_root,
+        broker_token_delivery_isolation_policy=broker_input.policy,
+        broker_token_delivery_isolation_policy_sha256=broker_input.policy_sha256,
+        subject_values=subject_values,
+    )
+    fixture.negative_dag_inputs = _synthetic_protocol_negative_inputs(fixture, c0_files, files)
+    return fixture
+
+
+def _synthetic_protocol_negative_inputs(fixture, c0_files, final_files):
+    """Rethread raw negative graphs so their public rejection reaches semantic checks."""
+    import laconian_eval.benchmark.protocol_review as protocol
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from tests.benchmark import test_protocol_review as data
+
+    attacks = {}
+    names = (
+        "01-statistical-method.json",
+        "02-blind-judge-audit-protocol.json",
+        "03-security-evidence.json",
+    )
+    review_root = "benchmarks/protocol-reviews/benchmark-input-20260831.1/"
+    for label in (
+        "duplicate-git-header",
+        "wrong-tree-delta",
+        "extra-empty-subtree",
+        "bad-keyed-signature",
+        "cross-campaign-statement",
+    ):
+        store = {}
+        data._tree_for_files(store, c0_files)
+        store[fixture.c0.oid] = fixture.c0
+        store[fixture.input_tag.oid] = fixture.input_tag
+        files = dict(c0_files)
+        parent = fixture.c0
+        observations = []
+        for ordinal, (reviewer, name, original) in enumerate(
+            zip(fixture.registry.reviewers, names, fixture.prefix.statements, strict=True)
+        ):
+            statement = original
+            if ordinal == 0 and label == "cross-campaign-statement":
+                payload = original.model_dump(mode="json", exclude={"statement_sha256"})
+                payload["input_tag_ref"] = "refs/tags/benchmark-input-20260831.2"
+                payload["statement_sha256"] = protocol.protocol_review_digest(
+                    "laconian-protocol-review-statement-v1", payload
+                )
+                statement = protocol.ProtocolReviewStatementV1.model_validate(payload)
+            files[review_root + "statements/" + name] = canonical_json_v1(
+                statement.model_dump(mode="json")
+            )
+            if ordinal == 0 and label == "wrong-tree-delta":
+                files["unexpected-review-change.txt"] = b"unapproved delta\n"
+            tree = data._tree_for_files(store, files)
+            if label == "extra-empty-subtree":
+                empty = data._git_object(store, "tree", b"")
+                tree = data._git_object(
+                    store, "tree", tree.raw_content + b"40000 z-empty\0" + bytes.fromhex(empty.oid)
+                )
+            commit, signed_payload, signature = data._review_commit(
+                store,
+                tree_oid=tree.oid,
+                parent_oid=parent.oid,
+                reviewer=reviewer,
+                statement=statement,
+            )
+            if ordinal == 0 and label == "duplicate-git-header":
+                original_oid = commit.oid
+                commit = data._git_object(
+                    store,
+                    "commit",
+                    commit.raw_content.replace(
+                        b"\nparent ", b"\nparent " + parent.oid.encode() + b"\nparent ", 1
+                    ),
+                )
+                del store[original_oid]
+            if ordinal == 2 and label == "bad-keyed-signature":
+                wrong_seed = hashlib.sha256(b"synthetic-wrong-security-signing-key").digest()
+                _, key_blob, _ = data._security_key_material()
+                wrong_signature = data._ssh_signature(wrong_seed, key_blob, signed_payload)
+                original_oid = commit.oid
+                commit = data._git_object(
+                    store,
+                    "commit",
+                    commit.raw_content.replace(
+                        signature.replace(b"\n", b"\n "), wrong_signature.replace(b"\n", b"\n ")
+                    ),
+                )
+                del store[original_oid]
+                signature = wrong_signature
+            observations.append(
+                data._signature_observation(
+                    commit=commit,
+                    reviewer=reviewer,
+                    signed_payload=signed_payload,
+                    signature=signature,
+                    ordinal=ordinal,
+                    identity_registry=fixture.identity_registry,
+                )
+            )
+            parent = commit
+        # B0 keeps the valid original envelopes. The intended malformed prefix must
+        # fail before the verifier compares those envelopes with fresh derivation.
+        for path, content in final_files.items():
+            if (
+                path.startswith(review_root + "attestations/")
+                or path == review_root + "bundle.json"
+            ):
+                files[path] = content
+        b0_tree = data._tree_for_files(store, files)
+        if label == "extra-empty-subtree":
+            empty = data._git_object(store, "tree", b"")
+            b0_tree = data._git_object(
+                store, "tree", b0_tree.raw_content + b"40000 z-empty\0" + bytes.fromhex(empty.oid)
+            )
+        b0_raw = fixture.b0.raw_content.replace(
+            fixture.commits[-1].oid.encode(), parent.oid.encode(), 1
+        )
+        b0_raw = b0_raw.replace(
+            fixture.b0.raw_content.splitlines()[0], b"tree " + b0_tree.oid.encode(), 1
+        )
+        b0 = data._git_object(store, "commit", b0_raw)
+        companion_raw = fixture.companion_tag.raw_content.replace(
+            fixture.b0.oid.encode(), b0.oid.encode()
+        ).replace(fixture.b0.git_object_sha256.encode(), b0.git_object_sha256.encode())
+        companion = data._git_object(store, "tag", companion_raw)
+        # Discard only intermediate tree objects created before adding an empty
+        # subtree; preserve every raw object actually reachable from a commit.
+        retained = {item.oid for item in store.values() if item.object_type in ("commit", "tag")}
+
+        def visit_tree(oid, store=store, retained=retained):
+            if oid in retained:
+                return
+            retained.add(oid)
+            raw = store[oid].raw_content
+            cursor = 0
+            while cursor < len(raw):
+                space = raw.index(b" ", cursor)
+                nul = raw.index(b"\0", space)
+                child = raw[nul + 1 : nul + 21].hex()
+                if raw[cursor:space] == b"40000":
+                    visit_tree(child)
+                else:
+                    retained.add(child)
+                cursor = nul + 21
+
+        for item in tuple(store.values()):
+            if item.object_type == "commit":
+                visit_tree(item.raw_content.splitlines()[0][5:].decode())
+        attacks[label] = {
+            "objects": tuple(store[oid] for oid in sorted(retained)),
+            "signature_evidence_sources": tuple(item.source for item in observations),
+            "tag_creation_suites": (
+                fixture.t0_suite.receipt,
+                data._creation_suite(
+                    "refs/tags/benchmark-attestations-20260831.1", companion.oid, 1002
+                ).receipt,
+            ),
+        }
+    # Deliberately invalid model values are negative DATA. Public DAG verification
+    # must revalidate each object and reject the extra bypass even after rehashing.
+    policy_payload = fixture.ruleset_policy.model_dump(
+        mode="json", exclude={"tag_ruleset_policy_root"}
+    )
+    policy_payload["rulesets"][1]["bypass_actors"] = deepcopy(
+        policy_payload["rulesets"][0]["bypass_actors"]
+    )
+    policy_payload["tag_ruleset_policy_root"] = protocol.protocol_review_digest(
+        "laconian-tag-ruleset-policy-v2", policy_payload
+    )
+    bad_ruleset = fixture.ruleset_policy.rulesets[1].model_copy(
+        update={"bypass_actors": fixture.ruleset_policy.rulesets[0].bypass_actors}
+    )
+    bad_policy = protocol.TagRulesetPolicyV1.model_construct(
+        **{
+            **policy_payload,
+            "rulesets": (fixture.ruleset_policy.rulesets[0], bad_ruleset),
+        }
+    )
+    attacks["ruleset-extra-bypass"] = {"tag_ruleset_policy": bad_policy}
+    attacks["t0-creation-wrong-after"] = {
+        "tag_creation_suites": (
+            data._creation_suite("refs/tags/benchmark-input-20260831.1", "f" * 40, 1001).receipt,
+            fixture.t1_suite.receipt,
+        )
+    }
+    replay_payload = fixture.t1_suite.receipt.model_dump(
+        mode="json", exclude={"tag_creation_rule_suite_receipt_sha256"}
+    )
+    replay_payload["request_ids"] = fixture.t0_suite.receipt.request_ids
+    replay_payload["tag_creation_rule_suite_receipt_sha256"] = protocol.protocol_review_digest(
+        "laconian-tag-creation-rule-suite-receipt-v1", replay_payload
+    )
+    attacks["t1-creation-replayed-request"] = {
+        "tag_creation_suites": (
+            fixture.t0_suite.receipt,
+            protocol.TagCreationRuleSuiteReceiptV1.model_validate(replay_payload),
+        )
+    }
+    return attacks
+
+
+def _synthetic_audit_sources(*, provider: Any, sample: Any) -> Any:
+    """Sign authored human labels, then reconstruct all PR/review sources normally."""
+
+    import json
+
+    import pytest
+
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.protocol_review import protocol_review_digest
+    from tests.benchmark import test_audit_commit_reveal as source_data
+
+    authority = provider.index.protocol_attestations[0].signature_evidence
+    repository_id = authority.github_rest_verification.repository_id
+    _, _, repository_owner, repository_name, *_ = (
+        authority.github_rest_verification.endpoint.removeprefix("GET ").split("/")
+    )
+    repository_prefix = f"GET /repos/{repository_owner}/{repository_name}/"
+    assert repository_id == 123
+    false_ids = {
+        stable_digest(
+            "laconian-blind-audit-record-id-v1",
+            {
+                "campaign_id": sample.manifest.campaign_id,
+                "sample_manifest_sha256": sample.manifest.sample_manifest_sha256,
+                "canonical_record_id": row.canonical_record_id,
+            },
+        )
+        for row in sample.population.records
+        if row.generation_model == "gpt-5.6-luna"
+        or (
+            row.generation_model == "gpt-5.6-sol"
+            and row.case_id == "safety-medical-en"
+            and row.repetition == 0
+            and row.arm == "concise"
+        )
+    }
+    labels_factory = source_data._labels
+    consensus_owner = source_data.ConsensusLabelV1
+    pr_record_factory = source_data._pr_record
+    audit_receipt_factory = source_data._audit_receipt
+    signature_factory = source_data._signature_material
+
+    def pr_record(**kwargs: Any) -> tuple[Any, bytes]:
+        record, raw = pr_record_factory(**kwargs)
+        payload = json.loads(raw)
+        payload["base"]["repo"] = {
+            "id": repository_id,
+            "name": repository_name,
+            "owner": {"login": repository_owner},
+        }
+        return record, canonical_json_v1(payload)
+
+    def audit_receipt(**kwargs: Any) -> Any:
+        kwargs["endpoint"] = kwargs["endpoint"].replace(
+            "GET /repos/acme/laconian/", repository_prefix, 1
+        )
+        return audit_receipt_factory(**kwargs)
+
+    def signature_material(*args: Any, **kwargs: Any) -> Any:
+        material = signature_factory(*args, **kwargs)
+        rest_owner = type(material.evidence.github_rest_verification)
+        rest = material.evidence.github_rest_verification.model_dump(
+            mode="json", exclude={"rest_projection_sha256"}
+        )
+        rest["endpoint"] = repository_prefix + "git/commits/" + material.evidence.commit_oid
+        rest["rest_projection_sha256"] = protocol_review_digest(
+            "laconian-github-commit-verification-projection-v1", rest
+        )
+        rest = rest_owner.model_validate(rest)
+        canonical = (canonical_json_v1(rest.model_dump(mode="json")), material.canonical[1])
+        receipt = material.receipt.model_dump(
+            mode="json", exclude={"github_signature_observation_receipt_sha256"}
+        )
+        receipt["rest_projection_sha256"] = rest.rest_projection_sha256
+        receipt["canonical_response_sha256s"] = tuple(
+            hashlib.sha256(raw).hexdigest() for raw in canonical
+        )
+        receipt["github_signature_observation_receipt_sha256"] = protocol_review_digest(
+            "laconian-github-signature-observation-receipt-v1", receipt
+        )
+        evidence = material.evidence.model_dump(mode="json")
+        evidence["github_rest_verification"] = rest.model_dump(mode="json")
+        return SimpleNamespace(
+            evidence=type(material.evidence).model_validate(evidence),
+            receipt=type(material.receipt).model_validate(receipt),
+            raw=material.raw,
+            canonical=canonical,
+        )
+
+    def labels(selected: Any, *, reviewer_ordinal: int) -> tuple[Any, ...]:
+        result = []
+        for label in labels_factory(selected, reviewer_ordinal=reviewer_ordinal):
+            payload = label.model_dump(mode="python")
+            if label.audit_record_id in false_ids:
+                payload.update(
+                    semantic_pass=False,
+                    material_contradiction=True,
+                    contradiction_evidence="Synthetic counterexample.",
+                )
+            result.append(type(label).model_validate(payload))
+        return tuple(result)
+
+    def consensus(**payload: Any) -> Any:
+        payload["semantic_pass"] = payload["audit_record_id"] not in false_ids
+        return consensus_owner(**payload)
+
+    # Only this test DATA factory's construction callbacks change. Production
+    # schemas, signature verifiers, source admission and identity checks stay active.
+    # Repository metadata is bound before the factory hashes/signs its outer records;
+    # raw Git signature bytes and signed payloads are never changed.
+    # The autouse verifier shim in that test module is never invoked for this builder.
+    with pytest.MonkeyPatch.context() as data_patch:
+        data_patch.setattr(source_data, "_labels", labels)
+        data_patch.setattr(source_data, "ConsensusLabelV1", consensus)
+        data_patch.setattr(source_data, "_pr_record", pr_record)
+        data_patch.setattr(source_data, "_audit_receipt", audit_receipt)
+        data_patch.setattr(source_data, "_signature_material", signature_material)
+        return source_data._build_source_backed_audit(provider=provider, sample=sample)
+
+
+def build_synthetic_public_campaign(root: Path) -> Any:
+    """Construct the complete offline campaign from authored, non-evidentiary DATA.
+
+    Every acceptance boundary invokes its real public loader. Durable roots are
+    freshly written on every call; neither admitted wrappers nor decisions cache.
+    """
+
+    from laconian_eval.benchmark import reporting
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.audit_metrics import compute_model_audit_metrics
+    from laconian_eval.benchmark.audit_sampling import (
+        load_verified_audit_sample_root,
+        select_audit_sample,
+        write_audit_sample_root,
+    )
+    from laconian_eval.benchmark.judge import build_judge_attachment
+    from laconian_eval.benchmark.provider_evidence import (
+        ProviderEvidenceIndexV1,
+        build_audit_population,
+        compute_requested_returned_model_source_sha256,
+        write_provider_evidence_index,
+    )
+
+    workspace = root / "synthetic-campaign"
+    workspace.mkdir(parents=True)
+    (workspace / "SYNTHETIC-NOT-MODEL-EVIDENCE.txt").write_bytes(
+        b"All observations in this fixture are deterministic synthetic data.\n"
+        b"Frozen model identifiers are schema slots, not measurements of any model.\n"
+        b"No provider was instantiated and no live campaign was run.\n"
+    )
+    protocol = _build_synthetic_protocol_review()
+    (workspace / "protocol-review-archive.json").write_bytes(
+        canonical_json_v1(protocol.archive.model_dump(mode="json"))
+    )
+    (workspace / "synthetic-input-package.json").write_bytes(protocol.input_package_bytes)
+    generation_root, generation_index_path, expectation, context = _synthetic_generation_context(
+        workspace,
+        protocol,
+    )
+    hard_sets = _build_hard_score_request_sets_fast(context)
+    hard_root = workspace / "HARD"
+    hard_index = _write_attachment_layer(
+        hard_root,
+        kind="hard-score",
+        context=context,
+        attachments=hard_sets,
+        digest_field="hard_score_request_set_sha256",
+    )
+    requests = _build_judge_request_attachments_fast(
+        context=context,
+        hard_score_sets=hard_sets,
+        identity_registry_bundle=protocol.identity_registry,
+    )
+    request_root = workspace / "REQUESTS"
+    request_index = _write_attachment_layer(
+        request_root,
+        kind="judge-request",
+        context=context,
+        attachments=requests,
+        digest_field="judge_request_attachment_sha256",
+    )
+    attempt_root, attempt_index, verified_attempts, rejected = _synthetic_judge_attempts(
+        workspace,
+        context=context,
+        request_root_index=request_index,
+        hard_score_sets=hard_sets,
+        request_attachments=requests,
+    )
+    judgments = tuple(
+        build_judge_attachment(
+            context=context,
+            expectation=expectation,
+            boundary_ordinal=ordinal,
+            request_set=request_set,
+            request_attachment=request,
+            attempt_root=verified_attempts,
+        )
+        for ordinal, (request_set, request) in enumerate(zip(hard_sets, requests, strict=True))
+    )
+    judge_root = workspace / "JUDGES"
+    judge_index = _write_attachment_layer(
+        judge_root,
+        kind="judge",
+        context=context,
+        attachments=judgments,
+        digest_field="judge_attachment_sha256",
+    )
+    provider_index = _build_provider_index(
+        context=context,
+        expectation=expectation,
+        hard_score_root_index=hard_index,
+        hard_score_sets=hard_sets,
+        judge_request_root_index=request_index,
+        judge_request_attachments=requests,
+        judge_attempt_root_index=attempt_index,
+        judge_attempt_boundaries=verified_attempts.boundaries,
+        judge_root_index=judge_index,
+        judge_attachments=judgments,
+    )
+    # The older all-success DATA helper includes every attempt source. A retry is
+    # included in cache evidence, but only successful responses identify the model.
+    payload = provider_index.model_dump(mode="json", exclude={"provider_evidence_index_sha256"})
+    successes = tuple(
+        row
+        for boundary in verified_attempts.boundaries
+        for row in boundary.attempts
+        if row.disposition == "success"
+    )
+    payload["requested_returned_model_ids"][3]["returned_model_source_sha256"] = (
+        compute_requested_returned_model_source_sha256(
+            purpose="judge",
+            requested_model_id="gpt-5.6-sol",
+            returned_model_id="gpt-5.6-sol-2026-08-01",
+            ordered_source_sha256s=tuple(
+                row.returned_judge_model_source_sha256 for row in successes
+            ),
+        )
+    )
+    payload["provider_evidence_index_sha256"] = stable_digest(
+        "laconian-benchmark-provider-evidence-index-v1",
+        payload,
+    )
+    provider_index = ProviderEvidenceIndexV1.model_validate_json(canonical_json_v1(payload))
+    provider_path = judge_root / "provider-evidence-index.json"
+    write_provider_evidence_index(provider_path, provider_index, generation_expectation=expectation)
+    provider_fixture = CompleteProviderEvidenceFixture(
+        workspace_root=workspace,
+        generation_root=generation_root,
+        generation_index_path=generation_index_path,
+        hard_score_root=hard_root,
+        judge_request_root=request_root,
+        judge_attempt_root=attempt_root,
+        judge_root=judge_root,
+        provider_index_path=provider_path,
+        expectation=expectation,
+        identity_registry_bundle=protocol.identity_registry,
+        generation_context=context,
+        hard_score_root_index=hard_index,
+        hard_score_request_sets=hard_sets,
+        judge_request_root_index=request_index,
+        judge_request_attachments=requests,
+        judge_attempt_root_index=attempt_index,
+        judge_attempt_boundaries=verified_attempts.boundaries,
+        judge_root_index=judge_index,
+        judge_attachments=judgments,
+        provider_index=provider_index,
+        provider_evidence=None,
+    )
+    provider = provider_fixture.load()
+    population = build_audit_population(provider_evidence=provider)
+    manifest, packet = select_audit_sample(population=population, provider_evidence=provider)
+    sample_root = workspace / "sample"
+    write_audit_sample_root(
+        sample_root,
+        population=population,
+        manifest=manifest,
+        packet=packet,
+        provider_evidence=provider,
+    )
+    sample = load_verified_audit_sample_root(sample_root, provider_evidence=provider)
+    sources = _synthetic_audit_sources(provider=provider, sample=sample)
+    metrics = tuple(
+        compute_model_audit_metrics(
+            model=model,
+            manifest=manifest,
+            population=population.records,
+            chains=sources.chains,
+            adjudication=sources.adjudication,
+        )
+        for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra")
+    )
+    audit_root = workspace / "audit-evidence"
+    reporting.write_audit_evidence_root(
+        audit_root,
+        source_sample_root=sample_root,
+        provider_evidence=provider,
+        sample=sample,
+        audit_git_object_archive=sources.archive,
+        pull_request_sources=sources.pull_request_sources,
+        reviewer_chains=sources.chains,
+        github_review_sources=sources.github_review_sources,
+        adjudication=sources.adjudication,
+        metrics=metrics,
+    )
+    audit = reporting.load_verified_audit_evidence(audit_root, provider_evidence=provider)
+    bootstrap = reporting.build_bootstrap_artifact(provider_evidence=provider)
+    result_root = workspace / "result"
+    reporting.write_analysis_evidence_root(
+        result_root,
+        source_audit_root=audit_root,
+        provider_evidence=provider,
+        audit=audit,
+        bootstrap=bootstrap,
+    )
+    result = reporting.load_verified_analysis_evidence(result_root, provider_evidence=provider)
+    return SimpleNamespace(
+        workspace_root=workspace,
+        protocol=protocol,
+        provider_fixture=provider_fixture,
+        provider=provider,
+        sample_root=sample_root,
+        sample=sample,
+        audit_root=audit_root,
+        audit=audit,
+        sources=sources,
+        result_root=result_root,
+        analysis=result.analysis,
+        analysis_attachment=result.attachment,
+        bootstrap=result.bootstrap,
+        rejected_nondefault_attempt=rejected,
+    )

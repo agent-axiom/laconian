@@ -821,6 +821,89 @@ def test_evals_readme_separates_inputs_fixtures_and_evidence() -> None:
         assert phrase in text
 
 
+def test_methodology_freezes_public_cluster_bootstrap_and_audit_contract() -> None:
+    methodology = _read("benchmarks/methodology.md")
+    required = (
+        "visible_output_tokens = output_tokens - reasoning_tokens",
+        "cache_write_tokens",
+        "retained_worst_case",
+        "sum(H) / 120",
+        "sum(S) / 120",
+        '"service_tier": "default"',
+        "service_tier_status",
+        "not_applicable_definitely_not_sent",
+        "not_applicable_definitely_rejected",
+        "missing",
+        "mismatch",
+        "reported_default",
+        "statistical_protocol_sha256",
+        "audit_protocol_sha256",
+        "10,000",
+        "Generator(PCG64)",
+        "type-7",
+        "9,990",
+        "scenario-superpopulation-conditional-on-fixed-campaign",
+        "nominal 95% approximate",
+        "144",
+        "Hamilton",
+        "commit-reveal",
+        "n_eff = sum(w)^2 / sum(w^2)",
+        "z = 1.959963984540054",
+        "design-weighted-wilson-score-v1",
+        "K = min(M, max(D, ceil(U * M)))",
+        "A_m = product_a sum_{j=D_{m,a}}^{K_{m,a}} C(M_{m,a} - D_{m,a}, j - D_{m,a})",
+        "1,000,000",
+        "4,096",
+        "among jointly successful matched responses",
+        "offline and non-evidentiary",
+        "in-memory verified generation-context expectation",
+        "Runtime.hard_score",
+        "Runtime.prepare_judge",
+        "Runtime.seal_judge",
+        "Publication.campaign.evaluation_stage.sample_audit",
+        "Publication.campaign.evaluation_stage.seal_audit",
+        "Publication.campaign.evaluation_stage.analyze",
+        "Publication.campaign.evaluation_stage.verify",
+        "_reconstruct_verified_runtime",
+        "_reconstruct_verified_publication",
+    )
+    for phrase in required:
+        assert phrase in methodology
+
+    eval_readme = _read("evals/README.md")
+    for phrase in (
+        "LayerRootIndexV1",
+        "GenerationContextExpectationV1",
+        "GenerationContextIndexV1",
+        "workflow_root",
+        "statistical_protocol_sha256",
+        "audit_protocol_sha256",
+        "JudgeAttemptEvidenceV1",
+        "JudgeAttemptRootIndexV1",
+        "ProviderEvidenceIndexV1",
+        "write_audit_sample_root",
+        "write_audit_evidence_root",
+        "BootstrapArtifactV1",
+        "build_bootstrap_artifact",
+        "ProtocolReviewerRegistryV1",
+        "reviewers.yaml",
+        "benchmark-reviewer-registry-v2",
+        "protocol-reviewers.yaml",
+        "HardScoreRequestSetV1",
+        "JudgeAttachmentV1",
+        "audit-evidence.json",
+        "git-object-archive.json",
+        "pull-request-sources",
+        "adjudication-core.json",
+        "github-review-sources",
+        "github-review-records",
+        "analysis-evidence.json",
+        "bootstrap.json",
+        "checksums.json",
+    ):
+        assert phrase in eval_readme
+
+
 @pytest.mark.parametrize(
     "filename",
     ("docs/design.md", "benchmarks/methodology.md", "evals/README.md"),

@@ -59,6 +59,58 @@ the copied manifest, all raw attempts and failures, scored records, machine summ
 source-case and arm provenance, and any semantic-judge metadata required by the
 [methodology](../benchmarks/methodology.md).
 
+The frozen public pipeline keeps original and derived evidence as separate, immutable layers:
+
+- sealed generation evidence: all 36 capsule seals and verified scored projections, fixed
+  manifests, cases, arm hashes, and dated tier/cache price snapshots;
+- all 36 `HardScoreRequestSetV1` request sets, all 36 judge-request attachments, all 36 final
+  `JudgeAttachmentV1` attachments, and the campaign-neutral `JudgeAttemptEvidenceV1` /
+  `JudgeAttemptRootIndexV1` verification handoff, including empty boundaries and zero-call seals;
+- exact `LayerRootIndexV1` members, `GenerationContextExpectationV1`,
+  `GenerationContextIndexV1`, and `ProviderEvidenceIndexV1`, binding all four layers and the
+  judge-attempt root to the verified campaign authority;
+- distinct `reviewers.yaml` and `protocol-reviewers.yaml` identity registries: the former uses
+  `benchmark-reviewer-registry-v2` with exact mode-compatible key bytes and Git identities, while
+  the latter is the separate three-role `ProtocolReviewerRegistryV1`;
+- three verified protocol-attestation envelopes and their raw Git-object archive, statements,
+  bundle, tag binding, source-backed signature projections, and observation/creation receipts;
+- `population-attachment.json`, `population.jsonl`, the sample manifest and blind packet,
+  round-tripped through the neutral `write_audit_sample_root` boundary;
+- the `write_audit_evidence_root` output: `audit-evidence.json`, `git-object-archive.json`, five
+  `pull-request-sources/`, two `reviewer-chains/`, commitments, reveals, original labels,
+  `adjudication-core.json`, both `signoffs/`, the final adjudication envelope, metrics, and two
+  `github-review-sources/` with their independently reconstructed `github-review-records/`;
+- the provider-derived `BootstrapArtifactV1` from `build_bootstrap_artifact`, retained as
+  `bootstrap.json` with its complete frozen scenario-index matrix; machine analysis,
+  human-readable report, `analysis-evidence.json`, and immutable `checksums.json`.
+
+All three verified protocol-attestation envelopes, generation context, provider index, and
+benchmark projection carry the same verified `workflow_root`.
+`laconian_eval.benchmark.protocol_review` alone owns the exact 15-member `WorkflowInventoryV1`
+schema; Runtime verifies and consumes its sealed root instead of defining another inventory.
+`statistical_protocol_sha256` and the singular `audit_protocol_sha256` are authority-bound through
+context/provider evidence and are the only accepted statistics/audit protocol values. They remain
+identical in derived audit and analysis evidence; the singular audit digest does not alter the
+approved granular attestation subject inventories.
+
+The frozen live handoff names `Runtime.hard_score`, `Runtime.prepare_judge`, and
+`Runtime.seal_judge` in `laconian_eval.campaign.runtime`, reachable only from
+`_reconstruct_verified_runtime` with an in-memory verified generation-context expectation.
+The later Publication handoff names `Publication.campaign.evaluation_stage.sample_audit`,
+`Publication.campaign.evaluation_stage.seal_audit`, `Publication.campaign.evaluation_stage.analyze`,
+and `Publication.campaign.evaluation_stage.verify`, reachable only from
+`_reconstruct_verified_publication`. The `analyze` and `verify` operations remain separate;
+neither live module imports the CLI. All seven standalone `laconian-benchmark` commands are
+offline validation only, use the one canonical expectation file, and accept no raw expected-digest
+flag. They are offline and non-evidentiary, not live authority entry points. These are staged
+cross-slice contracts, not a claim that later live adapters or commands have already shipped.
+
+The synthetic 36-capsule campaign is a test fixture, not benchmark results. It deliberately assigns
+negative, inconclusive, and supported outcomes to synthetic observations under the fixed model
+identifiers required by the current wire contract. Those identifiers only label fixture slots;
+no provider is contacted and no outcome measures the corresponding live model. Deterministic
+fixture bytes prove reconstruction, not benchmark superiority or future live model selection.
+
 Raw and scored attempts carry `case_definition_sha256`; summaries and reports carry the same
 canonical hashes for every complete response-case definition. Changing a deterministic constraint
 or semantic rubric therefore invalidates old scoring evidence even when the prompt text is
