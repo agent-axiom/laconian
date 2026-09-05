@@ -7143,6 +7143,13 @@ git commit -m "feat: certify bounded false-fail sensitivity"
 
 ### Task 13: Seal audit and machine-analysis roots, verified loaders, and the public report
 
+**Approved Task 13 corrections (2026-09-05):** The maintainer/user replied `да` to
+the explicit proposal to correct the complete-audit population loading boundary,
+the unestimable-sensitivity assignment-count check, and the report's missing audit-cell
+input, then continue implementation. The corrections below preserve the standalone
+population/sample allowlists, existing statistical methods, outcome precedence, and
+all source-backed audit verification. They authorize no live API run.
+
 Apply the Task 9 source-backed amendment literally to this task. Any predecessor shorthand below
 that names a Git path, detached review records, or an archive/source-free audit attachment is
 historical context only and is not an alternate API or accepted evidence path.
@@ -7319,6 +7326,7 @@ class CampaignAnalysisV1(BaseModel):
     bootstrap_vectors_sha256: str
     statistical_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     audit_protocol_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    audit_sample_manifest: AuditSampleManifestV1
     models: tuple[ModelAnalysisV1, ModelAnalysisV1, ModelAnalysisV1]
     limitations: tuple[str, ...]
     campaign_analysis_sha256: str
@@ -7429,7 +7437,18 @@ the limits in exact `(if, concise)` order, each
 `sensitivity.model_audit_metric_sha256 == audit_metrics.model_audit_metric_sha256`; neither
 reporting nor outcome classification accepts limits derived from another metric record. Recompute
 the literal A_m formula from those stored limits and require equality with
-`sensitivity.assignment_count` before sealing analysis.
+`sensitivity.assignment_count` before sealing analysis only when both limits are estimable.
+If either limit is unestimable, require the existing unavailable state instead:
+zero assignment count, visited nodes, and evaluated assignments; all four extrema,
+certificate digest, and exhaustion reason null; and `search_exhausted=False`.
+The placeholder `K=D` in an unestimable limit does not authorize an assignment space.
+Preserve existing outcome precedence, including independently valid hard-quality findings.
+
+Copy `audit_sample_manifest` only from the freshly verified audit wrapper and include it in
+the campaign-analysis digest and rederivation comparison. Its canonical bytes must equal the
+verified audit manifest, whose digest is bound by the audit attachment. The renderer uses its
+cells, exact allocation counts, and inclusion probabilities without another input or any raw
+candidate/reviewer text. Critical coverage remains the existing complete/incomplete gate.
 
 `AuditEvidenceAttachmentV1.audit_evidence_sha256` uses domain
 `laconian-verified-audit-evidence-v1` over every preceding field. Its two reviewer-chain, two
@@ -7576,13 +7595,19 @@ root/analysis/report.md
 root/analysis/checksums.json
 ~~~
 
-The audit loader first calls
-`load_verified_audit_population(root / "audit", provider_evidence=provider_evidence)`, requires its
+The audit loader first owner-revalidates the provider and takes a bounded descriptor-bound
+snapshot of the complete audit tree, enforcing the exact Task 13 allowlist, regular-file and
+non-alias requirements, and stable file/directory identities. It passes the captured canonical
+population attachment and JSONL bytes to the existing provider-owned
+`_load_verified_audit_population_from_bytes(..., provider_evidence=checked_provider)`, requires its
 attachment hash to equal `AuditEvidenceAttachmentV1.population_attachment_sha256`, requires the
 attachment provider-index digest, benchmark-provider digest, reviewer-registry digest, all four
 36-parent layer vectors, and the judge-attempt root/vector to equal
 `provider_evidence.index`/`provider_evidence.projection`, and replays
-sampling from its exact records. The analysis loader
+sampling from its exact records. This must not broaden the standalone `load_verified_audit_population` or
+`load_verified_audit_sample_root` allowlists to admit the complete tree. Both retain their
+existing contracts; the writer still fresh-loads the separate four-file source sample root.
+The analysis loader
 passes the same required projection through to the audit loader and additionally requires
 `CampaignAnalysisV1.benchmark_provider_evidence_sha256 ==
 provider_evidence.projection.benchmark_provider_evidence_sha256`, its input-tag commit to match
@@ -7710,8 +7735,8 @@ and, if counting supported models descriptively, link the statement to all three
 
 The limitations section states that certificate schema v1 permits cardinality pruning only and
 deliberately disables semantic/token dominance pruning. Consequently, any feasible assignment space
-above 4,096 reaches the evaluation cap and is inconclusive unless a future, separately versioned
-exact witness scheme is approved.
+above 4,096 reaches one of the existing node/evaluation caps and is inconclusive unless a future,
+separately versioned exact witness scheme is approved.
 
 Canonical JSON files end with one newline. `bootstrap.json` contains vector metadata plus the
 10,000 by 12 integer matrix and is hash-bound to its C-order bytes. Before writing,
