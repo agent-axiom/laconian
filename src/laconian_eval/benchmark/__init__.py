@@ -122,6 +122,14 @@ if TYPE_CHECKING:
         verify_audit_chain,
         verify_reviewer_chain,
     )
+    from laconian_eval.benchmark.audit_metrics import (
+        ModelAuditGateV1,
+        ModelAuditMetricsV1,
+        WeightedConfusionV1,
+        WeightedProportionV1,
+        compute_model_audit_metrics,
+        evaluate_model_audit_gate,
+    )
     from laconian_eval.benchmark.audit_sampling import (
         AuditSampleManifestV1,
         BlindAuditPacketV1,
@@ -267,6 +275,16 @@ _AUDIT_COMMIT_REVEAL_EXPORTS = frozenset(
         "verify_reviewer_chain",
     }
 )
+_AUDIT_METRICS_EXPORTS = frozenset(
+    {
+        "ModelAuditGateV1",
+        "ModelAuditMetricsV1",
+        "WeightedConfusionV1",
+        "WeightedProportionV1",
+        "compute_model_audit_metrics",
+        "evaluate_model_audit_gate",
+    }
+)
 _BOOTSTRAP_EXPORTS = frozenset(
     {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
 )
@@ -324,6 +342,8 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.aggregation"
     elif name in _AUDIT_COMMIT_REVEAL_EXPORTS:
         module_name = "laconian_eval.benchmark.audit_commit_reveal"
+    elif name in _AUDIT_METRICS_EXPORTS:
+        module_name = "laconian_eval.benchmark.audit_metrics"
     elif name in _AUDIT_SAMPLING_EXPORTS:
         module_name = "laconian_eval.benchmark.audit_sampling"
     elif name in _BOOTSTRAP_EXPORTS:
@@ -355,6 +375,12 @@ def __dir__() -> list[str]:
 
 
 __all__ = (
+    "ModelAuditGateV1",
+    "ModelAuditMetricsV1",
+    "WeightedConfusionV1",
+    "WeightedProportionV1",
+    "compute_model_audit_metrics",
+    "evaluate_model_audit_gate",
     "BENCHMARK_WORKFLOW_PATHS_V1",
     "GITHUB_COMMIT_SIGNER_QUERY_V1",
     "GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1",
