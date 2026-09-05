@@ -29,6 +29,59 @@ def sha256_marker(ordinal: int) -> str:
     return f"{ordinal:064x}"
 
 
+def compact_sensitivity_aggregate() -> Any:
+    """Synthetic 480-row calculation fixture; this makes no source-verification claim."""
+
+    from decimal import Decimal
+
+    from laconian_eval.benchmark.aggregation import (
+        PlannedObservationV1,
+        _build_aggregated_model_from_rows,
+    )
+
+    rows = []
+    failures = {"response-00-en-0-if", "response-11-ru-4-concise"}
+    for scenario in range(12):
+        for locale in ("en", "ru"):
+            for repetition in range(5):
+                key_index = (0 if locale == "en" else 5) + repetition
+                delta = key_index - 10 if scenario == 0 else key_index + 1 if scenario == 11 else 0
+                for arm in ("baseline", "caveman", "if", "concise"):
+                    response_id = f"response-{scenario:02d}-{locale}-{repetition}-{arm}"
+                    visible = 20 + (delta if arm == "concise" else 0)
+                    rows.append(
+                        PlannedObservationV1(
+                            generation_model="model-a", scenario_uid=f"{scenario:064x}",
+                            case_id=f"case-{scenario:02d}-{locale}", locale=locale,
+                            repetition=repetition, arm=arm, response_id=response_id,
+                            hard_pass=True, semantic_success=response_id not in failures,
+                            terminal_zero_reason=None, input_tokens=20, output_tokens=visible,
+                            reasoning_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+                            ordinary_uncached_input_tokens=20, total_tokens=20 + visible,
+                            visible_output_tokens=visible,
+                            applied_cache_control_status="reported_exact",
+                            cache_read_status="reported_zero", cache_write_status="reported_zero",
+                            service_tier_status="reported_default",
+                            cache_policy_status="conformant_zero_write",
+                            analytical_cost_usd=Decimal("0.000012"),
+                            cost_availability="trusted_usage",
+                            latency_ms=25, output_characters=12,
+                        )
+                    )
+    return _build_aggregated_model_from_rows(generation_model="model-a", rows=rows)
+
+
+def compact_sensitivity_vectors() -> Any:
+    """Frozen vectors: 300 scenario-zero, 300 scenario-eleven, 9400 identity samples."""
+
+    import numpy as np
+
+    vectors = np.tile(np.arange(12, dtype=np.uint8), (10_000, 1))
+    vectors[:300] = 0
+    vectors[300:600] = 11
+    return vectors
+
+
 def git_oid_marker(ordinal: int) -> str:
     """Return one deterministic lowercase Git-SHA-1-shaped test value."""
 

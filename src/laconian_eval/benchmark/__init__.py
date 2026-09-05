@@ -211,6 +211,15 @@ if TYPE_CHECKING:
         write_audit_population,
         write_provider_evidence_index,
     )
+    from laconian_eval.benchmark.sensitivity import (
+        FalseFailCandidateV1,
+        FalseFailLimitV1,
+        SensitivityExhaustionReason,
+        SensitivityExtremumV1,
+        SensitivityResultV1,
+        derive_false_fail_limit,
+        enumerate_sensitivity_exact,
+    )
 
 _CONTEXT_EXPORTS = frozenset(
     {
@@ -288,6 +297,11 @@ _AUDIT_METRICS_EXPORTS = frozenset(
 _BOOTSTRAP_EXPORTS = frozenset(
     {"BootstrapIntervalV1", "BootstrapVectorsV1", "make_cluster_vectors"}
 )
+_SENSITIVITY_EXPORTS = frozenset(
+    {"FalseFailCandidateV1", "FalseFailLimitV1", "SensitivityExhaustionReason",
+     "SensitivityExtremumV1", "SensitivityResultV1", "derive_false_fail_limit",
+     "enumerate_sensitivity_exact"}
+)
 _OUTCOME_EXPORTS = frozenset(
     {
         "ModelOutcome",
@@ -348,6 +362,8 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.audit_sampling"
     elif name in _BOOTSTRAP_EXPORTS:
         module_name = "laconian_eval.benchmark.bootstrap"
+    elif name in _SENSITIVITY_EXPORTS:
+        module_name = "laconian_eval.benchmark.sensitivity"
     elif name in _CONTEXT_EXPORTS:
         module_name = "laconian_eval.benchmark.context"
     elif name in _HARD_SCORE_EXPORTS:
@@ -375,6 +391,13 @@ def __dir__() -> list[str]:
 
 
 __all__ = (
+    "FalseFailCandidateV1",
+    "FalseFailLimitV1",
+    "SensitivityExhaustionReason",
+    "SensitivityExtremumV1",
+    "SensitivityResultV1",
+    "derive_false_fail_limit",
+    "enumerate_sensitivity_exact",
     "ModelAuditGateV1",
     "ModelAuditMetricsV1",
     "WeightedConfusionV1",
