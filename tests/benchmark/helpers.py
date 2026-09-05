@@ -500,6 +500,52 @@ def protocol_identity_registry_bundle() -> Any:
     return ProtocolReviewIdentityRegistryBundleV1.model_validate(payload)
 
 
+def real_runtime_identity_registry_bundle() -> Any:
+    """Bind source-backed audit fixtures to the installed, offline verifier runtime."""
+
+    from laconian_eval.benchmark.protocol_review import (
+        ProtocolReviewIdentityRegistryBundleV1,
+        compute_verifier_dependency_inventory_root,
+        protocol_review_digest,
+    )
+
+    repository = Path(__file__).parents[2]
+    lock = (repository / "uv.lock").read_bytes()
+    payload: dict[str, Any] = {
+        "schema_version": "ProtocolReviewIdentityRegistryBundleV1",
+        "keys": (),
+        "verifier_source_path": "src/laconian_eval/benchmark/protocol_review.py",
+        "verifier_source_sha256": hashlib.sha256(
+            (repository / "src/laconian_eval/benchmark/protocol_review.py").read_bytes()
+        ).hexdigest(),
+        "dependency_lock_path": "uv.lock",
+        "dependency_lock_sha256": hashlib.sha256(lock).hexdigest(),
+        "verifier_dependency_inventory_root": compute_verifier_dependency_inventory_root(lock),
+    }
+    payload["protocol_signature_verifier_tool_sha256"] = protocol_review_digest(
+        "laconian-protocol-signature-verifier-tool-v1",
+        {
+            "algorithm_profile": "ssh-ed25519-sshsig-git-sha512-or-openpgp-v4-ed25519-sha256-v1",
+            "entrypoint": "laconian_eval.benchmark.protocol_review:_verify_keyed_signature_v1",
+            **{
+                name: payload[name]
+                for name in (
+                    "verifier_source_path",
+                    "verifier_source_sha256",
+                    "dependency_lock_path",
+                    "dependency_lock_sha256",
+                    "verifier_dependency_inventory_root",
+                )
+            },
+        },
+    )
+    payload["identity_registry_bundle_sha256"] = protocol_review_digest(
+        "laconian-protocol-review-identity-registry-bundle-v1",
+        payload,
+    )
+    return ProtocolReviewIdentityRegistryBundleV1.model_validate(payload)
+
+
 def verified_protocol_attestations(
     *,
     registry: Any,
@@ -2240,6 +2286,24 @@ def _build_judge_attempt_root(
         boundaries=checked_boundaries,
     )
     return attempt_root, root_index, checked_boundaries
+
+
+def with_all_passing_judgment(attempt: Any) -> Any:
+    """Select all-pass fixture data before sealing any boundary or provider parent."""
+
+    from laconian_eval.benchmark.attachments import canonical_json_v1
+    from laconian_eval.benchmark.judge import JudgeAttemptEvidenceV1
+
+    payload = attempt.model_dump(mode="json")
+    for item in payload["judgment"]["rubric_items"]:
+        item["passed"] = True
+    payload["judgment"]["semantic_pass"] = True
+    payload.pop("judge_attempt_evidence_sha256")
+    payload["judge_attempt_evidence_sha256"] = stable_digest(
+        "laconian-judge-attempt-evidence-v1",
+        payload,
+    )
+    return JudgeAttemptEvidenceV1.model_validate_json(canonical_json_v1(payload))
 
 
 def _build_judge_attachments_fast(

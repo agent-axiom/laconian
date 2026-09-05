@@ -211,6 +211,18 @@ if TYPE_CHECKING:
         write_audit_population,
         write_provider_evidence_index,
     )
+    from laconian_eval.benchmark.reporting import (
+        AnalysisEvidenceAttachmentV1,
+        AuditEvidenceAttachmentV1,
+        BootstrapArtifactV1,
+        VerifiedAnalysisEvidenceV1,
+        VerifiedAuditEvidenceV1,
+        build_bootstrap_artifact,
+        load_verified_analysis_evidence,
+        load_verified_audit_evidence,
+        write_analysis_evidence_root,
+        write_audit_evidence_root,
+    )
     from laconian_eval.benchmark.sensitivity import (
         FalseFailCandidateV1,
         FalseFailLimitV1,
@@ -347,6 +359,20 @@ JUDGE_LAZY_EXPORTS_V1 = (
     "verify_judge_attachment",
 )
 _JUDGE_EXPORTS = {name: ("laconian_eval.benchmark.judge", name) for name in JUDGE_LAZY_EXPORTS_V1}
+_REPORTING_EXPORTS = frozenset(
+    {
+        "AnalysisEvidenceAttachmentV1",
+        "AuditEvidenceAttachmentV1",
+        "BootstrapArtifactV1",
+        "VerifiedAnalysisEvidenceV1",
+        "VerifiedAuditEvidenceV1",
+        "build_bootstrap_artifact",
+        "load_verified_analysis_evidence",
+        "load_verified_audit_evidence",
+        "write_analysis_evidence_root",
+        "write_audit_evidence_root",
+    }
+)
 
 
 def __getattr__(name: str) -> Any:
@@ -372,6 +398,8 @@ def __getattr__(name: str) -> Any:
         module_name = "laconian_eval.benchmark.outcomes"
     elif name in _PROVIDER_EVIDENCE_EXPORTS:
         module_name = "laconian_eval.benchmark.provider_evidence"
+    elif name in _REPORTING_EXPORTS:
+        module_name = "laconian_eval.benchmark.reporting"
     elif name in _JUDGE_EXPORTS:
         module_name, owner_name = _JUDGE_EXPORTS[name]
         value = getattr(import_module(module_name), owner_name)
@@ -391,6 +419,16 @@ def __dir__() -> list[str]:
 
 
 __all__ = (
+    "AnalysisEvidenceAttachmentV1",
+    "AuditEvidenceAttachmentV1",
+    "BootstrapArtifactV1",
+    "VerifiedAnalysisEvidenceV1",
+    "VerifiedAuditEvidenceV1",
+    "build_bootstrap_artifact",
+    "load_verified_analysis_evidence",
+    "load_verified_audit_evidence",
+    "write_analysis_evidence_root",
+    "write_audit_evidence_root",
     "FalseFailCandidateV1",
     "FalseFailLimitV1",
     "SensitivityExhaustionReason",
