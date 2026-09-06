@@ -66,7 +66,7 @@ def test_finalize_parser_dispatches_exact_supported_forms(
 
     monkeypatch.setattr(cli, "_finalize", fake_finalize, raising=False)
 
-    assert main(argv) == 0
+    assert main(argv, program="laconian") == 0
     assert calls == [(Path("capsule"), expected_incomplete)]
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -98,7 +98,7 @@ def test_finalize_parser_rejects_every_other_shape_before_dispatch(
 
     monkeypatch.setattr(cli, "_finalize", forbidden, raising=False)
 
-    assert main(argv) == 2
+    assert main(argv, program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""
@@ -139,7 +139,7 @@ def test_finalize_success_announces_one_lexical_absolute_target_and_exits_zero(
     if seal_incomplete:
         argv.append("--seal-incomplete")
 
-    assert main(argv) == 0
+    assert main(argv, program="laconian") == 0
 
     captured = capsys.readouterr()
     expected = Path(os.path.abspath("nested/../capsule"))
@@ -182,7 +182,7 @@ def test_finalize_rejections_announce_known_target_and_exit_two(
 
     monkeypatch.setattr(cli, "_finalize_capsule", reject)
 
-    assert main(["finalize", str(target)]) == 2
+    assert main(["finalize", str(target)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == f"{target}\n"
@@ -208,7 +208,7 @@ def test_finalize_invalid_target_does_not_announce_unknown_identity(
 
     monkeypatch.setattr(cli, "_finalize_capsule", reject)
 
-    assert main(["finalize", str(target)]) == 2
+    assert main(["finalize", str(target)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -237,7 +237,7 @@ def test_finalize_postpublication_fsync_failure_announces_once_and_exits_one(
 
     monkeypatch.setattr(cli, "_finalize_capsule", fail_after_publication)
 
-    assert main(["finalize", str(target)]) == 1
+    assert main(["finalize", str(target)], program="laconian") == 1
 
     captured = capsys.readouterr()
     assert captured.out == f"{target}\n"
@@ -258,7 +258,7 @@ def test_verify_require_sealed_accepts_sealed_capsule_without_mutating_parent_tr
     assert direct.capsule_sha256 == sha256_bytes((sealed_capsule / "seal.json").read_bytes())
     assert _snapshot_tree(parent) == before
 
-    assert main(["verify", str(sealed_capsule), "--require", "sealed"]) == 0
+    assert main(["verify", str(sealed_capsule), "--require", "sealed"], program="laconian") == 0
 
     captured = capsys.readouterr()
     assert captured.out.encode("utf-8") == canonical_json(direct.model_dump(mode="json")) + b"\n"
@@ -280,7 +280,7 @@ def test_verify_require_sealed_preserves_valid_unsealed_json_and_parent_tree(
     assert direct.capsule_sha256 is None
     assert _snapshot_tree(parent) == before
 
-    assert main(["verify", str(prepared_capsule), "--require", "sealed"]) == 2
+    assert main(["verify", str(prepared_capsule), "--require", "sealed"], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out.encode("utf-8") == canonical_json(direct.model_dump(mode="json")) + b"\n"

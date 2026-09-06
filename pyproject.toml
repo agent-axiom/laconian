@@ -29,6 +29,7 @@ dev = [
 
 [project.scripts]
 laconian = "laconian_eval.cli:entrypoint"
+laconian-benchmark = "laconian_eval.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/laconian_eval"]

@@ -82,7 +82,8 @@ def _run_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "evals/manifests/replay-smoke.yaml",
                 "--results-root",
                 str(results_root),
-            ]
+            ],
+            program="laconian",
         )
         == 0
     )
@@ -110,7 +111,7 @@ def test_validate_detects_each_supported_yaml_kind(
     monkeypatch.setattr(cli, "OpenAIProvider", forbidden)
     monkeypatch.setattr(cli, "os", _NoAmbientOs())
 
-    assert main(["validate", path]) == 0
+    assert main(["validate", path], program="laconian") == 0
     assert path in capsys.readouterr().out
 
 
@@ -122,9 +123,9 @@ def test_validate_rejects_duplicate_keys_and_unknown_yaml(
     unknown = tmp_path / "unknown.yaml"
     unknown.write_text('schema_version: "1"\nmeaning: 42\n', encoding="utf-8")
 
-    assert main(["validate", str(duplicate)]) == 2
+    assert main(["validate", str(duplicate)], program="laconian") == 2
     assert "duplicate" in capsys.readouterr().err.lower()
-    assert main(["validate", str(unknown)]) == 2
+    assert main(["validate", str(unknown)], program="laconian") == 2
     assert "unsupported" in capsys.readouterr().err.lower()
 
 
@@ -193,7 +194,8 @@ def test_run_reserves_raw_jsonl_exclusively_before_calling_the_runner(
                 "evals/manifests/replay-smoke.yaml",
                 "--results-root",
                 str(tmp_path / "results"),
-            ]
+            ],
+            program="laconian",
         )
         == 0
     )
@@ -225,7 +227,10 @@ def test_run_rejects_empty_plan_configuration_before_result_artifacts(
     )
     results_root = tmp_path / f"results-{empty_field}"
 
-    assert main(["run", str(manifest_path), "--results-root", str(results_root)]) == 2
+    assert (
+        main(["run", str(manifest_path), "--results-root", str(results_root)], program="laconian")
+        == 2
+    )
     assert not results_root.exists()
     assert empty_field in capsys.readouterr().err
 
@@ -257,7 +262,10 @@ def test_openai_run_rejects_whitespace_model_before_result_artifacts(
     )
     results_root = tmp_path / "results"
 
-    assert main(["run", str(manifest_path), "--results-root", str(results_root)]) == 2
+    assert (
+        main(["run", str(manifest_path), "--results-root", str(results_root)], program="laconian")
+        == 2
+    )
     assert not results_root.exists()
     assert "model" in capsys.readouterr().err.lower()
 
@@ -279,7 +287,7 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
         "--output",
         str(score_directory),
     ]
-    assert main(score_args) == 0
+    assert main(score_args, program="laconian") == 0
     scored_path = score_directory / "scored.jsonl"
     summary_path = score_directory / "summary.json"
     scored = TypeAdapter(tuple[ScoredAttempt, ...]).validate_python(
@@ -303,14 +311,14 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
 
     scored_before = scored_path.read_bytes()
     summary_before = summary_path.read_bytes()
-    assert main(score_args) == 2
+    assert main(score_args, program="laconian") == 2
     assert "overwrite" in capsys.readouterr().err.lower()
     assert scored_path.read_bytes() == scored_before
     assert summary_path.read_bytes() == summary_before
 
     report_path = tmp_path / "report.md"
     report_args = ["report", str(scored_path), "--output", str(report_path)]
-    assert main(report_args) == 0
+    assert main(report_args, program="laconian") == 0
     report = report_path.read_text(encoding="utf-8")
     assert "# Laconian benchmark report" in report
     assert "Replay fixture" in report
@@ -319,7 +327,7 @@ def test_replay_score_and_report_end_to_end_with_overwrite_refusal(
     assert "Case definitions: 24" in report
     assert "Terminal records: 96" in report
     report_before = report_path.read_bytes()
-    assert main(report_args) == 2
+    assert main(report_args, program="laconian") == 2
     assert "overwrite" in capsys.readouterr().err.lower()
     assert report_path.read_bytes() == report_before
 
@@ -342,7 +350,7 @@ def test_score_preflights_both_outputs_and_validates_copied_manifest_hash(
         "--output",
         str(output),
     ]
-    assert main(args) == 2
+    assert main(args, program="laconian") == 2
     assert not (output / "scored.jsonl").exists()
     assert "overwrite" in capsys.readouterr().err.lower()
 
@@ -351,7 +359,7 @@ def test_score_preflights_both_outputs_and_validates_copied_manifest_hash(
     raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     raw_manifest["arm_order_seed"] += 1
     manifest_path.write_text(json.dumps(raw_manifest), encoding="utf-8")
-    assert main([*args[:-1], str(output2)]) == 2
+    assert main([*args[:-1], str(output2)], program="laconian") == 2
     assert not output2.exists()
     assert "manifest" in capsys.readouterr().err.lower()
 
@@ -373,7 +381,8 @@ def test_score_refuses_an_existing_empty_output_directory(
             "evals/cases/response-smoke.yaml",
             "--output",
             str(output),
-        ]
+        ],
+        program="laconian",
     )
 
     assert code == 2
@@ -408,7 +417,7 @@ def test_score_concurrent_empty_directory_is_preserved_and_rerun_succeeds(
 
     monkeypatch.setattr(cli, "_preflight_score_output", create_after_final_preflight)
 
-    assert main(args) == 2
+    assert main(args, program="laconian") == 2
     assert preflights == 3
     assert output.is_dir()
     assert tuple(output.iterdir()) == ()
@@ -417,7 +426,7 @@ def test_score_concurrent_empty_directory_is_preserved_and_rerun_succeeds(
 
     output.rmdir()
     monkeypatch.setattr(cli, "_preflight_score_output", original_preflight)
-    assert main(args) == 0
+    assert main(args, program="laconian") == 0
     assert {path.name for path in output.iterdir()} == {"scored.jsonl", "summary.json"}
 
 
@@ -447,7 +456,7 @@ def test_score_publish_is_failure_atomic_and_rerunnable(
     monkeypatch.setattr(cli, "write_summary_json", fail_summary_write)
     before = set(tmp_path.iterdir())
 
-    assert main(args) == 2
+    assert main(args, program="laconian") == 2
     assert not output.exists()
     assert staged_directories and staged_directories[0] != output
     assert not staged_directories[0].exists()
@@ -455,7 +464,7 @@ def test_score_publish_is_failure_atomic_and_rerunnable(
     assert "summary write failure" in capsys.readouterr().err
 
     monkeypatch.setattr(cli, "write_summary_json", original_write_summary)
-    assert main(args) == 0
+    assert main(args, program="laconian") == 0
     assert {path.name for path in output.iterdir()} == {"scored.jsonl", "summary.json"}
 
 
@@ -485,7 +494,7 @@ def test_score_publish_fsyncs_parent_and_rolls_back_if_that_fails(
 
     monkeypatch.setattr(cli, "_fsync_directory", fail_parent_fsync)
 
-    assert main(args) == 2
+    assert main(args, program="laconian") == 2
     assert len(fsynced) == 3
     assert fsynced[0].parent == output.parent
     assert fsynced[0] != output
@@ -495,7 +504,7 @@ def test_score_publish_fsyncs_parent_and_rolls_back_if_that_fails(
     assert "parent fsync failure" in capsys.readouterr().err
 
     monkeypatch.setattr(cli, "_fsync_directory", original_fsync_directory)
-    assert main(args) == 0
+    assert main(args, program="laconian") == 0
 
 
 def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fallback(
@@ -514,7 +523,8 @@ def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fa
                 "evals/cases/response-smoke.yaml",
                 "--output",
                 str(score_directory),
-            ]
+            ],
+            program="laconian",
         )
         == 0
     )
@@ -525,7 +535,10 @@ def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fa
     summary_path.write_text(json.dumps(summary_data), encoding="utf-8")
 
     mismatched_report = tmp_path / "mismatched.md"
-    assert main(["report", str(scored_path), "--output", str(mismatched_report)]) == 2
+    assert (
+        main(["report", str(scored_path), "--output", str(mismatched_report)], program="laconian")
+        == 2
+    )
     assert not mismatched_report.exists()
     assert "correspond" in capsys.readouterr().err.lower()
 
@@ -534,7 +547,10 @@ def test_report_strictly_validates_summary_correspondence_and_has_a_hard_gate_fa
     fallback_scored = fallback_directory / "scored.jsonl"
     fallback_scored.write_bytes(scored_path.read_bytes())
     fallback_report = fallback_directory / "report.md"
-    assert main(["report", str(fallback_scored), "--output", str(fallback_report)]) == 0
+    assert (
+        main(["report", str(fallback_scored), "--output", str(fallback_report)], program="laconian")
+        == 0
+    )
     assert "Quality gate: `hard`" in fallback_report.read_text(encoding="utf-8")
 
 
@@ -554,7 +570,8 @@ def test_missing_openai_key_fails_before_results_and_fake_runs_as_offline_error_
                 "evals/manifests/openai-example.yaml",
                 "--results-root",
                 str(openai_results),
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -577,7 +594,10 @@ repetitions: 1
         encoding="utf-8",
     )
     fake_results = tmp_path / "fake-results"
-    assert main(["run", str(fake_manifest), "--results-root", str(fake_results)]) == 0
+    assert (
+        main(["run", str(fake_manifest), "--results-root", str(fake_results)], program="laconian")
+        == 0
+    )
     fake_run = _only_run_directory(fake_results)
     attempts = tuple(
         RawAttempt.model_validate_json(line)
@@ -618,7 +638,8 @@ def test_unexpected_run_failure_returns_one_without_printing_a_traceback(
             "evals/manifests/openai-example.yaml",
             "--results-root",
             str(results_root),
-        ]
+        ],
+        program="laconian",
     )
 
     run_directory = _only_run_directory(results_root)
@@ -668,7 +689,8 @@ def test_authentication_stopped_run_writes_an_incomplete_log_and_returns_one(
             "evals/manifests/replay-smoke.yaml",
             "--results-root",
             str(results_root),
-        ]
+        ],
+        program="laconian",
     )
 
     run_directory = _only_run_directory(results_root)
@@ -725,7 +747,10 @@ retry:
         encoding="utf-8",
     )
     results_root = tmp_path / "results"
-    assert main(["run", str(manifest_path), "--results-root", str(results_root)]) == 0
+    assert (
+        main(["run", str(manifest_path), "--results-root", str(results_root)], program="laconian")
+        == 0
+    )
     run_directory = _only_run_directory(results_root)
     raw_path = run_directory / "raw.jsonl"
     rows = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()]
@@ -746,7 +771,8 @@ retry:
                 "evals/cases/response-smoke.yaml",
                 "--output",
                 str(output),
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -774,7 +800,8 @@ def test_score_rejects_a_subset_of_the_manifest_plan_before_outputs(
                 "evals/cases/response-smoke.yaml",
                 "--output",
                 str(output),
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -809,7 +836,8 @@ def test_score_rejects_cases_that_differ_from_manifest_declared_definitions(
                 str(changed_cases),
                 "--output",
                 str(output),
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -820,9 +848,9 @@ def test_score_rejects_cases_that_differ_from_manifest_declared_definitions(
 def test_argument_errors_return_two_and_version_behavior_is_preserved(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert main(["run"]) == 2
+    assert main(["run"], program="laconian") == 2
     assert "usage:" in capsys.readouterr().err.lower()
-    assert main(["--version"]) == 0
+    assert main(["--version"], program="laconian") == 0
     assert "laconian " in capsys.readouterr().out
 
 
@@ -873,7 +901,7 @@ def test_validate_source_manifests_checks_schema_without_resolving_referenced_fi
     monkeypatch.setattr(cli, "OpenAIProvider", forbidden)
     monkeypatch.setattr(cli, "os", _NoAmbientOs())
 
-    assert main(["validate", str(manifest_path)]) == 0
+    assert main(["validate", str(manifest_path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {manifest_path}\n"
     assert captured.err == ""
@@ -937,7 +965,7 @@ def test_validate_openai_manifest_never_reads_the_declared_credential_environmen
             "gethostbyaddr",
         ):
             barrier.setattr(socket, name, forbidden)
-        assert main(["validate", str(manifest_path)]) == 0
+        assert main(["validate", str(manifest_path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {manifest_path}\n"
     assert captured.err == ""
@@ -1023,7 +1051,7 @@ def _assert_strict_source_manifest_rejection_before_capture_or_model(
         monkeypatch.setattr(Path, "read_bytes", bounded_read_bytes)
         monkeypatch.setattr(Path, "read_text", bounded_read_text)
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error: ")
@@ -1238,7 +1266,7 @@ def test_validate_source_manifest_read_remains_bounded_when_metadata_lies_and_fi
     monkeypatch.setattr(os, "stat", lying_stat)
     monkeypatch.setattr(os, "read", bounded_read)
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error: ")
@@ -1268,7 +1296,7 @@ def test_validate_streams_late_source_discriminants_without_full_yaml_constructi
     monkeypatch.setattr(SourceManifestV2, "model_validate", forbidden)
     monkeypatch.setattr(RunManifest, "model_validate", forbidden)
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: source manifest exceeds its resource limit\n"
@@ -1299,7 +1327,7 @@ def test_validate_accepts_large_response_case_with_late_kind_and_long_prompt(
     assert RESOURCE_LIMITS_V1.source_manifest_bytes < path.stat().st_size
     assert path.stat().st_size <= RESOURCE_LIMITS_V1.case_file_bytes
 
-    assert main(["validate", str(path)]) == 0
+    assert main(["validate", str(path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {path}\n"
     assert captured.err == ""
@@ -1322,7 +1350,7 @@ def test_validate_streams_past_early_case_kind_to_late_source_discriminants(
 
     monkeypatch.setattr(cli, "load_response_cases", forbidden)
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: source manifest exceeds its resource limit\n"
@@ -1355,7 +1383,7 @@ def test_validate_discriminator_never_constructs_a_huge_preceding_scalar(
     monkeypatch.setattr(SourceManifestV2, "model_validate", forbidden)
     monkeypatch.setattr(RunManifest, "model_validate", forbidden)
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: source manifest exceeds its resource limit\n"
@@ -1525,7 +1553,7 @@ def test_validate_consumes_each_owned_descriptor_once_when_close_is_ambiguous(
 
     monkeypatch.setattr(cli, "os", CloseFailureOs())
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: unable to read YAML\n"
@@ -1570,7 +1598,7 @@ def test_validate_keeps_the_eight_mib_case_limit_separate_from_source_manifests(
     monkeypatch.setattr(cli, "OpenAIProvider", forbidden)
     monkeypatch.setattr(cli, "os", _NoAmbientOs())
 
-    assert main(["validate", str(path)]) == 0
+    assert main(["validate", str(path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {path}\n"
 
@@ -1592,7 +1620,7 @@ def test_validate_accepts_large_case_when_kind_follows_the_source_manifest_limit
     path = tmp_path / Path(fixture_path).name
     path.write_bytes(prefix + b"#" + b"x" * (padding - 1) + f"\nkind: {kind}\n".encode())
 
-    assert main(["validate", str(path)]) == 0
+    assert main(["validate", str(path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {path}\n"
     assert captured.err == ""
@@ -1613,7 +1641,7 @@ def test_validate_accepts_large_single_line_flow_case_without_a_line_limit(
     path = tmp_path / Path(fixture_path).name
     path.write_bytes(b"{" + b" " * (RESOURCE_LIMITS_V1.source_manifest_bytes + 1024) + compact[1:])
 
-    assert main(["validate", str(path)]) == 0
+    assert main(["validate", str(path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {path}\n"
     assert captured.err == ""
@@ -1645,7 +1673,7 @@ def test_validate_streams_single_line_flow_until_a_late_top_level_kind(
     path = tmp_path / "late-kind-flow.json"
     path.write_bytes(encoded)
 
-    assert main(["validate", str(path)]) == 0
+    assert main(["validate", str(path)], program="laconian") == 0
     captured = capsys.readouterr()
     assert captured.out == f"valid: {path}\n"
     assert captured.err == ""
@@ -1761,7 +1789,7 @@ def test_legacy_run_rejects_capsule_only_options_before_dispatch(
     if value is not None:
         argv.append(value)
 
-    assert main(argv) == 2
+    assert main(argv, program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""
@@ -1800,7 +1828,7 @@ def test_validate_v2_enforces_path_grammar_without_opening_the_declared_path(
     monkeypatch.setattr(cli, "OpenAIProvider", forbidden)
     monkeypatch.setattr(cli, "os", _NoAmbientOs())
 
-    assert main(["validate", str(path)]) == 2
+    assert main(["validate", str(path)], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error: ")
@@ -1818,7 +1846,7 @@ def test_validate_rejects_capsule_only_options_as_usage_before_dispatch(
 
     monkeypatch.setattr(cli, "_validate", forbidden)
 
-    assert main(["validate", "manifest.yaml", "--input-root", "inputs"]) == 2
+    assert main(["validate", "manifest.yaml", "--input-root", "inputs"], program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""

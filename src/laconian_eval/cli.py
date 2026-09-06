@@ -751,7 +751,17 @@ def _finalize(path: Path, *, seal_incomplete: bool) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, program: str | None = None) -> int:
+    effective_program = program or Path(sys.argv[0]).name
+    if effective_program == "laconian-benchmark":
+        from laconian_eval.replay.benchmark import run
+
+        return run(argv)
+    if effective_program != "laconian":
+        sys.stderr.write(
+            canonical_json({"code": "usage", "command": None, "status": "error"}).decode() + "\n"
+        )
+        return 2
     parser = _parser()
     try:
         args = parser.parse_args(argv)

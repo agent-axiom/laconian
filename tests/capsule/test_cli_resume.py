@@ -345,7 +345,7 @@ def test_resume_dispatches_one_lexical_absolute_target_and_preserves_exit_code(
         announce_target=True,
     )
 
-    assert main(["resume", "nested/../capsule"]) == exit_code
+    assert main(["resume", "nested/../capsule"], program="laconian") == exit_code
 
     captured = capsys.readouterr()
     expected = Path(os.path.abspath("nested/../capsule"))
@@ -368,7 +368,7 @@ def test_resume_invalid_target_prints_no_path(
         announce_target=False,
     )
 
-    assert main(["resume", "missing-capsule"]) == 2
+    assert main(["resume", "missing-capsule"], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert len(calls) == 1
@@ -401,7 +401,7 @@ def test_resume_target_callback_is_printed_exactly_once_even_if_repeated(
     monkeypatch.setattr(cli, "_resume_capsule", fake_resume_capsule, raising=False)
 
     target = tmp_path / "capsule"
-    assert main(["resume", str(target)]) == 1
+    assert main(["resume", str(target)], program="laconian") == 1
     captured = capsys.readouterr()
     assert captured.out == f"{target}\n"
     assert captured.err == ""
@@ -433,7 +433,7 @@ def test_resume_parser_has_exact_nonabbreviated_syntax_and_no_external_inputs(
 
     monkeypatch.setattr(cli, "_resume", forbidden, raising=False)
 
-    assert main(argv) == 2
+    assert main(argv, program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""
@@ -460,7 +460,8 @@ def test_legacy_run_still_rejects_resume_only_positional_shape(
                 "--results-root",
                 "results",
                 "capsule",
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -495,7 +496,7 @@ def test_real_resume_rejects_invalid_target_types_without_mutation_or_provider_a
     before_file = target.read_bytes() if target_kind == "regular_file" else None
     before_link = os.readlink(target) if target_kind == "symlink" else None
 
-    assert main(["resume", str(target)]) == 2
+    assert main(["resume", str(target)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -527,7 +528,7 @@ def test_real_resume_busy_is_silent_and_byte_preserving_before_provider_access(
     lock_fd = os.open(capsule / ".laconian.lock", os.O_RDWR)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert main(["resume", str(capsule)]) == 2
+        assert main(["resume", str(capsule)], program="laconian") == 2
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
@@ -554,7 +555,7 @@ def test_real_resume_runtime_mismatch_announces_target_but_never_mutates_or_bind
 
     monkeypatch.setattr(execution_module, "_capture_runtime_authority", runtime_mismatch)
 
-    assert main(["resume", str(capsule)]) == 2
+    assert main(["resume", str(capsule)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == f"{capsule}\n"
@@ -671,7 +672,7 @@ def test_real_cli_resume_records_request_free_provider_binding_blockers(
 
     monkeypatch.setattr(execution_module, "_bind_provider", blocked)
 
-    assert main(["resume", str(capsule)]) == 1
+    assert main(["resume", str(capsule)], program="laconian") == 1
 
     captured = capsys.readouterr()
     assert captured.out == f"{capsule}\n"
@@ -723,7 +724,7 @@ def test_real_cli_resume_records_authentication_stop_after_exactly_one_provider_
 
     monkeypatch.setattr(execution_module, "_bind_provider", bind)
 
-    assert main(["resume", str(capsule)]) == 1
+    assert main(["resume", str(capsule)], program="laconian") == 1
 
     captured = capsys.readouterr()
     assert captured.out == f"{capsule}\n"
@@ -780,7 +781,7 @@ def test_real_cli_resume_records_request_free_signal_without_provider_call(
     monkeypatch.setattr(execution_module, "_bind_provider", bind)
     monkeypatch.setattr(execution_module, "_sanitizer_patterns", interrupt)
 
-    assert main(["resume", str(capsule)]) == 1
+    assert main(["resume", str(capsule)], program="laconian") == 1
 
     captured = capsys.readouterr()
     assert captured.out == f"{capsule}\n"
@@ -825,7 +826,7 @@ def test_real_cli_resume_unsupported_filesystem_is_silent_and_byte_preserving(
     else:
         monkeypatch.setattr(recovery_module, "run_filesystem_probes", unsupported)
 
-    assert main(["resume", str(capsule)]) == 2
+    assert main(["resume", str(capsule)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -848,7 +849,7 @@ def test_real_cli_resume_preserves_authenticated_sealing_interrupted_state(
     before = _snapshot_files(capsule)
     provider_calls = _forbid_provider_binding(monkeypatch)
 
-    assert main(["resume", str(capsule)]) == 2
+    assert main(["resume", str(capsule)], program="laconian") == 2
 
     captured = capsys.readouterr()
     assert captured.out == f"{capsule}\n"

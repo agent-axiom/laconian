@@ -7,5 +7,5 @@ def test_package_exposes_alpha_version() -> None:
 
 
 def test_cli_reports_alpha_version(capsys) -> None:
-    assert main(["--version"]) == 0
+    assert main(["--version"], program="laconian") == 0
     assert capsys.readouterr().out.strip() == "laconian 0.1.0a1"

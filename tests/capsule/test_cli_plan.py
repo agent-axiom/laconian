@@ -182,7 +182,8 @@ def test_plan_passes_exact_lexical_request_and_prints_stable_channels(
             "source",
             "--container-image-digest",
             digest,
-        ]
+        ],
+        program="laconian",
     )
 
     captured = capsys.readouterr()
@@ -400,7 +401,7 @@ def test_capsule_command_call_graph_cannot_read_global_environment_or_open_netwo
             "gethostbyaddr",
         ):
             barrier.setattr(socket, name, forbidden)
-        assert main([]) == 0
+        assert main([], program="laconian") == 0
 
 
 @pytest.mark.parametrize(
@@ -427,7 +428,7 @@ def test_plan_preserves_v2_default_and_explicit_input_root_semantics(
     if input_root is not None:
         argv.extend(("--input-root", input_root))
 
-    assert main(argv) == 0
+    assert main(argv, program="laconian") == 0
     assert len(requests) == 1
     assert requests[0].input_root == expected
     assert requests[0].invocation_cwd == tmp_path
@@ -458,7 +459,8 @@ def test_plan_surfaces_v1_input_root_rejection_as_configuration_error(
                 "results",
                 "--input-root",
                 "inputs",
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -505,7 +507,8 @@ def test_plan_rejects_nonexact_container_digest_before_preparation(
                 "results",
                 "--container-image-digest",
                 value,
-            ]
+            ],
+            program="laconian",
         )
         == 2
     )
@@ -538,7 +541,7 @@ def test_plan_usage_errors_exit_two_before_preparation(
 
     monkeypatch.setattr(cli, "prepare_capsule", forbidden, raising=False)
 
-    assert main(argv) == 2
+    assert main(argv, program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""
@@ -569,7 +572,7 @@ def test_plan_prepublication_and_collision_failures_leave_stdout_empty(
 
     monkeypatch.setattr(cli, "prepare_capsule", fail, raising=False)
 
-    assert main(["plan", "manifest.yaml", "--results-root", "results"]) == 2
+    assert main(["plan", "manifest.yaml", "--results-root", "results"], program="laconian") == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == expected_stderr
@@ -626,7 +629,7 @@ def test_plan_postpublication_failure_prints_owned_absolute_path_once_and_exits_
             observation_barrier.setattr(os.path, name, forbidden_observation)
         observation_barrier.setattr(builtins, "open", forbidden_observation)
         observation_barrier.setattr(io, "open", forbidden_observation)
-        assert main(["plan", "manifest.yaml", "--results-root", "results"]) == 1
+        assert main(["plan", "manifest.yaml", "--results-root", "results"], program="laconian") == 1
     captured = capsys.readouterr()
     assert publication_path.is_absolute()
     assert publication_path != tmp_path / "results" / destination_name
@@ -698,7 +701,7 @@ def test_verify_calls_prepared_mode_once_and_prints_one_canonical_object(
 
     monkeypatch.setattr(cli, "verify_capsule", fake_verify, raising=False)
 
-    assert main(["verify", "capsule-copy"]) == expected_exit
+    assert main(["verify", "capsule-copy"], program="laconian") == expected_exit
     captured = capsys.readouterr()
     assert calls == [(Path("capsule-copy"), VerificationMode.PREPARED)]
     assert captured.out.encode("utf-8") == canonical_json(result.model_dump(mode="json")) + b"\n"
@@ -779,7 +782,9 @@ def test_verify_require_changes_only_exit_status(
 
     monkeypatch.setattr(cli, "verify_capsule", fake_verify, raising=False)
 
-    assert main(["verify", "capsule", "--require", requirement]) == expected_exit
+    assert (
+        main(["verify", "capsule", "--require", requirement], program="laconian") == expected_exit
+    )
     captured = capsys.readouterr()
     assert calls == 1
     assert captured.out.encode("utf-8") == canonical_json(result.model_dump(mode="json")) + b"\n"
@@ -806,7 +811,7 @@ def test_verify_require_preserves_nonvalid_canonical_result_and_exit_two(
 
     monkeypatch.setattr(cli, "verify_capsule", fake_verify, raising=False)
 
-    assert main(["verify", "capsule", "--require", requirement]) == 2
+    assert main(["verify", "capsule", "--require", requirement], program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 1
     assert captured.out.encode("utf-8") == canonical_json(result.model_dump(mode="json")) + b"\n"
@@ -837,7 +842,7 @@ def test_verify_rejects_missing_invalid_and_abbreviated_arguments_before_dispatc
 
     monkeypatch.setattr(cli, "verify_capsule", forbidden, raising=False)
 
-    assert main(argv) == 2
+    assert main(argv, program="laconian") == 2
     captured = capsys.readouterr()
     assert calls == 0
     assert captured.out == ""

@@ -14,6 +14,195 @@ from laconian_eval.yaml_io import safe_load_unique
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Literal cumulative contract from approved Evaluation Task 15, Step 6.
+EXPECTED_BENCHMARK_SLICE2_EXPORTS = (
+    "CanonicalJSONV1Error",
+    "canonical_json_v1",
+    "parse_canonical_json_v1",
+    "RationalV1",
+    "attachment_digest",
+    "write_attachment_json",
+    "derive_seed128",
+    "HardScoreRequestSetV1",
+    "build_hard_score_request_set",
+    "verify_hard_score_request_set",
+    "JUDGE_REQUESTED_SERVICE_TIER",
+    "JUDGE_SERVICE_TIER_WIRE_FIELD",
+    "BlindJudgeRequestV1",
+    "JudgeProviderRequestV1",
+    "JudgeRequestAttachmentV1",
+    "JudgeAttemptUsageV1",
+    "JudgeAttemptEvidenceV1",
+    "JudgeAttemptBoundaryV1",
+    "JudgeAttemptRootMemberV1",
+    "JudgeAttemptRootIndexV1",
+    "VerifiedJudgeAttemptRootV1",
+    "write_judge_attempt_root",
+    "load_verified_judge_attempt_root",
+    "JudgeAttachmentV1",
+    "build_judge_request_attachment",
+    "verify_judge_request_attachment",
+    "build_judge_attachment",
+    "verify_judge_attachment",
+    "AggregatedModelV1",
+    "aggregate_verified_evidence",
+    "BootstrapVectorsV1",
+    "BootstrapIntervalV1",
+    "make_cluster_vectors",
+    "BootstrapArtifactV1",
+    "build_bootstrap_artifact",
+    "LayerKindV1",
+    "GenerationLayerRootMemberV1",
+    "AttachmentLayerRootMemberV1",
+    "LayerRootMemberV1",
+    "LayerRootIndexV1",
+    "write_layer_root_index",
+    "load_layer_root_index",
+    "SignatureVerificationModeV1",
+    "GitHubVerifiedCommitEvidenceV1",
+    "SSHVerifiedCommitEvidenceV1",
+    "OpenPGPVerifiedCommitEvidenceV1",
+    "SignatureEvidenceV1",
+    "ProtocolSignatureEvidenceSourceV1",
+    "AuditReviewerSigningKeyV1",
+    "verify_commit_signature_evidence_source",
+    "ProtocolReviewRoleV1",
+    "ProtocolSubjectKindV1",
+    "PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1",
+    "ReviewerAccountBindingV1",
+    "AuditReviewerRegistryV1",
+    "ProtocolReviewerBindingV1",
+    "ProtocolReviewerRegistryV1",
+    "TagOperatorProjectionV1",
+    "TagOperatorRegistryV1",
+    "TagRulesetPolicyV1",
+    "GITHUB_COMMIT_SIGNER_QUERY_V1",
+    "GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1",
+    "InputTagMessageV1",
+    "ProtocolAttestationTagMessageV1",
+    "ProtocolBundleBuilderGitIdentityV1",
+    "TagRulesetObservationReceiptV1",
+    "TagCreationRuleSuiteReceiptV1",
+    "ArchivedApiReceiptBindingV1",
+    "WorkflowInventoryV1",
+    "BENCHMARK_WORKFLOW_PATHS_V1",
+    "build_workflow_inventory",
+    "GitObjectSHA256V1",
+    "ParsedProtocolGitObjectV1",
+    "VerifiedProtocolReviewPrefixV1",
+    "VerifiedProtocolReviewDagV1",
+    "ArchivedApiBlobV1",
+    "parse_protocol_git_object",
+    "verify_protocol_review_prefix",
+    "verify_protocol_review_dag",
+    "build_protocol_attestation_bundle",
+    "build_protocol_attestation_tag_binding",
+    "build_protocol_review_object_archive",
+    "load_verified_protocol_review_object_archive",
+    "ProtocolReviewSubjectV1",
+    "ProtocolReviewStatementV1",
+    "VerifiedProtocolAttestationV1",
+    "GitHubCommitVerificationProjectionV1",
+    "GitHubSignatureProjectionV1",
+    "GitHubSignatureObservationReceiptV1",
+    "LocalSignatureVerificationReceiptV1",
+    "ProtocolReviewSigningKeyV1",
+    "ProtocolReviewIdentityRegistryBundleV1",
+    "ProtocolAttestationBundleV1",
+    "ProtocolAttestationTagBindingV1",
+    "ProtocolReviewObjectArchiveV1",
+    "canonical_reviewer_registry_bytes",
+    "compute_audit_reviewer_registry_sha256",
+    "canonical_protocol_reviewer_registry_bytes",
+    "compute_protocol_reviewer_registry_sha256",
+    "protocol_review_digest",
+    "compute_protocol_attestations_root",
+    "BenchmarkProtocolBindingsV1",
+    "protocol_bindings_from_context",
+    "GenerationContextExpectationV1",
+    "VerifiedGenerationContextExpectationV1",
+    "GenerationContextIndexV1",
+    "VerifiedGenerationContextIndexV1",
+    "write_generation_context_index",
+    "load_verified_generation_context_index",
+    "ProviderEvidenceIndexV1",
+    "compute_requested_returned_model_source_sha256",
+    "write_provider_evidence_index",
+    "load_provider_evidence_index",
+    "BenchmarkProviderEvidenceProjectionV1",
+    "VerifiedBenchmarkProviderEvidenceV1",
+    "load_verified_benchmark_provider_evidence",
+    "AuditPopulationAttachmentV1",
+    "VerifiedAuditPopulationV1",
+    "VerifiedAuditSampleRootV1",
+    "build_audit_population",
+    "write_audit_population",
+    "load_verified_audit_population",
+    "AuditSampleManifestV1",
+    "BlindAuditPacketV1",
+    "select_audit_sample",
+    "verify_audit_sample",
+    "write_audit_sample_root",
+    "load_verified_audit_sample_root",
+    "ReviewerIdentityV1",
+    "PullRequestProofV1",
+    "ReviewerCommitmentV1",
+    "ReviewerRevealV1",
+    "GitHubAuditApiObservationReceiptV1",
+    "ExactGitHubPullRequestRecordV1",
+    "AuditPullRequestEvidenceSourceV1",
+    "AuditGitObjectArchiveV1",
+    "ExactGitHubReviewSourceV1",
+    "ReviewerChainV1",
+    "verify_reviewer_chain",
+    "AuditAdjudicationCoreV1",
+    "ExactGitHubReviewRecordV1",
+    "ExactGitHubReviewSignoffV1",
+    "AuditAdjudicationV1",
+    "verify_audit_chain",
+    "WeightedConfusionV1",
+    "WeightedProportionV1",
+    "ModelAuditMetricsV1",
+    "ModelAuditGateV1",
+    "compute_model_audit_metrics",
+    "evaluate_model_audit_gate",
+    "SensitivityResultV1",
+    "SensitivityCertificateV1",
+    "verify_sensitivity_certificate",
+    "CampaignAnalysisV1",
+    "AuditEvidenceAttachmentV1",
+    "AnalysisEvidenceAttachmentV1",
+    "VerifiedAuditEvidenceV1",
+    "VerifiedAnalysisEvidenceV1",
+    "write_audit_evidence_root",
+    "load_verified_audit_evidence",
+    "load_verified_analysis_evidence",
+    "write_analysis_evidence_root",
+)
+EXPECTED_BENCHMARK_COMMANDS = (
+    "hard-score",
+    "prepare-judge",
+    "seal-judge",
+    "sample-audit",
+    "seal-audit",
+    "analyze",
+    "verify",
+)
+EXPECTED_LIVE_METHODS = (
+    "laconian_eval.campaign.runtime.Runtime.hard_score",
+    "laconian_eval.campaign.runtime.Runtime.prepare_judge",
+    "laconian_eval.campaign.runtime.Runtime.seal_judge",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.sample_audit",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.seal_audit",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.analyze",
+    "laconian_eval.campaign.publication.Publication.campaign.evaluation_stage.verify",
+)
+EXPECTED_PRIVATE_CONSTRUCTORS = (
+    "_reconstruct_verified_runtime",
+    "_reconstruct_verified_publication",
+)
+
+
 README_FILES = {
     "English": "README.md",
     "Русский": "docs/i18n/README.ru.md",
@@ -1405,6 +1594,324 @@ def test_structured_output_provider_contract_has_one_foundation_owner() -> None:
     signature = inspect.signature(base.StructuredOutputProvider.generate_structured_output)
     assert signature.parameters["request"].annotation is base.StructuredOutputProviderRequestV1
     assert signature.return_annotation == "PublicBenchmarkProviderOutcomeV1"
+
+
+def test_public_benchmark_slice2_exports_and_exact_seven_commands_are_owned() -> None:
+    import argparse
+    import ast
+    import importlib
+    import inspect
+    import tomllib
+    from dataclasses import is_dataclass
+    from types import MappingProxyType
+
+    import laconian_eval.benchmark as benchmark
+    import laconian_eval.providers as providers
+
+    assert benchmark.__all__ == EXPECTED_BENCHMARK_SLICE2_EXPORTS
+    assert len(benchmark.__all__) == len(set(benchmark.__all__)) == 162
+    assert {"cli", "main", "ServiceTierStatus", "OfflineValidationReportV1"}.isdisjoint(
+        benchmark.__all__
+    )
+    assert set(EXPECTED_PRIVATE_CONSTRUCTORS).isdisjoint(benchmark.__all__)
+    assert all(not hasattr(benchmark, name) for name in EXPECTED_PRIVATE_CONSTRUCTORS)
+    assert tuple(name.rsplit(".", 1)[-1].replace("_", "-") for name in EXPECTED_LIVE_METHODS) == (
+        EXPECTED_BENCHMARK_COMMANDS
+    )
+
+    cold_import = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "import sys; import laconian_eval.benchmark; "
+            "assert 'laconian_eval.cli' not in sys.modules; "
+            "assert not any(name.startswith('laconian_eval.campaign') for name in sys.modules)",
+        ),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert cold_import.returncode == 0, cold_import.stderr
+
+    # Literal sole-owner inventories; aliases/constants are checked by identity too.
+    owner_names = {
+        "attachments": (
+            "CanonicalJSONV1Error",
+            "canonical_json_v1",
+            "parse_canonical_json_v1",
+            "RationalV1",
+            "attachment_digest",
+            "write_attachment_json",
+        ),
+        "seeds": ("derive_seed128",),
+        "hard_score": (
+            "HardScoreRequestSetV1",
+            "build_hard_score_request_set",
+            "verify_hard_score_request_set",
+        ),
+        "judge": (
+            "JUDGE_REQUESTED_SERVICE_TIER",
+            "JUDGE_SERVICE_TIER_WIRE_FIELD",
+            "BlindJudgeRequestV1",
+            "JudgeProviderRequestV1",
+            "JudgeRequestAttachmentV1",
+            "JudgeAttemptUsageV1",
+            "JudgeAttemptEvidenceV1",
+            "JudgeAttemptBoundaryV1",
+            "JudgeAttemptRootMemberV1",
+            "JudgeAttemptRootIndexV1",
+            "VerifiedJudgeAttemptRootV1",
+            "write_judge_attempt_root",
+            "load_verified_judge_attempt_root",
+            "JudgeAttachmentV1",
+            "build_judge_request_attachment",
+            "verify_judge_request_attachment",
+            "build_judge_attachment",
+            "verify_judge_attachment",
+        ),
+        "aggregation": (
+            "AggregatedModelV1",
+            "aggregate_verified_evidence",
+        ),
+        "bootstrap": (
+            "BootstrapVectorsV1",
+            "BootstrapIntervalV1",
+            "make_cluster_vectors",
+        ),
+        "reporting": (
+            "BootstrapArtifactV1",
+            "build_bootstrap_artifact",
+            "CampaignAnalysisV1",
+            "AuditEvidenceAttachmentV1",
+            "AnalysisEvidenceAttachmentV1",
+            "VerifiedAuditEvidenceV1",
+            "VerifiedAnalysisEvidenceV1",
+            "write_audit_evidence_root",
+            "load_verified_audit_evidence",
+            "load_verified_analysis_evidence",
+            "write_analysis_evidence_root",
+        ),
+        "context": (
+            "LayerKindV1",
+            "GenerationLayerRootMemberV1",
+            "AttachmentLayerRootMemberV1",
+            "LayerRootMemberV1",
+            "LayerRootIndexV1",
+            "write_layer_root_index",
+            "load_layer_root_index",
+            "BenchmarkProtocolBindingsV1",
+            "protocol_bindings_from_context",
+            "GenerationContextExpectationV1",
+            "VerifiedGenerationContextExpectationV1",
+            "GenerationContextIndexV1",
+            "VerifiedGenerationContextIndexV1",
+            "write_generation_context_index",
+            "load_verified_generation_context_index",
+        ),
+        "protocol_review": (
+            "SignatureVerificationModeV1",
+            "GitHubVerifiedCommitEvidenceV1",
+            "SSHVerifiedCommitEvidenceV1",
+            "OpenPGPVerifiedCommitEvidenceV1",
+            "SignatureEvidenceV1",
+            "ProtocolSignatureEvidenceSourceV1",
+            "AuditReviewerSigningKeyV1",
+            "verify_commit_signature_evidence_source",
+            "ProtocolReviewRoleV1",
+            "ProtocolSubjectKindV1",
+            "PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1",
+            "ReviewerAccountBindingV1",
+            "AuditReviewerRegistryV1",
+            "ProtocolReviewerBindingV1",
+            "ProtocolReviewerRegistryV1",
+            "TagOperatorProjectionV1",
+            "TagOperatorRegistryV1",
+            "TagRulesetPolicyV1",
+            "GITHUB_COMMIT_SIGNER_QUERY_V1",
+            "GRAPHQL_COMMIT_SIGNER_QUERY_SHA256_V1",
+            "InputTagMessageV1",
+            "ProtocolAttestationTagMessageV1",
+            "ProtocolBundleBuilderGitIdentityV1",
+            "TagRulesetObservationReceiptV1",
+            "TagCreationRuleSuiteReceiptV1",
+            "ArchivedApiReceiptBindingV1",
+            "WorkflowInventoryV1",
+            "BENCHMARK_WORKFLOW_PATHS_V1",
+            "build_workflow_inventory",
+            "GitObjectSHA256V1",
+            "ParsedProtocolGitObjectV1",
+            "VerifiedProtocolReviewPrefixV1",
+            "VerifiedProtocolReviewDagV1",
+            "ArchivedApiBlobV1",
+            "parse_protocol_git_object",
+            "verify_protocol_review_prefix",
+            "verify_protocol_review_dag",
+            "build_protocol_attestation_bundle",
+            "build_protocol_attestation_tag_binding",
+            "build_protocol_review_object_archive",
+            "load_verified_protocol_review_object_archive",
+            "ProtocolReviewSubjectV1",
+            "ProtocolReviewStatementV1",
+            "VerifiedProtocolAttestationV1",
+            "GitHubCommitVerificationProjectionV1",
+            "GitHubSignatureProjectionV1",
+            "GitHubSignatureObservationReceiptV1",
+            "LocalSignatureVerificationReceiptV1",
+            "ProtocolReviewSigningKeyV1",
+            "ProtocolReviewIdentityRegistryBundleV1",
+            "ProtocolAttestationBundleV1",
+            "ProtocolAttestationTagBindingV1",
+            "ProtocolReviewObjectArchiveV1",
+            "canonical_reviewer_registry_bytes",
+            "compute_audit_reviewer_registry_sha256",
+            "canonical_protocol_reviewer_registry_bytes",
+            "compute_protocol_reviewer_registry_sha256",
+            "protocol_review_digest",
+            "compute_protocol_attestations_root",
+        ),
+        "provider_evidence": (
+            "ProviderEvidenceIndexV1",
+            "compute_requested_returned_model_source_sha256",
+            "write_provider_evidence_index",
+            "load_provider_evidence_index",
+            "BenchmarkProviderEvidenceProjectionV1",
+            "VerifiedBenchmarkProviderEvidenceV1",
+            "load_verified_benchmark_provider_evidence",
+            "AuditPopulationAttachmentV1",
+            "VerifiedAuditPopulationV1",
+            "build_audit_population",
+            "write_audit_population",
+            "load_verified_audit_population",
+        ),
+        "audit_sampling": (
+            "VerifiedAuditSampleRootV1",
+            "AuditSampleManifestV1",
+            "BlindAuditPacketV1",
+            "select_audit_sample",
+            "verify_audit_sample",
+            "write_audit_sample_root",
+            "load_verified_audit_sample_root",
+        ),
+        "audit_commit_reveal": (
+            "ReviewerIdentityV1",
+            "PullRequestProofV1",
+            "ReviewerCommitmentV1",
+            "ReviewerRevealV1",
+            "GitHubAuditApiObservationReceiptV1",
+            "ExactGitHubPullRequestRecordV1",
+            "AuditPullRequestEvidenceSourceV1",
+            "AuditGitObjectArchiveV1",
+            "ExactGitHubReviewSourceV1",
+            "ReviewerChainV1",
+            "verify_reviewer_chain",
+            "AuditAdjudicationCoreV1",
+            "ExactGitHubReviewRecordV1",
+            "ExactGitHubReviewSignoffV1",
+            "AuditAdjudicationV1",
+            "verify_audit_chain",
+        ),
+        "audit_metrics": (
+            "WeightedConfusionV1",
+            "WeightedProportionV1",
+            "ModelAuditMetricsV1",
+            "ModelAuditGateV1",
+            "compute_model_audit_metrics",
+            "evaluate_model_audit_gate",
+        ),
+        "sensitivity": (
+            "SensitivityResultV1",
+            "SensitivityCertificateV1",
+            "verify_sensitivity_certificate",
+        ),
+    }
+    assert set(benchmark.__all__) == {name for names in owner_names.values() for name in names}
+    for suffix, names in owner_names.items():
+        owner = importlib.import_module("laconian_eval.benchmark." + suffix)
+        for name in names:
+            value = getattr(benchmark, name)
+            assert value is getattr(owner, name), (suffix, name)
+            if inspect.isclass(value) or inspect.isfunction(value):
+                assert value.__module__ == owner.__name__, name
+
+    protocol_review = importlib.import_module("laconian_eval.benchmark.protocol_review")
+    subjects = benchmark.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1
+    assert subjects is protocol_review.PROTOCOL_REVIEW_SUBJECT_KINDS_BY_ROLE_V1
+    assert isinstance(subjects, MappingProxyType)
+    assert subjects["security_evidence"] == (
+        "provider_request_contract_sha256",
+        "retry_spend_protocol_sha256",
+        "campaign_state_schema_sha256",
+        "workflow_endpoint_policy_sha256",
+        "artifact_security_protocol_sha256",
+        "publication_correction_protocol_sha256",
+        "publication_branch_ruleset_policy_sha256",
+        "identity_registry_bundle_sha256",
+        "state_writer_git_identity_sha256",
+        "broker_token_delivery_isolation_policy_sha256",
+        "broker_signing_keys_root_sha256",
+        "tag_operator_registry_sha256",
+        "tag_ruleset_policy_root",
+        "invalid_event_dismissal_policy_sha256",
+    )
+    provider_base = importlib.import_module("laconian_eval.providers.base")
+    assert providers.ServiceTierStatus is provider_base.ServiceTierStatus
+
+    from laconian_eval.replay.benchmark import build_parser
+
+    parser = build_parser()
+    subparsers = [
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    ]
+    assert len(subparsers) == 1
+    assert tuple(subparsers[0].choices) == EXPECTED_BENCHMARK_COMMANDS
+    assert parser.allow_abbrev is False
+    assert all(child.allow_abbrev is False for child in subparsers[0].choices.values())
+    scripts = tomllib.loads(_read("pyproject.toml"))["project"]["scripts"]
+    assert scripts["laconian-benchmark"] == "laconian_eval.cli:main"
+    assert scripts["laconian"] == "laconian_eval.cli:entrypoint"
+    replay_files = sorted((ROOT / "src/laconian_eval/replay").rglob("*.py"))
+    assert replay_files
+    replay_modules = []
+    for path in replay_files:
+        parts = path.relative_to(ROOT / "src").with_suffix("").parts
+        module_name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        module = importlib.import_module(module_name)
+        replay_modules.append(module)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(
+                    not alias.name.startswith("laconian_eval.campaign") for alias in node.names
+                ), path
+            elif isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith("laconian_eval.campaign"), path
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert not node.value.startswith("laconian_eval.campaign"), path
+
+    for module in (benchmark, *replay_modules):
+        assert all(not hasattr(module, name) for name in EXPECTED_PRIVATE_CONSTRUCTORS)
+        public_names = getattr(
+            module, "__all__", tuple(name for name in vars(module) if not name.startswith("_"))
+        )
+        for name in public_names:
+            value = getattr(module, name)
+            if not callable(value):
+                continue
+            owner = getattr(value, "__module__", "")
+            callable_name = getattr(value, "__name__", "")
+            qualified_name = owner + "." + getattr(value, "__qualname__", callable_name)
+            assert not owner.startswith("laconian_eval.campaign"), (module.__name__, name)
+            assert qualified_name not in EXPECTED_LIVE_METHODS, (module.__name__, name)
+            assert callable_name not in EXPECTED_PRIVATE_CONSTRUCTORS, (module.__name__, name)
+            if module is not benchmark:
+                # Raw Pydantic records (including VerifiedProtocolAttestationV1) are data;
+                # verified dataclass capabilities and their loaders are not replay exports.
+                assert not callable_name.startswith("load_verified_"), (module.__name__, name)
+                assert not (is_dataclass(value) and callable_name.startswith("Verified")), (
+                    module.__name__,
+                    name,
+                )
 
 
 def test_benchmark_package_uses_pep562_lazy_owner_identical_judge_exports() -> None:
