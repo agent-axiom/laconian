@@ -24,13 +24,16 @@ metadata is historical only and confers no authority on this amendment. Implemen
 from the synchronized five-plan `PLAN_BASE_SHA` recorded at handoff. Any later normative amendment
 re-blocks the affected tasks until separately approved.
 
-**Pending Task 15 offline-input amendment (separate approval required):** The design's section 7.7
+**Approved Task 15 offline-input amendment:** On 2026-09-06 the maintainer/user explicitly approved
+normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+`Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+records that approval without changing normative behavior. Task 15 may proceed from a handoff
+recording this successor's already-created full SHA as `PLAN_BASE_SHA`; that future SHA is not
+embedded in its own tree. The design's section 7.7
 and Task 15 below add only the required `verify --protocol-review-archive` ordinary file input and
-the exact 26-file `REVIEWS/audit/` layout. The maintainer authorized preparing this amendment, not
-implementing it. Task 15 remains blocked until the normative amendment commit is separately
-approved and its governance handoff is recorded. Completed Tasks 1–14, the other six option sets,
+the exact 26-file `REVIEWS/audit/` layout. Completed Tasks 1–14, the other six option sets,
 all live boundaries, model selection, API execution, budgets, workflows, and publication rules
-are unchanged. Neither this pending text nor prior approval metadata authorizes implementation.
+are unchanged. This approval does not authorize live execution.
 
 On 2026-09-02 the maintainer/user explicitly approved the source-backed protocol-signature evidence
 amendment at normative commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with exact message

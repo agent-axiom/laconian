@@ -33,11 +33,15 @@ source does not invent or embed that SHA.
 This section is mandatory and supersedes any older shorthand later in this plan. No compatibility
 alias or partially implemented predecessor contract is allowed.
 
-**Pending Task 15 offline-input synchronization (separate approval required):** Design section 7.7
+**Approved Task 15 offline-input synchronization:** On 2026-09-06 the maintainer/user explicitly
+approved normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+`Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+records that approval without changing normative behavior. Task 15 may proceed after its
+already-created full SHA is recorded at handoff as `PLAN_BASE_SHA`, never in its own tree.
+Design section 7.7
 and Evaluation Task 15 define one explicit `verify --protocol-review-archive` ordinary file input
 and the exact 26-file `REVIEWS/audit/` intermediate layout, excluding `audit-evidence.json` and
-`metrics.json`. Task 15 cannot implement these changes until the normative commit is separately
-approved. Publication's four live methods and sole source-acquisition boundary remain unchanged:
+`metrics.json`. Publication's four live methods and sole source-acquisition boundary remain unchanged:
 they do not accept this intermediate review tree or replay archive flag in place of their existing
 authority-bound inputs, invoke replay, or export a new replay-specific root. Complete `AUDIT` and
 `RESULT` allowlists and loaders still require the derived audit evidence/metrics; the intermediate

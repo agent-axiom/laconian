@@ -12,12 +12,15 @@
 
 ## Sources, approval, and fixed scope
 
-- Pending Task 15 offline-input amendment: design section 7.7 and Evaluation Task 15 define the
+- Approved Task 15 offline-input amendment: on 2026-09-06 the maintainer/user explicitly approved
+  normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+  `Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+  records that approval without changing normative behavior. Task 15 may proceed after this
+  successor's already-created full SHA is recorded at handoff as `PLAN_BASE_SHA`, never in its
+  own tree. Design section 7.7 and Evaluation Task 15 define the
   required `verify --protocol-review-archive` ordinary file input and the exact 26-file
   `REVIEWS/audit/` intermediate input, excluding `audit-evidence.json` and `metrics.json`.
-  Preparation alone is authorized; Task 15 implementation remains blocked until the exact
-  normative amendment commit is separately approved and its governance handoff recorded. This
-  synchronized plan bundle changes no completed Foundation/Evaluation implementation, live
+  This synchronized plan bundle changes no completed Foundation/Evaluation implementation, live
   method, model set, API authorization, spend cap, workflow, or publication gate. All seven
   command names/order and the other six complete option sets remain unchanged.
 - Normative design: `docs/superpowers/specs/2026-08-30-public-three-model-benchmark-design.md`.
@@ -122,10 +125,12 @@ This roadmap is a non-executable orchestration index. The four slice plans below
 
 ## Plan synchronization gate
 
-- [ ] Obtain separate explicit approval of the normative Task 15 offline-input amendment commit,
-  then record that approval in a governance-only successor and hand off its already-created full
-  SHA as `PLAN_BASE_SHA` before implementing amended Task 15. Do not infer this approval from
-  permission to prepare the amendment or embed a future commit's SHA in its own tree.
+- [x] Receive explicit approval of normative Task 15 offline-input amendment commit
+  `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+  `Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936` on 2026-09-06; record that
+  approval in this governance-only successor without changing normative behavior.
+- [ ] Hand off this successor's already-created full SHA as `PLAN_BASE_SHA` before implementing
+  amended Task 15. Do not embed a future commit's SHA in its own tree.
 
 - [x] Receive explicit maintainer approval for exact source-backed protocol-signature evidence
   amendment commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with message
@@ -174,7 +179,7 @@ The public console entrypoint remains `laconian_eval.cli:main`. Its exact offlin
 every handler imports only `laconian_eval.replay`. Live authority is available only through the
 three Runtime and four Publication methods above; no public campaign-authority console exists.
 
-Under the pending offline-input amendment, only `verify` requires the explicit protocol archive
+Under the approved offline-input amendment, only `verify` requires the explicit protocol archive
 file; it is structurally joined to the context, never treated as authority. `seal-audit` consumes
 the exact intermediate `REVIEWS/audit/` tree defined in Evaluation Task 15. Neither input changes
 the complete live audit/result roots or introduces a CLI producer, campaign dependency, or live

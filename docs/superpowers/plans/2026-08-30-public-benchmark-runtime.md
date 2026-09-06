@@ -12,10 +12,14 @@
 
 ## Execution contract
 
-- Pending Task 15 offline-input synchronization: design section 7.7 and Evaluation Task 15 define
+- Approved Task 15 offline-input synchronization: on 2026-09-06 the maintainer/user explicitly
+  approved normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+  `Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+  records that approval without changing normative behavior. Task 15 may proceed after its
+  already-created full SHA is recorded at handoff as `PLAN_BASE_SHA`, never in its own tree.
+  Design section 7.7 and Evaluation Task 15 define
   the required offline `verify --protocol-review-archive` file input and exact 26-file
-  `REVIEWS/audit/` intermediate layout. Separate approval of that normative commit is required for
-  amended Task 15; preparing/synchronizing it grants no implementation or live-run authority.
+  `REVIEWS/audit/` intermediate layout. This approval grants no live-run authority.
   Runtime's existing archive/expectation/context schemas, authority package layout, retained
   capability reconstruction, three live method signatures, tools and workflows do not change.
   Runtime must not call replay, accept the new replay inputs as capabilities, or add an implicit

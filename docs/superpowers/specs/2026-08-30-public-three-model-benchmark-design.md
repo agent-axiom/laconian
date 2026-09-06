@@ -7,11 +7,14 @@ bounded-directory, source-backed protocol-signature evidence, protocol-evidence/
 aggregation-authority, and Task 8 provider-evidence closure amendments approved. Evaluation Tasks
 3–8 and their downstream consumers may proceed from their approved handoffs.
 
-**Pending Task 15 offline-input amendment (separate approval required):** The amendment in
+**Approved Task 15 offline-input amendment:** On 2026-09-06 the maintainer/user explicitly approved
+normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+`Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+records that approval without changing normative behavior. Evaluation Task 15 may proceed from a
+handoff recording this successor's already-created full SHA as `PLAN_BASE_SHA`; that future SHA
+is not embedded in its own tree. The amendment in
 section 7.7 adds only the required `verify --protocol-review-archive` file input and the exact
-`REVIEWS/audit/` input layout for `seal-audit`. The maintainer authorized preparing these two
-clarifications, not implementing the amended contract. Evaluation Task 15 remains blocked until
-the normative amendment commit is separately approved. Prior approvals and completed Tasks 1–14
+`REVIEWS/audit/` input layout for `seal-audit`. Prior approvals and completed Tasks 1–14
 are unchanged; no live model, API, spend, workflow, authority, or publication change is authorized.
 
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
@@ -8547,7 +8550,7 @@ artifacts, but their outputs cannot create campaign authority, advance `Campaign
 live prerequisite, mint a verified context, or enter publication evidence merely because the
 bytes or hashes match.
 
-**Task 15 offline-input amendment (separate approval required).** Only `verify` additionally
+**Approved Task 15 offline-input amendment.** Only `verify` additionally
 requires `--protocol-review-archive PROTOCOL_REVIEW_ARCHIVE`. This argument names one explicitly
 supplied regular file containing the complete ordinary `ProtocolReviewObjectArchiveV1`, encoded
 as `canonical_json_v1(archive.model_dump(mode="json"))` without a terminal newline. It is not a

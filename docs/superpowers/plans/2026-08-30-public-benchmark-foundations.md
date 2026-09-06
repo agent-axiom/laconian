@@ -12,10 +12,14 @@
 
 ## Execution contract
 
-- Pending Task 15 offline-input synchronization: design section 7.7 and Evaluation Task 15 add only
+- Approved Task 15 offline-input synchronization: on 2026-09-06 the maintainer/user explicitly
+  approved normative commit `dc36b70b8a928572e6e980bf060e9bc79c6e7936` with exact message
+  `Одобряю amendment dc36b70b8a928572e6e980bf060e9bc79c6e7936`. This governance-only successor
+  records that approval without changing normative behavior. Task 15 may proceed after its
+  already-created full SHA is recorded at handoff as `PLAN_BASE_SHA`, never in its own tree.
+  Design section 7.7 and Evaluation Task 15 add only
   the required offline `verify --protocol-review-archive` file input and the exact 26-file
-  `REVIEWS/audit/` intermediate layout. Separate normative-commit approval is still required before
-  implementing amended Task 15. Foundations owns neither input producer nor consumer; its capsule,
+  `REVIEWS/audit/` intermediate layout. Foundations owns neither input producer nor consumer; its capsule,
   sidecar, checkpoint, provider-wire, test, and completed-task contracts remain unchanged. This
   synchronization is not live-run or model-selection authorization.
 - Approved normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `36bdcf7467ddd68543a024a1fb9a058f6c865a0d`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16. This plan is synchronized to the approved shard-checkpoint authority and bounded-directory amendment. Tasks 10–12 may proceed only from a handoff that records this governance-only successor's future full SHA as `PLAN_BASE_SHA`.
