@@ -12,6 +12,14 @@
 
 ## Execution contract
 
+- Pending Task 15 offline-input synchronization: design section 7.7 and Evaluation Task 15 define
+  the required offline `verify --protocol-review-archive` file input and exact 26-file
+  `REVIEWS/audit/` intermediate layout. Separate approval of that normative commit is required for
+  amended Task 15; preparing/synchronizing it grants no implementation or live-run authority.
+  Runtime's existing archive/expectation/context schemas, authority package layout, retained
+  capability reconstruction, three live method signatures, tools and workflows do not change.
+  Runtime must not call replay, accept the new replay inputs as capabilities, or add an implicit
+  archive lookup/CLI export stage to satisfy the offline surface.
 - Approved design: `docs/superpowers/specs/2026-08-30-public-three-model-benchmark-design.md`, especially Sections 6.2, 6.5–6.6, 7, 8, 12, 14, and 16.
 - Normative design commit: `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`.
 - Maintainer approval record: governance-only commit

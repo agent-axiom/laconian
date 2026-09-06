@@ -7,6 +7,13 @@ bounded-directory, source-backed protocol-signature evidence, protocol-evidence/
 aggregation-authority, and Task 8 provider-evidence closure amendments approved. Evaluation Tasks
 3–8 and their downstream consumers may proceed from their approved handoffs.
 
+**Pending Task 15 offline-input amendment (separate approval required):** The amendment in
+section 7.7 adds only the required `verify --protocol-review-archive` file input and the exact
+`REVIEWS/audit/` input layout for `seal-audit`. The maintainer authorized preparing these two
+clarifications, not implementing the amended contract. Evaluation Task 15 remains blocked until
+the normative amendment commit is separately approved. Prior approvals and completed Tasks 1–14
+are unchanged; no live model, API, spend, workflow, authority, or publication change is authorized.
+
 **Historical maintainer approval:** 2026-08-30 (approval of the pre-amendment design)
 
 **Prior amendment approval:** On 2026-08-30, the maintainer/user in this Codex task explicitly approved
@@ -8539,6 +8546,72 @@ non-evidentiary: `hard-score`, `prepare-judge`, `seal-judge`, `sample-audit`, `s
 artifacts, but their outputs cannot create campaign authority, advance `CampaignStateV1`, satisfy a
 live prerequisite, mint a verified context, or enter publication evidence merely because the
 bytes or hashes match.
+
+**Task 15 offline-input amendment (separate approval required).** Only `verify` additionally
+requires `--protocol-review-archive PROTOCOL_REVIEW_ARCHIVE`. This argument names one explicitly
+supplied regular file containing the complete ordinary `ProtocolReviewObjectArchiveV1`, encoded
+as `canonical_json_v1(archive.model_dump(mode="json"))` without a terminal newline. It is not a
+repository, directory, URL, digest, authority root, or verified capability. There is no implicit
+archive path, basename requirement, parent/sibling discovery, or fallback to
+`RESULT/audit/git-object-archive.json`; that file contains the distinct Task 9
+`AuditGitObjectArchiveV1`. Commands 1–6 reject the new option. Every other command option and the
+seven command names/order remain unchanged.
+
+Offline `verify` descriptor-retains the explicit archive file under the same no-follow,
+regular-file, no-alias, identity-recheck and input-read-only rules as its other inputs. It parses
+strict canonical bytes, reconstructs raw Git objects and archived API projections/receipts using
+the existing protocol-review schemas and LF-domain digest rules, and requires both
+`protocol_review_object_archive_sha256` and `object_closure_root` to equal the corresponding
+fields of the raw context at `GENERATION/generation-context.json`. That context must already
+match the explicit expectation and the provider/four-layer graph. Reconstructed
+T0/C0/reviewer/B0/T1, campaign/tag, bundle, registry, attestation, and workflow bindings must match
+that same graph. Hash-only substitution, a self-consistent archive from another campaign, and an
+audit-object archive are errors. The exact archive-file byte SHA-256 participates in the existing
+ordered input-digest vector. This is an untrusted structural input: no verified wrapper,
+cryptographic authority capability, network fetch, or archive/evidence writer is introduced.
+
+`seal-audit --review-root REVIEWS` names the complete input root, not its `audit/` child. It has
+exactly the following 26 regular files and only their required parent directories:
+
+```text
+REVIEWS/audit/population-attachment.json
+REVIEWS/audit/population.jsonl
+REVIEWS/audit/sample-manifest.json
+REVIEWS/audit/blind-packet.json
+REVIEWS/audit/git-object-archive.json
+REVIEWS/audit/pull-request-sources/commitment/<reviewer-id>.json
+REVIEWS/audit/pull-request-sources/reveal/<reviewer-id>.json
+REVIEWS/audit/pull-request-sources/adjudication.json
+REVIEWS/audit/commitments/<reviewer-id>.json
+REVIEWS/audit/reveals/<reviewer-id>/reveal.json
+REVIEWS/audit/reveals/<reviewer-id>/labels.jsonl
+REVIEWS/audit/reviewer-chains/<reviewer-id>.json
+REVIEWS/audit/adjudication-core.json
+REVIEWS/audit/signoffs/<reviewer-id>.json
+REVIEWS/audit/github-review-sources/<review-id>.json
+REVIEWS/audit/github-review-records/<review-id>.json
+REVIEWS/audit/adjudication.json
+```
+
+Each `<reviewer-id>` row has exactly two instances, in the already-checked context registry's
+reviewer order. Each `<review-id>` row has exactly two instances, using the distinct review IDs in
+the matching adjudication signoffs and checking the retained sources/records against the same
+reviewers. These are canonical schema-bound path components, not glob patterns or independent
+options. The five PR sources have logical order commitment reviewer 1/2, reveal reviewer 1/2,
+then adjudication. The root is exactly Evaluation Task 13's audit-tree allowlist minus
+`audit/audit-evidence.json` and `audit/metrics.json`: both excluded files, all other extra members
+(including empty directories), and missing/aliased/unstable members are errors. Existing Task 13
+JSON/JSONL byte framing and source/projection/embedded-record equality rules are unchanged. The
+four population/sample files retain their supplied bytes and parent bindings; no sampling or
+derived audit/metric construction occurs.
+
+This intermediate read-only input is not a complete audit root and cannot satisfy a live loader.
+Its fixture/export preparation is outside the replay CLI. No CLI writes it, and no live adapter
+accepts it in place of its existing authority-bound arguments. `AUDIT`, `RESULT`, the separate
+protocol archive schema, and every live producer/loader remain unchanged. Evaluation Task 15 owns
+the exact parser, missing/extra member, cross-campaign archive, malformed canonical byte,
+descriptor-race, content-free error, and success/failure input-snapshot regression tests for these
+two inputs; Runtime and Publication only preserve their existing live/replay isolation.
 
 Live `hard-score`, `prepare-judge`, and `seal-judge` execute only as Runtime campaign-side stages
 that receive the in-memory verified generation-context capability. Their exact internal entrypoints

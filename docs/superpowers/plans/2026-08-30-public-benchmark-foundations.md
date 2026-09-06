@@ -12,6 +12,12 @@
 
 ## Execution contract
 
+- Pending Task 15 offline-input synchronization: design section 7.7 and Evaluation Task 15 add only
+  the required offline `verify --protocol-review-archive` file input and the exact 26-file
+  `REVIEWS/audit/` intermediate layout. Separate normative-commit approval is still required before
+  implementing amended Task 15. Foundations owns neither input producer nor consumer; its capsule,
+  sidecar, checkpoint, provider-wire, test, and completed-task contracts remain unchanged. This
+  synchronization is not live-run or model-selection authorization.
 - Approved normative design: [Public Three-Model Benchmark Pipeline Design](../specs/2026-08-30-public-three-model-benchmark-design.md) at full SHA `36bdcf7467ddd68543a024a1fb9a058f6c865a0d`, especially Sections 6.1–6.6, 7.1–7.3, 8, 14.1, and 16. This plan is synchronized to the approved shard-checkpoint authority and bounded-directory amendment. Tasks 10–12 may proceed only from a handoff that records this governance-only successor's future full SHA as `PLAN_BASE_SHA`.
 - Approval metadata: on 2026-09-01 the maintainer/user explicitly approved normative commit `36bdcf7467ddd68543a024a1fb9a058f6c865a0d` with exact message `Одобряю amendment 36bdcf7467ddd68543a024a1fb9a058f6c865a0d`. This governance-only successor records that approval without changing normative behavior; its future full SHA must be recorded at handoff as `PLAN_BASE_SHA` and is not invented inside its own tree. Governance-only successor `6930b6e18b11d50a4df5b5fd18d37207e891a28c` and its approval of `e67ad191623316f69523b051fba48ec2e7492493`, plus governance-only successor `d6b147aefb0bab0e64a41541a67e2c1b8f4d00ad` and its approval of `05e3d7ba86fbaa11a7c9e4072dc1f24039bd7126`, remain historical authority for their prior scopes.
 - Seal grammar: [Laconian v0.1 Generation Capsule Design](../specs/2026-08-24-v0.1-generation-capsule-design.md), especially Sections 14–17.

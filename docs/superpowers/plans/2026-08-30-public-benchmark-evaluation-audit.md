@@ -24,6 +24,14 @@ metadata is historical only and confers no authority on this amendment. Implemen
 from the synchronized five-plan `PLAN_BASE_SHA` recorded at handoff. Any later normative amendment
 re-blocks the affected tasks until separately approved.
 
+**Pending Task 15 offline-input amendment (separate approval required):** The design's section 7.7
+and Task 15 below add only the required `verify --protocol-review-archive` ordinary file input and
+the exact 26-file `REVIEWS/audit/` layout. The maintainer authorized preparing this amendment, not
+implementing it. Task 15 remains blocked until the normative amendment commit is separately
+approved and its governance handoff is recorded. Completed Tasks 1–14, the other six option sets,
+all live boundaries, model selection, API execution, budgets, workflows, and publication rules
+are unchanged. Neither this pending text nor prior approval metadata authorizes implementation.
+
 On 2026-09-02 the maintainer/user explicitly approved the source-backed protocol-signature evidence
 amendment at normative commit `d58bac05483e448e4cfa9c4bb2b7186ff3243086` with exact message
 `Одобряю amendment d58bac05483e448e4cfa9c4bb2b7186ff3243086`. This governance-only successor
@@ -8177,6 +8185,28 @@ The CLI tests also import representative library boundaries without initializing
 cumulative public-contract test, not a duplicated implementation-derived list in this file, owns
 the exact complete export set and exact seven-command surface.
 
+Extend the existing named tests, preserving their 21-name inventory, with these amendment cases:
+
+- The exact parser/help tests require `--protocol-review-archive` only for `verify`. Omission is
+  `usage`/exit 2, an abbreviated spelling is rejected, and commands 1–6 reject the full option.
+  The existing prohibition test still rejects every raw identity/digest override; this ordinary
+  archive-file input is not a source/protocol hash override.
+- `test_offline_verify_checks_all_four_layer_vectors_and_attempt_root` supplies the explicit
+  archive, checks its canonical no-LF bytes and both context archive bindings, reconstructs the
+  existing protocol graph, and rejects missing files, an audit archive, raw-object/API-blob
+  substitution, and a fully rehashed archive from a second synthetic campaign. Keep the original
+  four-vector/attempt-root checks. The read-only envelope test checks inclusion of the exact
+  archive-file byte digest in the existing offline input-digest preimage.
+- `test_offline_seal_audit_checks_population_archive_sources_core_and_signoffs` fixes the literal
+  26-file layout below, not an allowlist derived from the production writer. Parametrize removal
+  of every required member and addition of each excluded derived file, an unrelated file, or an
+  empty directory; reject passing `REVIEWS/audit` instead of `REVIEWS`. Retain the existing
+  population/sample, reviewer, PR-source, review-source/record, core, signoff and envelope joins.
+- Extend the existing read-only/failure/error cases to both new input boundaries: symlink,
+  non-regular file, alias, unstable identity, malformed/noncanonical bytes, cross-campaign
+  substitution and content canaries. Snapshot the explicit archive and every review-root member
+  on success and failure. No fixture acquires live authority or uses a replay report as evidence.
+
 - [ ] **Step 2: Run RED**
 
 Run:
@@ -8297,7 +8327,7 @@ laconian-benchmark seal-judge --generation-expectation GENERATION_EXPECTATION --
 laconian-benchmark sample-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --output-root OUTPUT
 laconian-benchmark seal-audit --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --review-root REVIEWS --output-root OUTPUT
 laconian-benchmark analyze --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --audit-root AUDIT --output-root OUTPUT
-laconian-benchmark verify --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --result-root RESULT
+laconian-benchmark verify --generation-expectation GENERATION_EXPECTATION --provider-index PROVIDER_INDEX --generation-root GENERATION --hard-score-root HARD --judge-request-root REQUESTS --judge-root JUDGES --result-root RESULT --protocol-review-archive PROTOCOL_REVIEW_ARCHIVE
 ~~~
 
 Root meanings are exact: `GENERATION_EXPECTATION`, required by all seven commands, names only the
@@ -8317,9 +8347,8 @@ child.
 complete retained live-stage or explicit-fixture evidence roots containing
 `hard-score/`, `judge-requests/`, and `judge/` respectively; `ATTEMPTS` is the exact Runtime Task 7
 output root containing only the fixed `judge-attempts/` tree described in Task 4; `REVIEWS` is the
-closed source-backed review root containing the Task 9 Git-object archive, five PR/signature
-sources, two reviewer chains, two review sources, dedicated review records, core, signoffs, and
-adjudication; no repository path or callback is accepted; `AUDIT` is the complete `seal-audit`
+closed source-backed review root with the exact 26-file `audit/` layout below; no repository path
+or callback is accepted; `AUDIT` is the complete `seal-audit`
 output root containing `audit/`; and `RESULT` is the complete `analyze` output root containing both
 `audit/` and `analysis/`. Passing an index's parent, a layer subdirectory where a complete root is
 required, a copied expectation outside the fixed authority-package layout, or a provider index with
@@ -8328,6 +8357,53 @@ probe parent/sibling directories or search for a newest artifact. None accepts a
 input-tag commit, expected-context/expectation/authority hash, source/protocol hash, workflow root,
 reviewer registry, or evidence vector as a
 separate option.
+
+`PROTOCOL_REVIEW_ARCHIVE`, required only by `verify`, is one explicitly supplied regular file of
+`ProtocolReviewObjectArchiveV1` bytes. Its filename is not fixed and is not an authority claim;
+the argument cannot name a directory, Git repository, URL, or digest. Strictly require
+`canonical_json_v1(archive.model_dump(mode="json"))`, with no terminal newline. Open/retain/recheck
+its descriptor with the same no-follow/no-alias/read-only rules as all other inputs. Do not search
+the authority package, `RESULT`, parent/sibling paths, or an ambient repository for it. In
+particular, `RESULT/audit/git-object-archive.json` is the different Task 9 `AuditGitObjectArchiveV1`
+and is never a fallback. Include SHA-256 of the exact file bytes in `ordered_input_sha256s` before
+the existing bytewise sort and offline digest. The archive is not added to either the `AUDIT` or
+`RESULT` tree allowlist, and no Runtime/Publication argument or output format changes.
+
+`REVIEWS` contains exactly these 26 regular files and only their required parent directories:
+
+~~~text
+REVIEWS/audit/population-attachment.json
+REVIEWS/audit/population.jsonl
+REVIEWS/audit/sample-manifest.json
+REVIEWS/audit/blind-packet.json
+REVIEWS/audit/git-object-archive.json
+REVIEWS/audit/pull-request-sources/commitment/<reviewer-id>.json
+REVIEWS/audit/pull-request-sources/reveal/<reviewer-id>.json
+REVIEWS/audit/pull-request-sources/adjudication.json
+REVIEWS/audit/commitments/<reviewer-id>.json
+REVIEWS/audit/reveals/<reviewer-id>/reveal.json
+REVIEWS/audit/reveals/<reviewer-id>/labels.jsonl
+REVIEWS/audit/reviewer-chains/<reviewer-id>.json
+REVIEWS/audit/adjudication-core.json
+REVIEWS/audit/signoffs/<reviewer-id>.json
+REVIEWS/audit/github-review-sources/<review-id>.json
+REVIEWS/audit/github-review-records/<review-id>.json
+REVIEWS/audit/adjudication.json
+~~~
+
+Expand every `<reviewer-id>` row exactly twice using the checked context registry's reviewer
+order, and every `<review-id>` row exactly twice using the distinct review IDs in the matching
+adjudication signoffs. Check all retained sources/records against those same reviewer bindings.
+Components use existing canonical safe schema values, never globs or caller identity options.
+The five PR sources retain logical order commitment reviewer 1/2, reveal reviewer 1/2, adjudication.
+This is Task 13's exact audit-tree allowlist minus `audit/audit-evidence.json` and
+`audit/metrics.json`; those two derived files are forbidden here, as are any other extra files or
+directories, including empty ones. Preserve Task 13's JSON/JSONL byte framing and exact
+source/projection/embedded-record comparisons. Require all four population/sample files unchanged
+and bound to the supplied provider graph; no sampler is invoked. `REVIEWS/audit` is not an accepted
+root argument. The fixture/export preparation of this intermediate root is outside the replay
+CLI, does not change any live producer, and grants no authority. No new review-root writer or
+verified wrapper is introduced, and complete audit/analysis loaders still reject it.
 
 `OUTPUT` always means an offline-report root; it never means `HARD`, `REQUESTS`, `JUDGES`, `AUDIT`,
 or `RESULT`, and no CLI invocation produces an input for a later CLI invocation. Those evidence
@@ -8387,10 +8463,16 @@ Offline command validation responsibilities are fixed:
    sensitivity, or analysis builder and writes no result root.
 7. `verify` performs the same offline structural checks over `RESULT`, including both
    `audit/` and `analysis/`, all four ordered 36-parent layer vectors, and the judge-attempt
-   root/vector. It also imports `ProtocolReviewObjectArchiveV1` without network, reconstructs every
-   T0/C0/reviewer/B0/T1 raw Git object, stable projection/receipt and campaign/tag binding, and
-   rejects any downstream campaign/archive-root mismatch. It is read-only and emits only the
-   offline stdout envelope.
+   root/vector. It parses the explicit `PROTOCOL_REVIEW_ARCHIVE` as ordinary
+   `ProtocolReviewObjectArchiveV1` without network, reconstructs every T0/C0/reviewer/B0/T1 raw Git
+   object, stable projection/receipt and campaign/tag binding using existing LF-domain rules,
+   and requires its `protocol_review_object_archive_sha256` and `object_closure_root` to equal
+   the corresponding raw context fields at `GENERATION/generation-context.json`. The context
+   must already match the expectation/provider/four-layer graph; reconstructed tag, bundle,
+   registry, attestation and workflow bindings must match the same graph. Any downstream
+   campaign/archive-root mismatch fails, including a fully rehashed second-campaign archive.
+   No verified capability or complete DAG verifier is invoked. It is read-only and emits only
+   the offline stdout envelope.
 
 Every input path is opened beneath a retained parent descriptor; reject absolute references inside
 indexes, parent traversal, symlinks, devices, FIFOs, sockets, duplicate inode aliases, unstable
