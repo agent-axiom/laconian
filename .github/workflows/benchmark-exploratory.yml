@@ -1,0 +1,64 @@
+name: Exploratory API pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_cost:
+        description: "Authorize this 32-request pilot with a USD 5 exposure limit"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: laconian-exploratory-live
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.run_attempt == '1' &&
+      inputs.confirm_cost == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: benchmark-live
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONOPTIMIZE: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Offline preflight
+        run: |
+          python tests/test_exploratory_pilot.py
+          python tests/test_exploratory_workflow.py
+          mkdir -p "$RUNNER_TEMP/exploratory-pilot"
+          python tools/exploratory_pilot.py --dry-run \
+            --output "$RUNNER_TEMP/exploratory-pilot/dry-run" \
+            --revision "$GITHUB_SHA"
+      - name: Run live pilot
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python tools/exploratory_pilot.py --live --confirm-cost 5 \
+            --output "$RUNNER_TEMP/exploratory-pilot/live" \
+            --revision "$GITHUB_SHA"
+      - name: Preserve pilot artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: exploratory-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/exploratory-pilot/
+          retention-days: 90
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
