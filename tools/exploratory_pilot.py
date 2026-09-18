@@ -238,8 +238,11 @@ def integer(value: Any, path: str) -> int:
     return value
 
 
-def account(response: Any, record: dict[str, Any]) -> dict[str, Any]:
-    if member(response, "status", "status") != "completed":
+def account_usage(
+    response: Any, record: dict[str, Any], *, output_limit: int = OUTPUT_LIMIT
+) -> dict[str, Any]:
+    """Settle strictly known usage independently of response quality or visible text."""
+    if member(response, "status", "status") not in ("completed", "incomplete"):
         raise Stop("response_not_completed")
     if member(response, "error", "error") is not None:
         raise Stop("response_error")
@@ -267,9 +270,37 @@ def account(response: Any, record: dict[str, Any]) -> dict[str, Any]:
         or cached + written > incoming
         or counts["reasoning_tokens"] > outgoing
         or incoming > record["input_bound"]
-        or outgoing > OUTPUT_LIMIT
+        or outgoing > output_limit
     ):
         raise Stop("inconsistent_usage")
+    rates = PRICES["models"][record["model"]]
+    ordinary = incoming - cached - written
+    components = {
+        "ordinary_input": priced(ordinary, rates["input"]),
+        "cached_input": priced(cached, rates["read"]),
+        "cache_write_input": priced(written, rates["write"]),
+        "output_including_reasoning": priced(outgoing, rates["output"]),
+    }
+    cost = sum(components.values())
+    if cost > record["reservation_micros"]:
+        raise Stop("charge_exceeds_reservation")
+    return {
+        "requested_model": record["model"],
+        "resolved_model": response["model"],
+        "usage": {
+            **counts,
+            "ordinary_input_tokens": ordinary,
+            "nonreasoning_output_tokens": outgoing - counts["reasoning_tokens"],
+        },
+        "cost_components_micros": components,
+        "settled_micros": cost,
+    }
+
+
+def account(response: Any, record: dict[str, Any]) -> dict[str, Any]:
+    if member(response, "status", "status") != "completed":
+        raise Stop("response_not_completed")
+    accounted = account_usage(response, record)
     output = member(response, "output", "output")
     text = []
     if not isinstance(output, list):
@@ -286,30 +317,8 @@ def account(response: Any, record: dict[str, Any]) -> dict[str, Any]:
     answer = "\n".join(text)
     if not answer.strip():
         raise Stop("blank_output")
-    rates = PRICES["models"][record["model"]]
-    ordinary = incoming - cached - written
-    components = {
-        "ordinary_input": priced(ordinary, rates["input"]),
-        "cached_input": priced(cached, rates["read"]),
-        "cache_write_input": priced(written, rates["write"]),
-        "output_including_reasoning": priced(outgoing, rates["output"]),
-    }
-    cost = sum(components.values())
-    if cost > record["reservation_micros"]:
-        raise Stop("charge_exceeds_reservation")
     missing = [literal for literal in LITERALS if literal not in answer]
-    return {
-        "requested_model": record["model"],
-        "resolved_model": response["model"],
-        "usage": {
-            **counts,
-            "ordinary_input_tokens": ordinary,
-            "nonreasoning_output_tokens": outgoing - counts["reasoning_tokens"],
-        },
-        "cost_components_micros": components,
-        "settled_micros": cost,
-        "quality": {"hard_pass": not missing, "missing_literals": missing},
-    }
+    return {**accounted, "quality": {"hard_pass": not missing, "missing_literals": missing}}
 
 
 def response_read_limit(key: str) -> int:

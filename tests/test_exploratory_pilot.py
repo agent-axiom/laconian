@@ -233,6 +233,25 @@ class PilotTests(unittest.TestCase):
             summary["terminals"][0]["quality"]["missing_literals"], list(self.p.LITERALS)
         )
 
+    def test_generic_account_usage_settles_incomplete_or_blank_without_claiming_quality(self):
+        self.assertTrue(hasattr(self.p, "account_usage"), "generic usage accounting is missing")
+        record = self.p.build_plan(self.p.snapshot(ROOT))[0]
+        for status in ("completed", "incomplete"):
+            response = self.response(record["request"])
+            response.update(status=status, output=[])
+            accounted = self.p.account_usage(response, record, output_limit=768)
+            self.assertEqual(accounted["settled_micros"], 858)
+            self.assertNotIn("quality", accounted)
+            self.assertEqual(accounted["usage"]["nonreasoning_output_tokens"], 15)
+
+    def test_generic_account_usage_checks_judge_output_limit(self):
+        self.assertTrue(hasattr(self.p, "account_usage"), "generic usage accounting is missing")
+        record = self.p.build_plan(self.p.snapshot(ROOT))[0]
+        response = self.response(record["request"])
+        response["usage"].update(output_tokens=769, total_tokens=869)
+        with self.assertRaisesRegex(self.p.Stop, "inconsistent_usage"):
+            self.p.account_usage(response, record, output_limit=768)
+
     def test_missing_and_invalid_usage_never_becomes_zero_cost(self):
         mutations = [
             lambda r: r.pop("usage"),

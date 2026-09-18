@@ -1,0 +1,78 @@
+name: Exploratory API comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_cost:
+        description: "Authorize 1920 generations plus blind Sol judging; USD 75 total exposure"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: laconian-exploratory-live
+  cancel-in-progress: false
+
+jobs:
+  comparison:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.run_attempt == '1' &&
+      inputs.confirm_cost == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    environment: benchmark-live
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONOPTIMIZE: "0"
+      UV_PYTHON: "3.11"
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          enable-cache: false
+      - name: Install locked dependencies without provider credentials
+        run: uv sync --all-extras --locked
+      - name: Offline preflight
+        env:
+          UV_OFFLINE: "1"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          uv run --no-sync pytest --noconftest -p no:cacheprovider -q \
+            tests/test_exploratory_pilot.py tests/test_exploratory_workflow.py \
+            tests/test_exploratory_protocol.py tests/test_exploratory_comparison.py \
+            tests/test_exploratory_comparison_workflow.py
+          mkdir -p "$RUNNER_TEMP/exploratory-comparison"
+          uv run --no-sync python tools/exploratory_comparison.py --dry-run \
+            --output "$RUNNER_TEMP/exploratory-comparison/dry-run" \
+            --revision "$GITHUB_SHA"
+      - name: Run live comparison
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          UV_OFFLINE: "1"
+        run: |
+          uv run --no-sync python tools/exploratory_comparison.py --live --confirm-cost 75 \
+            --output "$RUNNER_TEMP/exploratory-comparison/live" \
+            --revision "$GITHUB_SHA"
+      - name: Preserve comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: exploratory-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/exploratory-comparison/
+          retention-days: 90
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
